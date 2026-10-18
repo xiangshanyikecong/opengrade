@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenGrade · 答题卡设计器与考试工作台</title>
+<style>
+  :root { --ink:#1c2430; --line:#dde3ea; --brand:#0b6e4f; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; color:var(--ink); background:#f5f7fa; }
+  header { padding:16px 28px; background:#fff; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:20px; }
+  header p { margin:6px 0 0; font-size:13px; color:#66707d; }
+  nav.tabs { display:flex; gap:4px; padding:0 28px; background:#fff; border-bottom:1px solid var(--line); }
+  nav.tabs button { border:0; background:none; padding:12px 18px; font-size:14px; cursor:pointer; color:#66707d; border-bottom:2px solid transparent; }
+  nav.tabs button.active { color:var(--brand); border-bottom-color:var(--brand); font-weight:600; }
+  main { display:flex; gap:24px; padding:24px; max-width:1280px; margin:0 auto; }
+  main[hidden] { display:none; }
+  .panel { background:#fff; border:1px solid var(--line); border-radius:10px; padding:20px; }
+  .controls { width:400px; flex-shrink:0; align-self:flex-start; display:grid; gap:14px; }
+  label { font-size:13px; color:#4b5563; display:grid; gap:4px; }
+  input, select, textarea { padding:8px 10px; border:1px solid var(--line); border-radius:6px; font-size:14px; font-family:inherit; }
+  button.primary { padding:10px 14px; border:0; border-radius:8px; background:var(--brand); color:#fff; font-size:14px; cursor:pointer; }
+  button.secondary { padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#eef2f6; color:var(--ink); font-size:13px; cursor:pointer; }
+  .spec { display:grid; grid-template-columns:1.1fr 0.9fr 0.9fr 0.9fr auto; gap:6px; align-items:center; margin-bottom:6px; }
+  .spec input, .spec select { padding:6px; }
+  .del { border:0; background:none; color:#c2410c; cursor:pointer; font-size:15px; }
+  .group-title { font-size:13px; font-weight:600; color:#374151; margin-top:4px; }
+  .preview { flex:1; min-height:70vh; overflow:auto; display:grid; place-items:start center; }
+  .preview svg { height:82vh; box-shadow:0 6px 24px rgba(16,24,40,.12); border-radius:4px; background:#fff; }
+  .hint { font-size:12px; color:#8a94a3; margin:0; }
+  .ok { color:var(--brand); font-size:13px; }
+  .err { color:#c2410c; font-size:13px; white-space:pre-wrap; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td, th { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; }
+  a { color:var(--brand); }
+</style>
+</head>
+<body>
+<header>
+  <h1>OpenGrade · 答题卡设计器与考试工作台</h1>
+  <span style="flex:1"></span>
+  <span class="u" id="ogUser" style="font-size:13px;color:#66707d"></span>
+</header>
+<nav class="tabs">
+  <button class="active" data-tab="design">① 设计答题卡</button>
+  <button data-tab="exam">② 建考与阅卷</button>
+</nav>
+
+<main id="tab-design">
+  <section class="panel controls">
+    <label>卷头标题(中文经 SVG 打印;位图预览中非 ASCII 以 ? 显示)
+      <input id="title" value="高一(3)班 月考答题卡">
+    </label>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px">
+      <label>考号位数 <input id="reg" type="number" value="8" min="0" max="12"></label>
+      <label>客观题分栏 <input id="columns" type="number" value="2" min="1" max="4"></label>
+    </div>
+    <div class="group-title">客观题(按顺序编号,可混排题型)</div>
+    <div id="objSpecs"></div>
+    <button class="secondary" onclick="addObj()">+ 加一段客观题</button>
+    <div class="group-title">主观题(留白作答区,切片后人工阅卷)</div>
+    <div id="subSpecs"></div>
+    <button class="secondary" onclick="addSub()">+ 加一道主观题</button>
+    <button class="primary" id="gen">生成 / 刷新预览</button>
+    <button class="secondary" id="download" disabled>下载 SVG(可打印)</button>
+    <div class="err" id="designMsg"></div>
+  </section>
+  <section class="panel preview" id="preview">点击"生成"预览</section>
+</main>
+
+<main id="tab-exam" hidden>
+  <section class="panel controls">
+    <div class="group-title">创建考试</div>
+    <label>版式 JSON(设计器生成的可整段粘贴过来)
+      <textarea id="examLayout" rows="8" placeholder='{"version":2, ...}'></textarea>
+    </label>
+    <label>客观题参考答案(JSON 数组,如 ["A","T","AC",...];判断题用 T/F,多选题如 "AC")
+      <textarea id="examKey" rows="3" placeholder='["A","B","T",...]'></textarea>
+    </label>
+    <label>学科(教师按学科过滤考试,如 数学/语文/英语)
+      <input id="examSubject" placeholder="数学">
+    </label>
+    <label>学生名册(可选,JSON 数组或 CSV"考号,姓名,班级";用于异常卷考号推荐指派)
+      <textarea id="examRoster" rows="3" placeholder='[{"reg":"20250001","name":"李雷","class":"三年二班"}] 或 20250001,李雷,三年二班'></textarea>
+    </label>
+    <label>二值化方式
+      <select id="threshold"><option value="otsu">全局 Otsu(常规扫描)</option><option value="adaptive">局部自适应(阴影/翻拍)</option></select>
+    </label>
+    <label>整卷扫描件(可多选)
+      <input id="examImages" type="file" accept="image/png,image/jpeg" multiple>
+    </label>
+    <button class="primary" id="createExam">创建考试并切片</button>
+    <div class="err" id="examMsg"></div>
+  </section>
+  <section class="panel" style="flex:1">
+    <div class="group-title">已创建的考试(数据在本机 data/ 目录)</div>
+    <table id="examList"><tr><th>考试</th><th>时间</th><th>卷数</th><th>题型</th><th></th></tr></table>
+  </section>
+</main>
+
+<script src="/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+OG.init();
+
+// —— Tab 切换 ——
+document.querySelectorAll("nav.tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav.tabs button").forEach(x => x.classList.toggle("active", x === b));
+  $("tab-design").hidden = b.dataset.tab !== "design";
+  $("tab-exam").hidden = b.dataset.tab !== "exam";
+  if (b.dataset.tab === "exam") refreshExams();
+});
+
+// —— 设计器 ——
+function addObj(count = 20, kind = "choice", options = 4, score = 2) {
+  const div = document.createElement("div");
+  div.className = "spec";
+  div.innerHTML = `
+    <input type="number" class="c" value="${count}" min="1" max="116" title="题数">
+    <select class="k" title="题型">
+      <option value="choice">单选</option><option value="judge">判断</option><option value="multiple">多选</option>
+    </select>
+    <input type="number" class="o" value="${options}" min="2" max="6" title="选项数">
+    <input type="number" class="s" value="${score}" min="0.5" step="0.5" title="每题分值">
+    <button class="del" onclick="this.parentNode.remove()">×</button>`;
+  div.querySelector(".k").value = kind;
+  div.querySelector(".o").style.visibility = kind === "judge" ? "hidden" : "visible";
+  div.querySelector(".k").onchange = e => e.target.parentNode.querySelector(".o").style.visibility = e.target.value === "judge" ? "hidden" : "visible";
+  $("objSpecs").appendChild(div);
+}
+function addSub(kind = "fillblank", label = "", score = 5, height = 16) {
+  const div = document.createElement("div");
+  div.className = "spec";
+  div.innerHTML = `
+    <select class="k"><option value="fillblank">填空</option><option value="subjective">解答</option></select>
+    <input type="text" class="l" value="${label}" placeholder="题干(可空)" style="grid-column:span 2">
+    <input type="number" class="s" value="${score}" title="满分">
+    <button class="del" onclick="this.parentNode.remove()">×</button>
+    <input type="number" class="h" value="${height}" min="4" max="120" title="作答区高度 mm" style="grid-column:span 4">`;
+  div.querySelector(".k").value = kind;
+  $("subSpecs").appendChild(div);
+}
+addObj(); addObj(5, "judge", 2, 2); addObj(5, "multiple", 4, 2);
+addSub("fillblank", "", 5, 16); addSub("subjective", "", 10, 42);
+
+function buildLayout() {
+  const questions = [];
+  [...$("objSpecs").children].forEach(d => {
+    const kind = d.querySelector(".k").value;
+    const count = +d.querySelector(".c").value, options = +d.querySelector(".o").value, score = +d.querySelector(".s").value;
+    for (let i = 0; i < count; i++) questions.push({ kind, options, score });
+  });
+  const subjectives = [...$("subSpecs").children].map(d => ({
+    kind: d.querySelector(".k").value, label: d.querySelector(".l").value,
+    score: +d.querySelector(".s").value, heightMM: +d.querySelector(".h").value,
+  }));
+  return { version: 2, title: $("title").value, regDigits: +$("reg").value, columns: +$("columns").value, questions, subjectives };
+}
+
+let currentSVG = null;
+$("gen").onclick = async () => {
+  $("designMsg").textContent = "";
+  const res = await fetch("/api/v1/cards", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ layout: buildLayout() }) });
+  if (!res.ok) { $("designMsg").className = "err"; $("designMsg").textContent = (await res.json()).error; return; }
+  currentSVG = await res.text();
+  $("preview").innerHTML = currentSVG;
+  $("download").disabled = false;
+  $("examLayout").value = JSON.stringify(buildLayout());
+  $("designMsg").className = "ok";
+  $("designMsg").textContent = "已生成。版式 JSON 已同步到「建考与阅卷」页。";
+};
+$("download").onclick = () => {
+  const blob = new Blob([currentSVG], { type: "image/svg+xml" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "opengrade-sheet.svg"; a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+// —— 建考与阅卷 ——
+$("createExam").onclick = async () => {
+  $("examMsg").className = "err"; $("examMsg").textContent = "";
+  try {
+    const layout = JSON.parse($("examLayout").value);
+    const key = JSON.parse($("examKey").value);
+    const files = $("examImages").files;
+    if (!files.length) throw new Error("请选择至少一张整卷扫描件");
+    const fd = new FormData();
+    fd.append("layout", JSON.stringify(layout));
+    fd.append("key", JSON.stringify(key));
+    fd.append("threshold", $("threshold").value);
+    const rosterText = $("examRoster").value.trim();
+    if (rosterText) fd.append("roster", rosterText);
+    if ($("examSubject").value.trim()) fd.append("subject", $("examSubject").value.trim());
+    for (const f of files) fd.append("images", f);
+    const r = await fetch("/api/v1/exams", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    $("examMsg").className = "ok";
+    $("examMsg").textContent = `考试 ${j.id} 已创建:${j.students} 卷,客观 ${j.objectiveCount} 题,主观 ${j.subjectiveCount} 题。`;
+    refreshExams();
+  } catch (e) { $("examMsg").textContent = e.message; }
+};
+
+async function refreshExams() {
+  const list = await (await fetch("/api/v1/exams")).json();
+  const t = $("examList");
+  t.innerHTML = "<tr><th>考试</th><th>时间</th><th>卷数</th><th>题型</th><th>操作</th></tr>";
+  for (const e of list) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${e.id}</td><td>${e.createdAt}</td><td>${e.students}</td>
+      <td>${e.subject ? e.subject + " · " : ""}客观 ${e.objective} + 主观 ${e.subjective}</td>
+      <td style="display:flex;gap:8px;flex-wrap:wrap">
+        <a href="/grader.html?exam=${e.id}">阅卷</a>
+        <a href="/api/v1/exams/${e.id}/export.xlsx">成绩册</a>
+        <a href="/api/v1/exams/${e.id}/review.pptx">讲评课件</a>
+        <a href="/api/v1/exams/${e.id}/export.zip">数据包</a>
+        <a href="#" style="color:#c2410c" onclick="delExam('${e.id}');return false">删除</a>
+      </td>`;
+    t.appendChild(tr);
+  }
+  if (!list.length) t.insertAdjacentHTML("beforeend", "<tr><td colspan='5' class='hint'>暂无考试:先在设计页生成版式,再回到本页创建考试</td></tr>");
+}
+async function delExam(id) {
+  if (!confirm(`删除考试 ${id} 及其全部数据?此操作不可恢复。`)) return;
+  const r = await fetch(`/api/v1/exams/${id}`, { method: "DELETE" });
+  if (r.ok) refreshExams();
+}
+</script>
+</body>
+</html>

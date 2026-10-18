@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · OpenGrade 开元智阅</title>
+<style>
+  :root { --ink:#1c2430; --line:#dde3ea; --brand:#0b6e4f; }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+         color:var(--ink); background:linear-gradient(160deg,#f5f7fa 0%,#e8efe9 100%); }
+  .card { width:360px; background:#fff; border:1px solid var(--line); border-radius:14px; padding:32px; box-shadow:0 10px 40px rgba(16,24,40,.08); }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .slogan { font-size:13px; color:#66707d; margin:0 0 24px; }
+  label { display:grid; gap:4px; font-size:13px; color:#4b5563; margin-bottom:12px; }
+  input { padding:10px; border:1px solid var(--line); border-radius:8px; font-size:14px; }
+  button { width:100%; padding:11px; border:0; border-radius:8px; background:var(--brand); color:#fff; font-size:15px; cursor:pointer; }
+  .err { color:#c2410c; font-size:13px; min-height:18px; margin:8px 0; }
+  .hint { font-size:12px; color:#8a94a3; margin-top:16px; line-height:1.8; border-top:1px dashed var(--line); padding-top:12px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>OpenGrade 开元智阅</h1>
+  <p class="slogan">把成绩还给教育,让阅卷回归教学</p>
+  <label>用户名
+    <input id="username" autocomplete="username">
+  </label>
+  <label>密码
+    <input id="password" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+  </label>
+  <div class="err" id="msg"></div>
+  <button onclick="doLogin()">登 录</button>
+  <p class="hint">角色说明:管理员(用户管理/全部考试) · 年级组长(考试管理/任务分配/全年级报告) ·<br>
+  教师(建考/阅卷/本班报告) · 学生(免费查分/错题本/答卷回溯)<br>
+  首次部署默认管理员 admin / admin123,登录后请立即修改。</p>
+</div>
+<script>
+async function doLogin() {
+  const r = await fetch("/api/v1/auth/login", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: document.getElementById("username").value.trim(),
+                           password: document.getElementById("password").value }),
+  });
+  const j = await r.json();
+  if (!r.ok) { document.getElementById("msg").textContent = j.error || "登录失败"; return; }
+  location.href = j.redirect;
+}
+</script>
+</body>
+</html>

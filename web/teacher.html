@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>教师工作台 · OpenGrade</title>
+<style>
+  :root { --ink:#1c2430; --line:#dde3ea; --brand:#0b6e4f; --warn:#b45309; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; color:var(--ink); background:#f5f7fa; }
+  header { display:flex; align-items:center; gap:14px; padding:12px 24px; background:#fff; border-bottom:1px solid var(--line); }
+  header h1 { font-size:17px; margin:0; }
+  header .u { font-size:13px; color:#66707d; }
+  nav.tabs { display:flex; gap:4px; padding:0 24px; background:#fff; border-bottom:1px solid var(--line); }
+  nav.tabs button { border:0; background:none; padding:11px 16px; font-size:14px; cursor:pointer; color:#66707d; border-bottom:2px solid transparent; }
+  nav.tabs button.active { color:var(--brand); border-bottom-color:var(--brand); font-weight:600; }
+  main { max-width:1150px; margin:0 auto; padding:20px 24px; }
+  .panel { background:#fff; border:1px solid var(--line); border-radius:10px; padding:18px 20px; margin-bottom:18px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td, th { border-bottom:1px solid var(--line); padding:7px 8px; text-align:left; }
+  a { color:var(--brand); text-decoration:none; }
+  a.danger { color:#c2410c; }
+  select, input { padding:7px 9px; border:1px solid var(--line); border-radius:6px; font-size:13px; }
+  button.primary { padding:9px 14px; border:0; border-radius:8px; background:var(--brand); color:#fff; font-size:13px; cursor:pointer; }
+  .hint { font-size:12px; color:#8a94a3; }
+  .stat { display:inline-block; margin-right:28px; }
+  .stat b { font-size:22px; display:block; }
+  .bar { height:8px; background:#eef2f6; border-radius:4px; overflow:hidden; width:130px; display:inline-block; vertical-align:middle; }
+  .bar > div { height:100%; background:var(--brand); }
+  .bad > div { background:#c2410c; }
+</style>
+</head>
+<body>
+<header>
+  <h1>教师工作台</h1>
+  <span class="u" id="ogUser"></span>
+  <span style="flex:1"></span>
+  <a href="/">设计器</a> · <a href="/admin.html" id="adminLink" hidden>用户管理</a>
+</header>
+<nav class="tabs" id="tabs"></nav>
+<main>
+  <div id="tab-exams"></div>
+  <div id="tab-tasks" hidden></div>
+  <div id="tab-reports" hidden></div>
+  <div id="tab-me" hidden></div>
+</main>
+<script src="/common.js"></script>
+<script>
+let exams = [];
+
+async function main() {
+  if (!await OG.init()) return;
+  if (OG.is("admin")) document.getElementById("adminLink").hidden = false;
+  const tabs = [["exams", "考试"], ["reports", "班级报告"], ["me", "账号设置"]];
+  if (OG.is("admin", "leader")) tabs.splice(1, 0, ["tasks", "任务分配"]);
+  document.getElementById("tabs").innerHTML = tabs.map(([id, name], i) =>
+    `<button class="${i === 0 ? 'active' : ''}" data-t="${id}" onclick="showTab('${id}')">${name}</button>`).join("");
+  showTab("exams");
+}
+
+function showTab(id) {
+  document.querySelectorAll("nav.tabs button").forEach(b => b.classList.toggle("active", b.dataset.t === id));
+  ["exams", "tasks", "reports", "me"].forEach(t => document.getElementById("tab-" + t).hidden = t !== id);
+  if (id === "exams") loadExams();
+  if (id === "tasks") loadTasks();
+  if (id === "reports") loadReports();
+  if (id === "me") renderMe();
+}
+
+/* —— 考试列表 —— */
+async function loadExams() {
+  exams = await OG.jget("/api/v1/exams");
+  const box = document.getElementById("tab-exams");
+  let html = `<div class="panel"><table><tr><th>考试</th><th>时间</th><th>建卷人</th><th>学科</th><th>卷数</th><th>题型</th><th>操作</th></tr>`;
+  for (const e of exams) {
+    html += `<tr><td>${e.id}</td><td>${e.createdAt}</td><td>${e.createdBy || "-"}</td>
+      <td>${e.subject || "-"}</td><td>${e.students}</td><td>客观 ${e.objective} + 主观 ${e.subjective}</td>
+      <td style="display:flex;gap:8px;flex-wrap:wrap">
+        <a href="/grader.html?exam=${e.id}">阅卷</a>
+        <a href="/api/v1/exams/${e.id}/export.xlsx">成绩册</a>
+        <a href="/api/v1/exams/${e.id}/review.pptx">讲评课件</a>
+        <a href="/api/v1/exams/${e.id}/export.zip">数据包</a>
+        ${OG.is("admin", "leader") ? `<a href="#" class="danger" onclick="delExam('${e.id}');return false">删除</a>` : ""}
+      </td></tr>`;
+  }
+  html += "</table>";
+  if (!exams.length) html += `<p class="hint">暂无考试:先到「设计器」出卡,再在建考流程上传扫描件</p>`;
+  box.innerHTML = html + "</div>";
+}
+async function delExam(id) {
+  if (!confirm(`删除考试 ${id} 及全部数据?不可恢复。`)) return;
+  await OG.jpost(`/api/v1/exams/${id}`, {}, "DELETE");
+  loadExams();
+}
+
+/* —— 阅卷任务分配(管理员/年级组长)—— */
+async function loadTasks() {
+  exams = await OG.jget("/api/v1/exams");
+  const box = document.getElementById("tab-tasks");
+  if (!exams.length) { box.innerHTML = `<div class="panel hint">暂无考试</div>`; return; }
+  box.innerHTML = `<div class="panel">
+    选择考试:<select id="taskExam" onchange="renderTask()"></select>
+    <div id="taskList" style="margin-top:14px"></div></div>`;
+  const sel = document.getElementById("taskExam");
+  sel.innerHTML = exams.map(e => `<option value="${e.id}">${e.id}(${e.createdAt})</option>`).join("");
+  renderTask();
+}
+async function renderTask() {
+  const id = document.getElementById("taskExam").value;
+  const d = await OG.jget(`/api/v1/exams/${id}`);
+  const staff = d.staff.filter(s => s.role !== "admin" || true);
+  let html = `<table><tr><th>主观题</th><th>满分</th><th>已阅/总数</th><th>阅卷人</th></tr>`;
+  for (const p of d.progress) {
+    html += `<tr><td>第 ${d.objective.length + p.question} 题(${p.kind === "fillblank" ? "填空" : "解答"})</td>
+      <td>${p.max}</td><td>${p.graded}/${p.total}</td>
+      <td><select onchange="setTask(${p.question}, this.value)">
+        <option value="">(未分配)</option>
+        ${staff.map(s => `<option value="${s.username}" ${d.tasks && d.tasks["q" + p.question] === s.username ? "selected" : ""}>${s.displayName || s.username}</option>`).join("")}
+      </select></td></tr>`;
+  }
+  document.getElementById("taskList").innerHTML = html + "</table>";
+}
+async function setTask(q, teacher) {
+  await OG.jpost(`/api/v1/exams/${document.getElementById("taskExam").value}/tasks`, { question: q, teacher });
+}
+
+/* —— 班级报告 —— */
+async function loadReports() {
+  exams = await OG.jget("/api/v1/exams");
+  const box = document.getElementById("tab-reports");
+  if (!exams.length) { box.innerHTML = `<div class="panel hint">暂无考试</div>`; return; }
+  box.innerHTML = `<div class="panel">
+    选择考试:<select id="repExam" onchange="renderReport()"></select>
+    <div id="repBody" style="margin-top:14px"></div></div>`;
+  const sel = document.getElementById("repExam");
+  sel.innerHTML = exams.map(e => `<option value="${e.id}">${e.id}(${e.createdAt})</option>`).join("");
+  renderReport();
+}
+async function renderReport() {
+  const id = document.getElementById("repExam").value;
+  const rep = await OG.jget(`/api/v1/exams/${id}/report`);
+  let html = `<div style="margin-bottom:12px">
+    <span class="stat"><b>${rep.count}</b>卷数</span>
+    <span class="stat"><b>${rep.mean.toFixed(1)}</b>均分/${rep.total}</span>
+    ${rep.byClass.map(c => `<span class="stat"><b>${c.mean.toFixed(1)}</b>${c.class}(${c.count}人)</span>`).join("")}
+  </div><table><tr><th>卷号</th><th>考号</th><th>客观</th><th>主观</th><th>总分</th><th>待复核</th></tr>`;
+  for (const s of rep.students) {
+    html += `<tr><td>${s.index}</td><td>${s.regNumber || "?"}</td><td>${s.objective}</td><td>${s.subjective}</td>
+      <td><b>${s.score}</b>/${rep.total}</td><td>${s.flagged ? "⚑" : ""}</td></tr>`;
+  }
+  html += `</table><p class="hint">逐题得分率见成绩册 xlsx 细目表;讲评课件自动聚合低分率题。</p>`;
+  document.getElementById("repBody").innerHTML = html;
+}
+
+/* —— 账号设置 —— */
+function renderMe() {
+  document.getElementById("tab-me").innerHTML = `<div class="panel" style="max-width:420px">
+    <p>当前账号:<b>${OG.me.displayName}</b>(${OG.roleName(OG.me.role)}) · ${OG.me.username}</p>
+    <label>原密码<input id="oldPwd" type="password"></label>
+    <label>新密码(至少 5 位)<input id="newPwd" type="password"></label>
+    <button class="primary" onclick="changePwd()">修改密码</button>
+    <span class="hint" id="pwdMsg"></span></div>`;
+}
+async function changePwd() {
+  try {
+    await OG.jpost("/api/v1/auth/password", { oldPassword: oldPwd.value, newPassword: newPwd.value });
+    document.getElementById("pwdMsg").textContent = "已修改";
+  } catch (e) { document.getElementById("pwdMsg").textContent = e.message; }
+}
+
+main();
+</script>
+</body>
+</html>

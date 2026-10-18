@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>我的成绩 · OpenGrade</title>
+<style>
+  :root { --ink:#1c2430; --line:#dde3ea; --brand:#0b6e4f; --bad:#c2410c; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; color:var(--ink); background:#f5f7fa; }
+  header { display:flex; align-items:center; gap:14px; padding:12px 24px; background:#fff; border-bottom:1px solid var(--line); }
+  header h1 { font-size:17px; margin:0; }
+  header .u { font-size:13px; color:#66707d; }
+  main { max-width:1000px; margin:0 auto; padding:20px 24px; }
+  .panel { background:#fff; border:1px solid var(--line); border-radius:10px; padding:18px 20px; margin-bottom:16px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td, th { border-bottom:1px solid var(--line); padding:7px 8px; text-align:left; }
+  a { color:var(--brand); text-decoration:none; }
+  .scores { display:flex; gap:32px; margin:6px 0 14px; }
+  .scores div b { font-size:30px; display:block; }
+  .scores div span { font-size:12px; color:#66707d; }
+  .wrong { background:#fff2f0; }
+  .right { color:var(--brand); }
+  .hint { font-size:12px; color:#8a94a3; }
+  .free { color:var(--brand); font-size:12px; }
+  img.slicepreview { max-width:100%; border:1px solid var(--line); border-radius:6px; margin-top:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>我的成绩</h1>
+  <span class="u" id="ogUser"></span>
+</header>
+<main id="app"></main>
+<script src="/common.js"></script>
+<script>
+async function main() {
+  if (!await OG.init()) return;
+  const list = await OG.jget("/api/v1/student/exams");
+  let html = `<div class="panel"><p class="free">基础查分与答卷回溯永久免费 —— 成绩属于你,不属于任何厂商。</p>
+  <table><tr><th>考试</th><th>时间</th><th>我的得分</th><th>本班均分</th><th></th></tr>`;
+  for (const e of list) {
+    html += `<tr><td>${e.id}</td><td>${e.createdAt}</td>
+      <td>${e.found ? `<b>${e.score}</b> / ${e.total}` : `<span class="hint">未找到关联答卷</span>`}</td>
+      <td>${e.classMean ? e.classMean.toFixed(1) : "-"}</td>
+      <td>${e.found ? `<a href="#" onclick="showExam('${e.id}');return false">成绩单 / 错题本 / 答卷</a>` : ""}</td></tr>`;
+  }
+  html += "</table></div><div id='detail'></div>";
+  document.getElementById("app").innerHTML = html;
+}
+
+async function showExam(id) {
+  const d = await OG.jget(`/api/v1/student/exams/${id}`);
+  const kindName = k => ({ choice: "单选", judge: "判断", multiple: "多选", fillblank: "填空", subjective: "解答" }[k] || k);
+  let html = `<div class="panel">
+    <div class="scores">
+      <div><b>${d.score}</b><span>总分 / ${d.total}</span></div>
+      <div><b>${d.objective}</b><span>客观题</span></div>
+      <div><b>${d.subjective}</b><span>主观题</span></div>
+      <div><b>${d.wrongQuestions.length}</b><span>待弄懂的错题</span></div>
+    </div>
+    ${d.byClass.map(c => `<span class="hint">${c.class}:均分 ${c.mean.toFixed(1)}(${c.count}人)&nbsp;&nbsp;</span>`).join("")}
+    ${d.pageURL ? `<div style="margin-top:10px"><a href="${d.pageURL}" target="_blank">查看我的整卷(答卷回溯)→</a></div>` : ""}
+  </div>
+  <div class="panel"><b>逐题明细</b>(标红为错题/丢分题)
+    <table><tr><th>题号</th><th>题型</th><th>满分</th><th>我的作答/得分</th><th>参考答案</th></tr>`;
+  for (const q of d.questions) {
+    const mine = q.myAnswer !== undefined && q.myAnswer !== ""
+      ? q.myAnswer + (q.right ? "" : "(错)")
+      : (q.myScore !== undefined ? `${q.myScore} 分` : "-");
+    html += `<tr class="${q.wrong ? 'wrong' : ''}"><td>${q.index}</td><td>${kindName(q.kind)}</td><td>${q.max}</td>
+      <td>${mine}</td><td class="${q.right ? 'right' : ''}">${q.correct || "-"}</td></tr>`;
+  }
+  html += `</table></div>`;
+  if ((d.slices || []).length) {
+    html += `<div class="panel"><b>我的主观题作答</b>`;
+    for (const s of d.slices) {
+      html += `<p class="hint" style="margin:10px 0 2px">第 ${s.question} 题</p><img class="slicepreview" loading="lazy" src="${s.url}">`;
+    }
+    html += `</div>`;
+  }
+  document.getElementById("detail").innerHTML = html;
+  document.getElementById("detail").scrollIntoView({ behavior: "smooth" });
+}
+main();
+</script>
+</body>
+</html>

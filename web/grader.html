@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenGrade · Grader Studio 阅卷工作台</title>
+<style>
+  :root { --ink:#1c2430; --line:#dde3ea; --brand:#0b6e4f; --warn:#b45309; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; color:var(--ink); background:#f5f7fa; height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:16px; padding:10px 20px; background:#fff; border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; }
+  header .meta { font-size:12px; color:#66707d; }
+  main { flex:1; display:flex; min-height:0; }
+  /* 左:切片画布 */
+  .stage { flex:1; display:grid; place-items:center; background:#3a4250; position:relative; min-width:0; overflow:auto; }
+  .wrap { position:relative; display:inline-block; }
+  .stage img { max-width:92vw; max-height:86vh; box-shadow:0 8px 32px rgba(0,0,0,.5); background:#fff; display:block; }
+  .stage.zoom img { max-width:none; max-height:none; width:170vh; }
+  .stage canvas { position:absolute; left:0; top:0; cursor:crosshair; }
+  .overlay { position:absolute; font-size:120px; font-weight:700; opacity:.85; pointer-events:none; }
+  .overlay.check { color:#00c853; }
+  .overlay.cross { color:#ff1744; }
+  /* 右:操作面板 */
+  .panel { width:330px; background:#fff; border-left:1px solid var(--line); display:flex; flex-direction:column; overflow:auto; }
+  .panel .row { padding:12px 16px; border-bottom:1px solid var(--line); }
+  .panel select, .panel input { width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font-size:14px; }
+  .scorebtns { display:grid; grid-template-columns:repeat(6,1fr); gap:6px; }
+  .scorebtns button, .markbtns button, .tools button { padding:9px 0; border:1px solid var(--line); border-radius:8px; background:#f8fafc; font-size:14px; cursor:pointer; }
+  .scorebtns button.active { background:var(--brand); color:#fff; border-color:var(--brand); }
+  .markbtns { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:8px; }
+  .markbtns button.active { background:#fff3cd; border-color:var(--warn); }
+  .tools { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-top:8px; }
+  .tools button.active { background:#e0f2e9; border-color:var(--brand); }
+  .tools button.inkRed.active { background:#fde8e8; border-color:#c0392b; }
+  .status { font-size:13px; color:#4b5563; line-height:1.7; }
+  .progress { height:8px; background:#eef2f6; border-radius:4px; overflow:hidden; }
+  .progress > div { height:100%; background:var(--brand); transition:width .2s; }
+  kbd { background:#eef2f6; border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; padding:1px 5px; font-size:11px; }
+  .hint { font-size:12px; color:#8a94a3; line-height:2; }
+  .nav { display:flex; gap:8px; }
+  .nav button { flex:1; padding:10px; border:0; border-radius:8px; background:var(--brand); color:#fff; font-size:14px; cursor:pointer; }
+  .nav button.ghost { background:#eef2f6; color:var(--ink); }
+  #assignBox { margin-top:8px; padding:8px; background:#fff7ed; border:1px solid #fdba74; border-radius:8px; font-size:13px; }
+  #assignBox .chip { display:inline-block; margin:3px 4px 0 0; padding:4px 10px; background:#fff; border:1px solid var(--warn); border-radius:14px; cursor:pointer; }
+  #assignBox input { margin-top:6px; }
+  #report { max-height:38vh; overflow:auto; font-size:12px; }
+  #report table { width:100%; border-collapse:collapse; }
+  #report td, #report th { border-bottom:1px solid var(--line); padding:4px 6px; text-align:left; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Grader Studio <span class="meta" id="examMeta"></span></h1>
+  <span style="flex:1"></span>
+  <span class="meta"><a href="/">设计器</a> · <a href="#" id="reportLink">统分报告</a></span>
+</header>
+<main>
+  <section class="stage" id="stage">
+    <div class="wrap" id="wrap">
+      <img id="sliceImg" alt="主观题切片">
+      <canvas id="inkCanvas"></canvas>
+    </div>
+    <div class="overlay" id="markOverlay"></div>
+  </section>
+  <aside class="panel">
+    <div class="row">
+      <select id="questionSel"></select>
+      <div class="progress" style="margin-top:10px"><div id="progressBar" style="width:0"></div></div>
+      <div class="status" id="progressText"></div>
+    </div>
+    <div class="row">
+      <div class="status" id="studentInfo"></div>
+      <div id="assignBox" hidden></div>
+      <div class="scorebtns" id="scoreBtns"></div>
+      <div class="markbtns">
+        <button data-mark="check" title="正确">✓ (V)</button>
+        <button data-mark="cross" title="错误">✗ (B)</button>
+        <button data-mark="flag" title="待复核">⚑ (X)</button>
+      </div>
+      <div class="tools">
+        <button id="penBtn" title="手写批注笔(画笔开/关)">✎ 笔</button>
+        <button id="clearBtn" title="清除本卷批注">🧹 清</button>
+        <select id="enhance" title="图像增强">
+          <option value="">原图</option>
+          <option value="contrast(1.35)">增强</option>
+          <option value="grayscale(1) contrast(1.6) brightness(1.05)">灰度增强</option>
+          <option value="invert(1)">反色</option>
+        </select>
+        <button id="zoomBtn" title="放大查看笔迹细节">🔍 放大</button>
+      </div>
+    </div>
+    <div class="row nav">
+      <button class="ghost" id="prevBtn">← 上一卷</button>
+      <button id="nextBtn">下一卷 →</button>
+    </div>
+    <div class="row status" id="questionStatus"></div>
+    <div class="row hint">
+      <kbd>0</kbd>~<kbd>9</kbd> 打分 · <kbd>Space</kbd> 满分 · <kbd>Z</kbd> 零分<br>
+      <kbd>V</kbd> 对 · <kbd>B</kbd> 错 · <kbd>X</kbd> 待复核 · <kbd>P</kbd> 画笔<br>
+      <kbd>Enter</kbd>/<kbd>→</kbd> 下一卷 · <kbd>←</kbd> 上一卷
+    </div>
+    <div class="row" id="report" hidden></div>
+  </aside>
+</main>
+<script src="/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const examId = new URLSearchParams(location.search).get("exam");
+let meta = null, slices = [], cur = 0, qIndex = 1, qMax = 10;
+let penOn = false, curStroke = null;
+
+async function jget(url) { const r = await fetch(url); if (!r.ok) throw new Error((await r.json()).error); return r.json(); }
+async function jpost(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error((await r.json()).error);
+  return r.json();
+}
+
+async function init() {
+  if (!await OG.init()) return;
+  if (!examId) { document.body.innerHTML = "<p style='padding:40px'>缺少 ?exam= 参数。<a href='/'>返回设计器</a></p>"; return; }
+  meta = await jget(`/api/v1/exams/${examId}`);
+  $("examMeta").textContent = `考试 ${examId} · ${meta.students} 份卷 · 客观 ${meta.objective.length} 题`;
+  const sel = $("questionSel");
+  sel.innerHTML = meta.subjective.map((s, i) => {
+    const t = meta.tasks && meta.tasks["q" + (i + 1)];
+    return `<option value="${i + 1}">第 ${meta.objective.length + i + 1} 题(${s.kind === "fillblank" ? "填空" : "解答"},满分 ${s.score}${t ? ",阅卷人 " + t : ""})</option>`;
+  }).join("");
+  sel.onchange = () => loadQuestion(+sel.value);
+  if (meta.subjective.length) loadQuestion(1);
+  else document.body.innerHTML = "<p style='padding:40px'>该考试没有主观题</p>";
+  $("reportLink").onclick = async e => { e.preventDefault(); showReport(); };
+  $("penBtn").onclick = () => { penOn = !penOn; $("penBtn").classList.toggle("active", penOn); };
+  $("clearBtn").onclick = async () => { slices[cur].ink = []; syncCanvas(); await saveGrade(); };
+  $("enhance").onchange = e => $("sliceImg").style.filter = e.target.value;
+  $("zoomBtn").onclick = () => { $("stage").classList.toggle("zoom"); $("zoomBtn").classList.toggle("active"); syncCanvas(); };
+  window.addEventListener("resize", syncCanvas);
+}
+
+async function loadQuestion(q) {
+  qIndex = q;
+  slices = await jget(`/api/v1/exams/${examId}/slices?q=${q}&grading=1`); // 阅卷不受班级过滤(跨班职责)
+  const spec = meta.subjective[q - 1];
+  qMax = spec.score;
+  buildScoreBtns();
+  cur = 0;
+  preload(Math.min(8, slices.length));
+  render();
+}
+
+function buildScoreBtns() {
+  const box = $("scoreBtns");
+  box.innerHTML = "";
+  const n = Math.min(10, Math.round(qMax));
+  for (let s = 0; s <= n; s++) {
+    const b = document.createElement("button");
+    b.textContent = s;
+    b.onclick = () => setScore(s);
+    box.appendChild(b);
+  }
+}
+
+function preload(count) {
+  for (let i = cur; i < Math.min(cur + count, slices.length); i++) {
+    const im = new Image(); im.src = slices[i].url;
+  }
+}
+
+function render() {
+  if (!slices.length) return;
+  const s = slices[cur];
+  $("sliceImg").src = s.url;
+  $("sliceImg").onload = syncCanvas;
+  $("studentInfo").innerHTML =
+    `学生 ${s.student}/${slices.length} · 考号 <b>${s.reg || "?"}</b>${s.regValid ? "" : ' <span style="color:#c0392b">⚠ 无效,请指派</span>'} · 第 ${meta.objective.length + qIndex} 题(满分 ${qMax})`;
+  $("markOverlay").className = "overlay " + (s.mark || "");
+  $("markOverlay").textContent = s.mark === "check" ? "✓" : s.mark === "cross" ? "✗" : s.mark === "flag" ? "⚑" : "";
+  [...$("scoreBtns").children].forEach((b, i) => b.classList.toggle("active", s.graded && Math.abs(s.score - i) < 0.01));
+  document.querySelectorAll(".markbtns button").forEach(b => b.classList.toggle("active", s.mark === b.dataset.mark));
+  const graded = slices.filter(x => x.graded).length;
+  $("progressBar").style.width = (100 * graded / slices.length) + "%";
+  $("progressText").textContent = `本题已阅 ${graded}/${slices.length}`;
+  $("questionStatus").textContent = graded === slices.length ? "本题全部阅完,可切换下一题" : `还有 ${slices.length - graded} 卷未阅`;
+  $("assignBox").hidden = s.regValid;
+  if (!s.regValid) loadAssign(s.student);
+  syncCanvas();
+  preload(8);
+}
+
+/* —— 异常卷指派 —— */
+async function loadAssign(student) {
+  const box = $("assignBox");
+  box.innerHTML = "推荐候选加载中…";
+  try {
+    const sug = await jget(`/api/v1/exams/${examId}/suggest/${student}`);
+    let html = "考号无效。推荐:";
+    for (const c of (sug.suggestions || [])) {
+      html += `<span class="chip" onclick="assignReg('${c.reg}')">${c.reg} ${c.name}</span>`;
+    }
+    if (!(sug.suggestions || []).length) html += " 无(可搜索名册)";
+    html += `<input placeholder="输入姓名/考号搜索名册后回车" id="rosterSearch">`;
+    box.innerHTML = html;
+    $("rosterSearch").onkeydown = async e => {
+      if (e.key !== "Enter") return;
+      const list = await jget(`/api/v1/exams/${examId}/roster?q=${encodeURIComponent(e.target.value)}`);
+      box.querySelectorAll(".chip").forEach(x => x.remove());
+      for (const c of list) {
+        const sp = document.createElement("span");
+        sp.className = "chip";
+        sp.textContent = `${c.reg} ${c.name}`;
+        sp.onclick = () => assignReg(c.reg);
+        box.insertBefore(sp, $("rosterSearch"));
+      }
+    };
+  } catch (err) { box.textContent = "推荐加载失败:" + err.message; }
+}
+async function assignReg(reg) {
+  const s = slices[cur];
+  await jpost("/api/v1/assign", { examId, student: s.student, reg });
+  s.reg = reg; s.regValid = true;
+  render();
+}
+
+/* —— 画布同步与手写批注 —— */
+function syncCanvas() {
+  const img = $("sliceImg"), cv = $("inkCanvas");
+  if (!img.complete || !img.naturalWidth) return;
+  cv.width = img.clientWidth; cv.height = img.clientHeight;
+  redrawInk();
+}
+function redrawInk() {
+  const cv = $("inkCanvas"), ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.lineWidth = 3; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (const st of (slices[cur]?.ink || [])) drawStroke(ctx, st);
+  if (curStroke) drawStroke(ctx, curStroke);
+}
+function drawStroke(ctx, st) {
+  ctx.strokeStyle = st.color === "green" ? "#00a152" : "#e53935";
+  ctx.beginPath();
+  for (let i = 0; i + 1 < st.pts.length; i += 2) {
+    const x = st.pts[i] * cv.width, y = st.pts[i + 1] * cv.height;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+const cv = document.getElementById("inkCanvas");
+cv.addEventListener("pointerdown", e => {
+  if (!penOn || !slices.length) return;
+  const r = cv.getBoundingClientRect();
+  curStroke = { color: "red", pts: [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height] };
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener("pointermove", e => {
+  if (!curStroke) return;
+  const r = cv.getBoundingClientRect();
+  curStroke.pts.push((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+  redrawInk();
+});
+cv.addEventListener("pointerup", async () => {
+  if (!curStroke) return;
+  slices[cur].ink = [...(slices[cur].ink || []), curStroke];
+  curStroke = null;
+  redrawInk();
+  await saveGrade();
+});
+
+async function setScore(score) {
+  const s = slices[cur];
+  await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score, mark: s.mark || "", graded: true, ink: s.ink || [] });
+  Object.assign(s, { graded: true, score });
+  render();
+}
+async function saveGrade() {
+  const s = slices[cur];
+  await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score: s.score, mark: s.mark || "", graded: s.graded, ink: s.ink || [] });
+}
+async function setMark(mark) {
+  const s = slices[cur];
+  const next = s.mark === mark ? "" : mark;
+  await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score: s.score, mark: next, graded: s.graded, ink: s.ink || [] });
+  s.mark = next;
+  render();
+}
+
+function next() { if (cur < slices.length - 1) { cur++; render(); } }
+function prev() { if (cur > 0) { cur--; render(); } }
+
+async function showReport() {
+  const rep = await jget(`/api/v1/exams/${examId}/report`);
+  const box = $("report");
+  box.hidden = false;
+  let html = "<table><tr><th>卷号</th><th>考号</th><th>客观</th><th>主观</th><th>总分</th><th>复核</th></tr>";
+  for (const s of rep.students) {
+    html += `<tr><td>${s.index}</td><td>${s.regNumber || "?"}</td><td>${s.objective}</td><td>${s.subjective}</td><td><b>${s.score}</b>/${rep.total}</td><td>${s.flagged ? "⚑" : ""}</td></tr>`;
+  }
+  html += `</table>
+  <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+    <a href="/api/v1/exams/${examId}/export.xlsx">成绩册 xlsx</a>
+    <a href="/api/v1/exams/${examId}/export.csv">csv</a>
+    <a href="/api/v1/exams/${examId}/review.pptx">讲评课件 pptx</a>
+    <a href="/api/v1/exams/${examId}/export.zip">全量数据包 zip</a>
+  </div>`;
+  box.innerHTML = html;
+}
+
+$("nextBtn").onclick = next;
+$("prevBtn").onclick = prev;
+document.querySelectorAll(".markbtns button").forEach(b => b.onclick = () => setMark(b.dataset.mark));
+
+window.addEventListener("keydown", e => {
+  if (!$("report").hidden && e.key === "Escape") { $("report").hidden = true; return; }
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (!slices.length) return;
+  const k = e.key;
+  if (k >= "0" && k <= "9" && qMax <= 10) { setScore(+k); e.preventDefault(); }
+  else if (k === " ") { setScore(qMax); e.preventDefault(); }
+  else if (k === "z" || k === "Z") setScore(0);
+  else if (k === "v" || k === "V") setMark("check");
+  else if (k === "b" || k === "B") setMark("cross");
+  else if (k === "x" || k === "X") setMark("flag");
+  else if (k === "p" || k === "P") { penOn = !penOn; $("penBtn").classList.toggle("active", penOn); }
+  else if (k === "Enter" || k === "ArrowRight") { next(); e.preventDefault(); }
+  else if (k === "ArrowLeft") { prev(); e.preventDefault(); }
+});
+
+init();
+</script>
+</body>
+</html>
