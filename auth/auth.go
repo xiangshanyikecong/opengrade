@@ -32,6 +32,7 @@ const (
 	RoleLeader  Role = "leader"
 	RoleTeacher Role = "teacher"
 	RoleStudent Role = "student"
+	RoleParent  Role = "parent" // 家长:仅绑定子女,只读查分
 )
 
 // User 是一个账号。
@@ -45,6 +46,7 @@ type User struct {
 	Class       string   `json:"class,omitempty"`    // 学生所属班级(教师为任教班级)
 	Subjects    []string `json:"subjects,omitempty"` // 教师任教学科(如 数学/语文)
 	Grades      []string `json:"grades,omitempty"`   // 年级组长管辖年级
+	Children    []string `json:"children,omitempty"` // 家长绑定的子女考号(家长角色)
 }
 
 // IsStaff 报告是否为教职员(非学生)。
@@ -237,7 +239,7 @@ func (s *Store) CreateUser(u *User, password string) error {
 		return fmt.Errorf("用户名不能为空")
 	}
 	switch u.Role {
-	case RoleAdmin, RoleLeader, RoleTeacher, RoleStudent:
+	case RoleAdmin, RoleLeader, RoleTeacher, RoleStudent, RoleParent:
 	default:
 		return fmt.Errorf("角色不合法: %q", u.Role)
 	}
@@ -249,6 +251,76 @@ func (s *Store) CreateUser(u *User, password string) error {
 	}
 	s.Users[u.Username] = u
 	return s.saveLocked()
+}
+
+// ImportUpsert 批量导入的写入语义(管理员):
+//   - 账号不存在 → 创建,密码取行内密码(为空时由调用方传默认密码);
+//   - 已存在 → 仅更新行内给出的非空字段(角色/口令仅在显式提供时变更),
+//     避免省略列把既有信息抹掉。
+//
+// 返回是否为新创建。u.Username 为空、角色不合法或口令不足 5 位时返回错误。
+func (s *Store) ImportUpsert(u *User, password string) (created bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if u.Username == "" {
+		return false, fmt.Errorf("用户名不能为空")
+	}
+	existing, ok := s.Users[u.Username]
+	if !ok {
+		switch u.Role {
+		case RoleAdmin, RoleLeader, RoleTeacher, RoleStudent, RoleParent:
+		default:
+			return false, fmt.Errorf("角色不合法: %q", u.Role)
+		}
+		if password == "" {
+			return false, fmt.Errorf("新账号必须提供密码(行内或默认初始密码)")
+		}
+		if err := u.SetPassword(password); err != nil {
+			return false, err
+		}
+		s.Users[u.Username] = u
+		return true, s.saveLocked()
+	}
+	if password != "" {
+		if err := existing.SetPassword(password); err != nil {
+			return false, err
+		}
+	}
+	if u.DisplayName != "" {
+		existing.DisplayName = u.DisplayName
+	}
+	if u.Reg != "" {
+		existing.Reg = u.Reg
+	}
+	if u.Class != "" {
+		existing.Class = u.Class
+	}
+	if len(u.Subjects) > 0 {
+		existing.Subjects = u.Subjects
+	}
+	if len(u.Grades) > 0 {
+		existing.Grades = u.Grades
+	}
+	if len(u.Children) > 0 {
+		existing.Children = u.Children
+	}
+	if u.Role != "" && u.Role != existing.Role {
+		if u.Role == RoleAdmin || existing.Role == RoleAdmin {
+			// 角色升降涉及管理员,复用保留最后一名管理员的保护
+			hasOther := false
+			for name, other := range s.Users {
+				if name != u.Username && other.Role == RoleAdmin {
+					hasOther = true
+					break
+				}
+			}
+			if !hasOther {
+				return false, fmt.Errorf("系统必须保留至少一名管理员")
+			}
+		}
+		existing.Role = u.Role
+	}
+	return false, s.saveLocked()
 }
 
 // UpdateUser 更新显示名/角色/考号/班级/管辖年级(不改口令)。
@@ -266,6 +338,9 @@ func (s *Store) UpdateUser(username string, patch *User) error {
 	}
 	if patch.Grades != nil {
 		u.Grades = patch.Grades
+	}
+	if patch.Children != nil {
+		u.Children = patch.Children
 	}
 	if patch.Role != "" {
 		if patch.Role != u.Role && username == "admin" && u.Role == RoleAdmin {
@@ -333,6 +408,7 @@ type PublicUser struct {
 	Class       string   `json:"class,omitempty"`
 	Subjects    []string `json:"subjects,omitempty"`
 	Grades      []string `json:"grades,omitempty"`
+	Children    []string `json:"children,omitempty"`
 }
 
 // List 返回全部账号视图(按角色与用户名排序)。
@@ -343,7 +419,7 @@ func (s *Store) List() []*PublicUser {
 	for _, u := range s.Users {
 		out = append(out, &PublicUser{
 			Username: u.Username, DisplayName: u.DisplayName, Role: u.Role,
-			Reg: u.Reg, Class: u.Class, Subjects: u.Subjects, Grades: u.Grades,
+			Reg: u.Reg, Class: u.Class, Subjects: u.Subjects, Grades: u.Grades, Children: u.Children,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -363,7 +439,9 @@ func rank(r Role) int {
 		return 1
 	case RoleTeacher:
 		return 2
-	default:
+	case RoleStudent:
 		return 3
+	default:
+		return 4
 	}
 }

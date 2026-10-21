@@ -34,6 +34,15 @@
   .tools button.active { background:#e0f2e9; border-color:var(--brand); }
   .tools button.inkRed.active { background:#fde8e8; border-color:#c0392b; }
   .status { font-size:13px; color:#4b5563; line-height:1.7; }
+  /* 小问拆分(版式 v3):逐问得分行 */
+  .parts { margin-bottom:10px; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .partrow { display:flex; align-items:center; gap:8px; padding:7px 12px; border-bottom:1px solid var(--line); cursor:pointer; font-size:14px; }
+  .partrow:last-of-type { border-bottom:0; }
+  .partrow.sel { background:#e0f2e9; font-weight:600; }
+  .partrow .pl { min-width:34px; }
+  .partrow .pv { min-width:30px; text-align:right; font-variant-numeric:tabular-nums; }
+  .partrow .pm { color:#8a94a3; font-size:12px; }
+  .ptotal { padding:5px 12px; font-size:12px; color:#8a94a3; background:#f8fafc; }
   .progress { height:8px; background:#eef2f6; border-radius:4px; overflow:hidden; }
   .progress > div { height:100%; background:var(--brand); transition:width .2s; }
   kbd { background:#eef2f6; border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; padding:1px 5px; font-size:11px; }
@@ -72,6 +81,7 @@
     <div class="row">
       <div class="status" id="studentInfo"></div>
       <div id="assignBox" hidden></div>
+      <div id="partBox" class="parts" hidden></div>
       <div class="scorebtns" id="scoreBtns"></div>
       <div class="markbtns">
         <button data-mark="check" title="正确">✓ (V)</button>
@@ -109,6 +119,8 @@ const $ = id => document.getElementById(id);
 const examId = new URLSearchParams(location.search).get("exam");
 let meta = null, slices = [], cur = 0, qIndex = 1, qMax = 10;
 let penOn = false, curStroke = null;
+let specParts = []; // 当前题的小问拆分(版式 v3);空 = 整题单分模式
+let partSel = 0;    // 当前打分的小问下标
 
 async function jget(url) { const r = await fetch(url); if (!r.ok) throw new Error((await r.json()).error); return r.json(); }
 async function jpost(url, body) {
@@ -125,7 +137,9 @@ async function init() {
   const sel = $("questionSel");
   sel.innerHTML = meta.subjective.map((s, i) => {
     const t = meta.tasks && meta.tasks["q" + (i + 1)];
-    return `<option value="${i + 1}">第 ${meta.objective.length + i + 1} 题(${s.kind === "fillblank" ? "填空" : "解答"},满分 ${s.score}${t ? ",阅卷人 " + t : ""})</option>`;
+    const parts = (s.parts || []).length ? ":" + s.parts.map(p => p.score).join("+") : "";
+    const elec = s.elective ? ",选做" : "";
+    return `<option value="${i + 1}">第 ${meta.objective.length + i + 1} 题(${s.kind === "fillblank" ? "填空" : "解答"},满分 ${s.score}${parts}${elec}${t ? ",阅卷人 " + t : ""})</option>`;
   }).join("");
   sel.onchange = () => loadQuestion(+sel.value);
   if (meta.subjective.length) loadQuestion(1);
@@ -142,6 +156,8 @@ async function loadQuestion(q) {
   qIndex = q;
   slices = await jget(`/api/v1/exams/${examId}/slices?q=${q}&grading=1`); // 阅卷不受班级过滤(跨班职责)
   const spec = meta.subjective[q - 1];
+  specParts = spec.parts || [];
+  partSel = 0;
   qMax = spec.score;
   buildScoreBtns();
   cur = 0;
@@ -152,13 +168,20 @@ async function loadQuestion(q) {
 function buildScoreBtns() {
   const box = $("scoreBtns");
   box.innerHTML = "";
-  const n = Math.min(10, Math.round(qMax));
+  const cap = curPartMax();
+  const n = Math.min(10, Math.round(cap));
   for (let s = 0; s <= n; s++) {
     const b = document.createElement("button");
     b.textContent = s;
     b.onclick = () => setScore(s);
     box.appendChild(b);
   }
+}
+
+// curPartMax 返回当前打分目标的满分:小问模式取当前小问,整题模式取大题满分。
+function curPartMax() {
+  if (specParts.length) return specParts[Math.min(partSel, specParts.length - 1)].score;
+  return qMax;
 }
 
 function preload(count) {
@@ -170,13 +193,31 @@ function preload(count) {
 function render() {
   if (!slices.length) return;
   const s = slices[cur];
-  $("sliceImg").src = s.url;
+  // 手工补录卷没有切片原图:占位提示,仍可键盘打分
+  $("sliceImg").src = s.missing ? "data:image/svg+xml;utf8," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="320"><rect width="100%" height="100%" fill="#f4f6f8"/><text x="50%" y="48%" font-size="30" fill="#8a94a3" text-anchor="middle" font-family="sans-serif">手工补录卷 · 无切片原图</text><text x="50%" y="62%" font-size="20" fill="#b6bec9" text-anchor="middle" font-family="sans-serif">可直接打分,评分正常计入统计</text></svg>'
+  ) : s.url;
   $("sliceImg").onload = syncCanvas;
-  $("studentInfo").innerHTML =
-    `学生 ${s.student}/${slices.length} · 考号 <b>${s.reg || "?"}</b>${s.regValid ? "" : ' <span style="color:#c0392b">⚠ 无效,请指派</span>'} · 第 ${meta.objective.length + qIndex} 题(满分 ${qMax})`;
   $("markOverlay").className = "overlay " + (s.mark || "");
   $("markOverlay").textContent = s.mark === "check" ? "✓" : s.mark === "cross" ? "✗" : s.mark === "flag" ? "⚑" : "";
-  [...$("scoreBtns").children].forEach((b, i) => b.classList.toggle("active", s.graded && Math.abs(s.score - i) < 0.01));
+  // 选做题(版式 v3):提示该生题号区涂选与判分计入的题
+  let elecNote = "";
+  if (s.elective) {
+    const n = s.elective.marks.length;
+    const chosenTxt = s.elective.chosen
+      ? `判分计入第 ${meta.objective.length + s.elective.chosen} 题`
+      : "该组不计分(未涂且无批阅)";
+    const marksTxt = n === 1
+      ? `已涂 ${s.elective.labels[s.elective.marks[0]]}`
+      : n === 0 ? "题号区未涂" : `题号区多涂(${n} 处)`;
+    elecNote = ` · 选做 ${s.elective.labels.join("/")}:${marksTxt},${chosenTxt}`;
+  }
+  $("studentInfo").innerHTML =
+    `学生 ${s.student}/${slices.length} · 考号 <b>${s.reg || "?"}</b>${s.regValid ? "" : ' <span style="color:#c0392b">⚠ 无效,请指派</span>'} · 第 ${meta.objective.length + qIndex} 题(满分 ${qMax})${elecNote}`;
+  renderParts();
+  const activeScore = specParts.length ? partStateOf(s)[partSel].score : s.score;
+  const showActive = specParts.length || s.graded;
+  [...$("scoreBtns").children].forEach((b, i) => b.classList.toggle("active", showActive && Math.abs(activeScore - i) < 0.01));
   document.querySelectorAll(".markbtns button").forEach(b => b.classList.toggle("active", s.mark === b.dataset.mark));
   const graded = slices.filter(x => x.graded).length;
   $("progressBar").style.width = (100 * graded / slices.length) + "%";
@@ -266,21 +307,65 @@ cv.addEventListener("pointerup", async () => {
   await saveGrade();
 });
 
+/* —— 小问拆分(版式 v3):逐问打分,大题总分由服务端自动求和 —— */
+function partStateOf(s) {
+  if (!s.parts) s.parts = specParts.map(() => ({ part: 0, score: 0, graded: false }));
+  return s.parts;
+}
+function renderParts() {
+  const box = $("partBox"), s = slices[cur];
+  if (!box) return;
+  if (!specParts.length) { box.hidden = true; return; }
+  const st = partStateOf(s);
+  box.hidden = false;
+  box.innerHTML = specParts.map((p, i) =>
+    `<div class="partrow ${i === partSel ? "sel" : ""}" onclick="partSel=${i};buildScoreBtns();renderParts()">
+       <span class="pl">${p.label || "(" + (i + 1) + ")"}</span><span class="pm">满分 ${p.score}</span>
+       <span style="flex:1"></span><span class="pv">${st[i].graded ? st[i].score : "–"}</span>
+     </div>`).join("")
+    + `<div class="ptotal">键盘 0-9 打当前小问分,自动跳下一问;已阅 ${st.filter(x => x.graded).length}/${specParts.length} 问,合计 ${st.filter(x => x.graded).reduce((a, x) => a + x.score, 0)} 分</div>`;
+  buildScoreBtns(); // 当前小问变了,快捷分值按钮随之刷新
+}
+
 async function setScore(score) {
   const s = slices[cur];
+  if (specParts.length) {
+    await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, part: partSel + 1, score, mark: s.mark || "", graded: true, ink: s.ink || [] });
+    const st = partStateOf(s);
+    st[partSel].score = score;
+    st[partSel].graded = true;
+    partSel = Math.min(partSel + 1, specParts.length - 1); // 打完一问自动跳下一问
+    render();
+    return;
+  }
   await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score, mark: s.mark || "", graded: true, ink: s.ink || [] });
   Object.assign(s, { graded: true, score });
   render();
 }
 async function saveGrade() {
   const s = slices[cur];
+  if (specParts.length) { // 笔迹/标注同步写进每个小问(读取端取第 1 问)
+    const st = partStateOf(s);
+    for (let i = 0; i < specParts.length; i++) {
+      await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, part: i + 1, score: st[i].score, mark: s.mark || "", graded: st[i].graded, ink: s.ink || [] });
+    }
+    return;
+  }
   await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score: s.score, mark: s.mark || "", graded: s.graded, ink: s.ink || [] });
 }
 async function setMark(mark) {
   const s = slices[cur];
-  const next = s.mark === mark ? "" : mark;
-  await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score: s.score, mark: next, graded: s.graded, ink: s.ink || [] });
-  s.mark = next;
+  const nextMark = s.mark === mark ? "" : mark;
+  s.mark = nextMark;
+  if (specParts.length) {
+    const st = partStateOf(s);
+    for (let i = 0; i < specParts.length; i++) {
+      await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, part: i + 1, score: st[i].score, mark: nextMark, graded: st[i].graded, ink: s.ink || [] });
+    }
+    render();
+    return;
+  }
+  await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score: s.score, mark: nextMark, graded: s.graded, ink: s.ink || [] });
   render();
 }
 
@@ -314,8 +399,8 @@ window.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   if (!slices.length) return;
   const k = e.key;
-  if (k >= "0" && k <= "9" && qMax <= 10) { setScore(+k); e.preventDefault(); }
-  else if (k === " ") { setScore(qMax); e.preventDefault(); }
+  if (k >= "0" && k <= "9" && curPartMax() <= 10) { setScore(+k); e.preventDefault(); }
+  else if (k === " ") { setScore(curPartMax()); e.preventDefault(); }
   else if (k === "z" || k === "Z") setScore(0);
   else if (k === "v" || k === "V") setMark("check");
   else if (k === "b" || k === "B") setMark("cross");

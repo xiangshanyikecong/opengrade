@@ -10,8 +10,9 @@ import (
 // Filling 描述一张"已涂卡"的答题卡:考号各位数字与各题所涂选项。
 // 用于模拟学生卷;nil 字段表示留空。
 type Filling struct {
-	Reg     []int    // 每位考号数字(0~9),长度 = RegDigits
-	Answers []string // 每题如 "A" / "AB" / "T";"" 表示未涂
+	Reg       []int       // 每位考号数字(0~9),长度 = RegDigits
+	Answers   []string    // 每题如 "A" / "AB" / "T";"" 表示未涂
+	Electives map[int]int // 选做题号区(版式 v3):主观题号(1-based,题号区所在题)→ 涂的第几个选项(0-based);缺省未涂
 }
 
 // RenderPNG 把版式渲染为 300 DPI 灰度位图(可直接打印或送入 OMR)。
@@ -83,9 +84,16 @@ func RenderPNG(s *Sheet, f *Filling) *raster.Canvas {
 		}
 	}
 
-	// 主观题区块:标签行(左对齐,避免长标签溢出左页边距)+ 作答框
+	// 主观题区块:标签行(左对齐,避免长标签溢出左页边距)+ 作答框;拆分小问时画逐问得分框
 	for i, sg := range g.subjectives {
-		label := itoa(len(s.Choice)+i+1) + ". " + subjectiveTagCN(sg.kind, tf != nil) + " (" + scoreText(sg.score) + ")"
+		label := itoa(len(s.Choice)+i+1) + ". " + subjectiveTagCN(sg.kind, tf != nil) + " (" + scoreText(sg.score)
+		if len(sg.parts) > 0 {
+			label += ": " + partsBreakdown(sg.parts)
+		}
+		label += ")"
+		if sg.elective != nil { // 选做题:标签行提示可选题号,右端印题号区
+			label += " 选做 " + strings.Join(sg.elective.labels, "/")
+		}
 		if tf != nil {
 			tf.Draw(c, mmToPx(marginX), mmToPx(sg.qNum.y)-mmToPx(3.5)/2, label, mmToPx(3.5), black)
 		} else {
@@ -94,6 +102,31 @@ func RenderPNG(s *Sheet, f *Filling) *raster.Canvas {
 		}
 		x0, y0 := mmToPx(marginX), mmToPx(sg.boxTop)
 		drawBox(c, x0, y0, mmToPx(PageWMM-2*marginX), mmToPx(sg.boxH), 3)
+		for pi, r := range partScoreBoxes(sg) {
+			bx, by, bw, bh := mmToPx(r.x), mmToPx(r.y), mmToPx(r.w), mmToPx(r.h)
+			drawBox(c, bx, by, bw, bh, 2)
+			scoreLbl := scoreText(sg.parts[pi].Score)
+			if tf != nil {
+				tf.DrawCenter(c, bx+bw/2, by+bh/2-mmToPx(2.8)/2, scoreLbl, mmToPx(2.8), black)
+			} else {
+				c.TextCenter(bx+bw/2, by+bh/2, asciiOrQ(scoreLbl), 3, black)
+			}
+		}
+		if sg.elective != nil { // 题号区:涂点 + 各涂点左侧的卷面题号 + "题号"前缀
+			drawLabel(sg.elective.prefix.x, sg.elective.prefix.y, "题号", 3)
+			stroke := float64(mmToPx(strokeMM))
+			for oi, p := range sg.elective.points {
+				r := mmToPx(electiveRMM)
+				// nil map 取零值 0 恰是第 1 个选项,必须区分"未涂"与"涂第 1 项"
+				filled := f != nil && f.Electives != nil && f.Electives[sg.elective.members[0]] == oi
+				if filled {
+					c.FillCircle(float64(mmToPx(p.x)), float64(mmToPx(p.y)), float64(r)-1, black)
+				} else {
+					c.Ring(float64(mmToPx(p.x)), float64(mmToPx(p.y)), float64(r), float64(r)-stroke, black)
+				}
+				drawLabel(p.x-electiveRMM-2.8, p.y, sg.elective.labels[oi], 3)
+			}
+		}
 	}
 	return c
 }

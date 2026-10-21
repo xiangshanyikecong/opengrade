@@ -116,3 +116,62 @@ func TestReviewPPTXZip(t *testing.T) {
 		}
 	}
 }
+
+// TestScoresXlsxZipKnowledge 验证带知识点时追加第三张表且 XML 合法。
+func TestScoresXlsxZipKnowledge(t *testing.T) {
+	data, err := ScoresXlsxZip(testReport(), []string{"1", "2", "3", "4", "5"},
+		[]score.KnowledgeStat{{Name: "函数", Questions: 2, Rate: 0.75, Max: 40, Earned: 30, Answers: 8}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("不是合法 zip: %v", err)
+	}
+	names := map[string]bool{}
+	for _, f := range zr.File {
+		names[f.Name] = true
+	}
+	if !names["xl/worksheets/sheet3.xml"] {
+		t.Fatal("带知识点时应含 sheet3.xml(知识点表)")
+	}
+	for _, want := range []string{"[Content_Types].xml", "xl/workbook.xml"} {
+		if !names[want] {
+			t.Fatalf("缺少部件 %s", want)
+		}
+	}
+}
+
+// TestImagePDF 验证最小 PDF 输出的结构完整性(头/尾/xref)。
+func TestImagePDF(t *testing.T) {
+	c := card.RenderPNG(mustSheet(t), &card.Filling{Reg: []int{1, 2, 3}})
+	data, err := ImagePDF(c.ToGray(), 210, 297)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	if !strings.HasPrefix(s, "%PDF-1.4") {
+		t.Fatal("缺少 PDF 头")
+	}
+	if !strings.HasSuffix(s, "%%EOF\n") {
+		t.Fatal("缺少 PDF EOF 尾")
+	}
+	if !strings.Contains(s, "/Filter /DCTDecode") || !strings.Contains(s, "/DeviceGray") {
+		t.Fatal("缺少 JPEG 图像 XObject")
+	}
+	// xref 偏移应落在文件内
+	idx := strings.Index(s, "startxref")
+	if idx < 0 {
+		t.Fatal("缺少 startxref")
+	}
+}
+
+func mustSheet(t *testing.T) *card.Sheet {
+	t.Helper()
+	l := card.DefaultLayout()
+	s, err := l.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}

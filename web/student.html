@@ -16,7 +16,7 @@
   table { width:100%; border-collapse:collapse; font-size:13px; }
   td, th { border-bottom:1px solid var(--line); padding:7px 8px; text-align:left; }
   a { color:var(--brand); text-decoration:none; }
-  .scores { display:flex; gap:32px; margin:6px 0 14px; }
+  .scores { display:flex; gap:32px; margin:6px 0 14px; flex-wrap:wrap; }
   .scores div b { font-size:30px; display:block; }
   .scores div span { font-size:12px; color:#66707d; }
   .wrong { background:#fff2f0; }
@@ -24,6 +24,18 @@
   .hint { font-size:12px; color:#8a94a3; }
   .free { color:var(--brand); font-size:12px; }
   img.slicepreview { max-width:100%; border:1px solid var(--line); border-radius:6px; margin-top:6px; }
+  select { padding:7px 9px; border:1px solid var(--line); border-radius:6px; font-size:13px; }
+  /* 打印成绩单 */
+  #printArea { display:none; }
+  @media print {
+    body > header, .panel, .noprint { display:none !important; }
+    #printArea { display:block; padding:0; }
+    body { background:#fff; }
+    .pa-head { text-align:center; margin-bottom:14px; }
+    .pa-head h2 { margin:0 0 4px; font-size:20px; }
+    table { font-size:12px; }
+    td, th { border:1px solid #999; padding:4px 6px; }
+  }
 </style>
 </head>
 <body>
@@ -32,43 +44,131 @@
   <span class="u" id="ogUser"></span>
 </header>
 <main id="app"></main>
+<div id="printArea"></div>
 <script src="/common.js"></script>
 <script>
+let list = [];
+let childOf = null; // 家长当前查看的子女考号
+
 async function main() {
   if (!await OG.init()) return;
-  const list = await OG.jget("/api/v1/student/exams");
-  let html = `<div class="panel"><p class="free">基础查分与答卷回溯永久免费 —— 成绩属于你,不属于任何厂商。</p>
-  <table><tr><th>考试</th><th>时间</th><th>我的得分</th><th>本班均分</th><th></th></tr>`;
+  if (OG.is("parent")) {
+    childOf = (OG.me.children && OG.me.children[0]) || "";
+    if (!childOf) { document.getElementById("app").innerHTML = "<div class='panel'>尚未绑定子女考号,请联系管理员在「用户管理」中绑定。</div>"; return; }
+  }
+  list = await OG.jget("/api/v1/student/exams");
+  renderList();
+}
+
+function qs() { return childOf ? "?child=" + childOf : ""; }
+
+function renderList() {
+  let html = "";
+  if (childOf) {
+    const opts = OG.me.children.map(c => `<option value="${c}" ${c === childOf ? "selected" : ""}>${c}</option>`).join("");
+    html += `<div class="panel noprint">查看子女:<select onchange="childOf=this.value;renderList()">${opts}</select></div>`;
+  }
+  html += `<div class="panel"><p class="free">基础查分与答卷回溯永久免费 —— 成绩属于你,不属于任何厂商。教师确认发布后即可查看。</p>
+  <table><tr><th>考试</th><th>学科</th><th>时间</th><th>我的得分</th><th>排名</th><th>本班均分</th><th></th></tr>`;
+  if (!list.length) html += `<tr><td colspan="7" class="hint">暂无已发布的考试成绩。</td></tr>`;
   for (const e of list) {
-    html += `<tr><td>${e.id}</td><td>${e.createdAt}</td>
-      <td>${e.found ? `<b>${e.score}</b> / ${e.total}` : `<span class="hint">未找到关联答卷</span>`}</td>
+    html += `<tr><td>${e.id}</td><td>${e.subject || "-"}</td><td>${e.createdAt}</td>
+      <td>${e.found ? (e.absent ? `<span class="hint">缺考</span>` : `<b>${e.score}</b> / ${e.total}`) : `<span class="hint">未找到关联答卷</span>`}</td>
+      <td>${e.found && e.rank && !e.absent ? `第 ${e.rank} 名` : "-"}</td>
       <td>${e.classMean ? e.classMean.toFixed(1) : "-"}</td>
       <td>${e.found ? `<a href="#" onclick="showExam('${e.id}');return false">成绩单 / 错题本 / 答卷</a>` : ""}</td></tr>`;
   }
-  html += "</table></div><div id='detail'></div>";
+  html += "</table></div><div id='detail'></div><div id='trendPanel'></div>";
   document.getElementById("app").innerHTML = html;
+  loadTrend();
 }
 
+/* —— 历次成绩趋势(跨考试按考号对齐) —— */
+async function loadTrend() {
+  const box = document.getElementById("trendPanel");
+  if (!box) return;
+  let t;
+  try { t = await OG.jget("/api/v1/student/trends" + qs()); } catch (e) { return; }
+  const pts = t.points || [];
+  if (!pts.length) { box.innerHTML = ""; return; }
+  const groups = {};
+  for (const p of pts) { const k = p.subject || "历次考试"; (groups[k] = groups[k] || []).push(p); }
+  let html = `<div class="panel noprint"><b>历次成绩趋势</b>
+    <span class="hint">按考号跨考试对齐 · 曲线为得分率(不同满分可比)·「进退」= 名次较上一场变化 · 缺考在图中断开</span>`;
+  Object.entries(groups).forEach(([subj, g], gi) => {
+    html += `<p style="margin:14px 0 4px"><b>${subj}</b>(共 ${g.length} 场)
+      <table><tr><th>日期</th><th>得分</th><th>班级均分</th><th>年级排名</th><th>班级排名</th><th>名次进退</th></tr>`;
+    g.forEach((p, i) => {
+      let delta = "—";
+      if (i > 0 && !p.absent && g[i - 1].rank && p.rank) {
+        const d = g[i - 1].rank - p.rank;
+        delta = d === 0 ? "—" : d > 0 ? `<b style="color:var(--brand)">↑${d}</b>` : `<b style="color:var(--bad)">↓${-d}</b>`;
+      }
+      html += `<tr><td>${p.date}</td>
+        <td>${p.absent ? `<span class="hint">缺考</span>` : `<b>${p.score}</b> / ${p.total}`}</td>
+        <td>${(p.classMean || p.mean) ? (p.classMean || p.mean).toFixed(1) : "-"}</td>
+        <td>${p.rank || "-"}</td><td>${p.classRank || "-"}</td><td>${delta}</td></tr>`;
+    });
+    html += `</table><canvas id="trendCv${gi}" width="660" height="200"></canvas>`;
+  });
+  html += `</div>`;
+  box.innerHTML = html;
+  Object.entries(groups).forEach(([subj, g], gi) => {
+    OG.chartLine(document.getElementById("trendCv" + gi), g.map(p => p.date.slice(5)), [
+      { name: "我的得分率%", color: "#0b6e4f", values: g.map(p => p.absent ? null : Math.round(p.rate * 1000) / 10) },
+      { name: "班级/年级均分率%", color: "#9aa7b6", values: g.map(p => { const m = p.classMean || p.mean; return (m && p.total) ? Math.round(m / p.total * 1000) / 10 : null; }) },
+    ], v => v.toFixed(0) + "%");
+  });
+}
+
+let curExam = null;
 async function showExam(id) {
-  const d = await OG.jget(`/api/v1/student/exams/${id}`);
+  const d = await OG.jget(`/api/v1/student/exams/${id}${qs()}`);
+  curExam = d;
+  if (d.absent) { // 缺考:只有登记信息
+    document.getElementById("detail").innerHTML = `<div class="panel">
+      本场考试(${d.subject || "未分学科"} · ${d.createdAt})登记为 <b>缺考</b>,无成绩明细。如有疑问请联系任课老师。</div>`;
+    return;
+  }
   const kindName = k => ({ choice: "单选", judge: "判断", multiple: "多选", fillblank: "填空", subjective: "解答" }[k] || k);
   let html = `<div class="panel">
     <div class="scores">
       <div><b>${d.score}</b><span>总分 / ${d.total}</span></div>
-      <div><b>${d.objective}</b><span>客观题</span></div>
-      <div><b>${d.subjective}</b><span>主观题</span></div>
+      <div><b>${d.rank}</b><span>年级排名(共 ${d.count} 人)</span></div>
+      <div><b>${d.classRank || "-"}</b><span>班级排名</span></div>
+      <div><b>${d.mean.toFixed(1)}</b><span>年级均分</span></div>
       <div><b>${d.wrongQuestions.length}</b><span>待弄懂的错题</span></div>
     </div>
     ${d.byClass.map(c => `<span class="hint">${c.class}:均分 ${c.mean.toFixed(1)}(${c.count}人)&nbsp;&nbsp;</span>`).join("")}
-    ${d.pageURL ? `<div style="margin-top:10px"><a href="${d.pageURL}" target="_blank">查看我的整卷(答卷回溯)→</a></div>` : ""}
-  </div>
-  <div class="panel"><b>逐题明细</b>(标红为错题/丢分题)
-    <table><tr><th>题号</th><th>题型</th><th>满分</th><th>我的作答/得分</th><th>参考答案</th></tr>`;
+    <div style="margin-top:10px;display:flex;gap:16px" class="noprint">
+      <a href="#" onclick="printReport();return false">🖨 打印成绩报告单</a>
+      <a href="#" onclick="downloadPDF('${d.id}');return false">⬇ 下载 PDF 成绩单</a>
+      <a href="#" onclick="makePractice('${d.id}');return false">✎ 错题重练卡</a>
+      ${d.pageURL ? `<a href="${d.pageURL}" target="_blank">查看我的整卷(答卷回溯)→</a>` : ""}
+    </div>
+  </div>`;
+  // 知识点掌握雷达(仅本人)
+  if ((d.knowledge || []).length) {
+    html += `<div class="panel"><b>我的知识点掌握度</b>
+      <span class="hint">掌握度 = 该知识点相关题目的得分率;掌握度低的排前面,可优先补。</span>
+      <canvas id="myKnowChart" width="760" height="${Math.max(100, d.knowledge.length * 30 + 30)}" style="margin-top:10px"></canvas>
+      <table style="margin-top:8px"><tr><th>知识点</th><th>掌握度</th><th>涉及总分</th></tr>
+      ${d.knowledge.map(k => `<tr><td>${k.name}</td><td><span class="bar" style="display:inline-block;width:120px;height:8px;background:#eef2f6;border-radius:4px;vertical-align:middle"><div style="height:100%;border-radius:4px;width:${Math.round(k.rate*100)}%;background:${k.rate<0.5?'#c2410c':k.rate<0.75?'#b45309':'#0b6e4f'}"></div></span> ${(k.rate*100).toFixed(0)}%</td><td>${k.max}</td></tr>`).join("")}
+      </table></div>`;
+  }
+  html += `<div class="panel"><b>逐题明细</b>(标红为错题/丢分题)
+    <table id="qtable"><tr><th>题号</th><th>题型</th><th>满分</th><th>我的作答/得分</th><th>参考答案</th></tr>`;
   for (const q of d.questions) {
+    if (q.notCounted) { // 选做题未被所选:不计分(版式 v3)
+      html += `<tr><td>${q.index}</td><td>${kindName(q.kind)}</td><td>${q.max}</td>
+        <td><span class="hint">选做 ${q.elective || ""} · 未选做,不计分</span></td><td>-</td></tr>`;
+      continue;
+    }
     const mine = q.myAnswer !== undefined && q.myAnswer !== ""
       ? q.myAnswer + (q.right ? "" : "(错)")
       : (q.myScore !== undefined ? `${q.myScore} 分` : "-");
-    html += `<tr class="${q.wrong ? 'wrong' : ''}"><td>${q.index}</td><td>${kindName(q.kind)}</td><td>${q.max}</td>
+    const kindTxt = q.elective ? `${kindName(q.kind)}<span class="hint">·选做${q.elective}</span>` : kindName(q.kind);
+    html += `<tr class="${q.wrong ? 'wrong' : ''}"><td>${q.index}</td><td>${kindTxt}</td><td>${q.max}</td>
       <td>${mine}</td><td class="${q.right ? 'right' : ''}">${q.correct || "-"}</td></tr>`;
   }
   html += `</table></div>`;
@@ -81,7 +181,80 @@ async function showExam(id) {
   }
   document.getElementById("detail").innerHTML = html;
   document.getElementById("detail").scrollIntoView({ behavior: "smooth" });
+  if ((d.knowledge || []).length) drawMyKnowledge(d.knowledge);
 }
+
+function drawMyKnowledge(ks) {
+  const cv = document.getElementById("myKnowChart");
+  if (!cv) return;
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height, padL = 130, padR = 56, rowH = 30;
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = "12px sans-serif";
+  ks.forEach((k, i) => {
+    const y = 14 + i * rowH;
+    ctx.fillStyle = "#1c2430"; ctx.textAlign = "right";
+    ctx.fillText(k.name.length > 12 ? k.name.slice(0, 12) + "…" : k.name, padL - 8, y + 12);
+    const barW = W - padL - padR;
+    ctx.fillStyle = "#eef2f6"; ctx.fillRect(padL, y, barW, 16);
+    ctx.fillStyle = k.rate < 0.5 ? "#c2410c" : k.rate < 0.75 ? "#b45309" : "#0b6e4f";
+    ctx.fillRect(padL, y, barW * Math.max(0, Math.min(1, k.rate)), 16);
+    ctx.fillStyle = "#1c2430"; ctx.textAlign = "left";
+    ctx.fillText((k.rate * 100).toFixed(0) + "%", padL + barW + 8, y + 12);
+  });
+}
+
+// 下载服务端生成的 PDF 成绩单
+function downloadPDF(id) {
+  window.open(`/api/v1/student/exams/${id}/report.pdf${qs()}`, "_blank");
+}
+
+// 错题重练卡:拉取错题重组概要 → 服务端直接出可打印 SVG → 新窗口打开
+// (版式在服务端按本人错题重建,不再借道 staff-only 的 /api/v1/cards)
+async function makePractice(id) {
+  try {
+    const r = await OG.jget(`/api/v1/student/exams/${id}/practice${qs()}`);
+    const svg = await fetch(`/api/v1/student/exams/${id}/practice.svg${qs()}`).then(x => {
+      if (!x.ok) throw new Error("生成练习卡失败(" + x.status + ")");
+      return x.text();
+    });
+    const w = window.open("", "_blank");
+    w.document.write(`<title>错题重练卡 · ${r.questions.length} 题</title>
+      <div style="font-family:sans-serif;padding:12px">
+      <p>重练题号(原卷):${r.questions.join("、")} · 客观 ${r.objective} 题 + 主观 ${r.subjective} 题。
+      打印后可直接作答;保留知识点标签,便于针对性补弱。</p>
+      <button onclick="print()">🖨 打印</button></div>${svg}`);
+    w.document.close();
+  } catch (e) { alert(e.message); }
+}
+
+/* 打印版个人成绩单 */
+function printReport() {
+  const d = curExam;
+  if (!d) return;
+  const kindName = k => ({ choice: "单选", judge: "判断", multiple: "多选", fillblank: "填空", subjective: "解答" }[k] || k);
+  let rows = "";
+  for (const q of d.questions) {
+    if (q.notCounted) { // 选做题未被所选:不计分(版式 v3)
+      rows += `<tr><td>${q.index}</td><td>${kindName(q.kind)}</td><td>${q.max}</td><td>未选做,不计分</td><td>-</td></tr>`;
+      continue;
+    }
+    const mine = q.myAnswer !== undefined && q.myAnswer !== "" ? q.myAnswer : (q.myScore !== undefined ? `${q.myScore} 分` : "-");
+    rows += `<tr><td>${q.index}</td><td>${kindName(q.kind)}</td><td>${q.max}</td><td>${mine}</td><td>${q.correct || "-"}</td></tr>`;
+  }
+  document.getElementById("printArea").innerHTML = `
+    <div class="pa-head"><h2>个人成绩报告单</h2>
+      <p style="margin:0;font-size:12px">OpenGrade 开元智阅 · 考试 ${d.id} · ${d.createdAt}${d.subject ? " · " + d.subject : ""}</p></div>
+    <p style="font-size:13px">考号 <b>${d.reg}</b> · 班级 ${d.class || "-"} ·
+      总分 <b>${d.score} / ${d.total}</b> · 年级排名 ${d.rank}/${d.count} · 班级排名 ${d.classRank || "-"} · 年级均分 ${d.mean.toFixed(1)}</p>
+    <table><tr><th>题号</th><th>题型</th><th>满分</th><th>我的作答/得分</th><th>参考答案</th></tr>${rows}</table>
+    <p style="font-size:11px;color:#666;margin-top:10px">本报告单由学校本机系统生成,成绩数据归学校与学生本人所有。</p>`;
+  window.print();
+}
+
+/* 错题重练卡功能已并入「错题本」:此处仅保留成绩报告单打印 */
+
+window.printReport = printReport;
 main();
 </script>
 </body>

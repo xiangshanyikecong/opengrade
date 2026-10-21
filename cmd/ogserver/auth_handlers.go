@@ -39,7 +39,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request, authStore *auth.Store) 
 	setSessionCookie(w, token, false)
 	redirect := "/"
 	switch u.Role {
-	case auth.RoleStudent:
+	case auth.RoleStudent, auth.RoleParent:
 		redirect = "/student.html"
 	case auth.RoleAdmin:
 		redirect = "/teacher.html"
@@ -64,7 +64,7 @@ func handleLogout(w http.ResponseWriter, r *http.Request, authStore *auth.Store,
 func handleMe(w http.ResponseWriter, r *http.Request, authStore *auth.Store, u *auth.User) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"username": u.Username, "displayName": u.DisplayName, "role": u.Role,
-		"reg": u.Reg, "class": u.Class,
+		"reg": u.Reg, "class": u.Class, "children": u.Children,
 	})
 }
 
@@ -156,13 +156,23 @@ func handleUserResetPassword(w http.ResponseWriter, r *http.Request, authStore *
 }
 
 // handleTaskSet 分配阅卷任务:POST /api/v1/exams/{id}/tasks {question, teacher}
+// 也可按班分配:{class, teacher}(班主任改本班)。
 func handleTaskSet(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	var req struct {
 		Question int    `json:"question"`
 		Teacher  string `json:"teacher"`
+		Class    string `json:"class"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Class != "" {
+		if err := store.SetClassTask(r.PathValue("id"), req.Class, req.Teacher, u.Username); err != nil {
+			httpError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
 	if err := store.SetTask(r.PathValue("id"), req.Question, req.Teacher); err != nil {

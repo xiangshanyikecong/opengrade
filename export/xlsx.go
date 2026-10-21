@@ -7,6 +7,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/opengrade/opengrade/score"
@@ -80,17 +81,38 @@ const sheetFooter = `</sheetData></worksheet>`
 
 // ScoresXlsxZip 生成成绩册 xlsx(OPC zip 字节):含"成绩单"与"细目表"两个工作表。
 // questionLabels 为逐题显示名(如 "1(单选)"),与 rep.PerQuestion 对齐。
-func ScoresXlsxZip(rep *score.Report, questionLabels []string) ([]byte, error) {
+// knowledge 为知识点掌握度(可空);非空时追加第三张"知识点"表。
+func ScoresXlsxZip(rep *score.Report, questionLabels []string, knowledge ...[]score.KnowledgeStat) ([]byte, error) {
+	var kstats []score.KnowledgeStat
+	if len(knowledge) > 0 {
+		kstats = knowledge[0]
+	}
 	sheet1 := buildScoresSheet(rep)
 	sheet2 := buildDetailSheet(rep, questionLabels)
-	parts := [][2]string{
+	sheets := `<sheet name="成绩单" sheetId="1" r:id="rId1"/>
+<sheet name="细目表" sheetId="2" r:id="rId2"/>`
+	rels := `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>`
+	ct := `<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
+	parts := [][2]string{}
+	if len(kstats) > 0 {
+		sheet3 := buildKnowledgeSheet(kstats)
+		sheets += `
+<sheet name="知识点" sheetId="3" r:id="rId3"/>`
+		rels += `
+<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>`
+		ct += `
+<Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
+		parts = append(parts, [2]string{"xl/worksheets/sheet3.xml", sheet3})
+	}
+	parts = append(parts, [][2]string{
 		{"[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
 <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+` + ct + `
 <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 </Types>`},
 		{"_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -100,14 +122,12 @@ func ScoresXlsxZip(rep *score.Report, questionLabels []string) ([]byte, error) {
 		{"xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <sheets>
-<sheet name="成绩单" sheetId="1" r:id="rId1"/>
-<sheet name="细目表" sheetId="2" r:id="rId2"/>
+` + sheets + `
 </sheets></workbook>`},
 		{"xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
-<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+` + rels + `
+<Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
 </Relationships>`},
 		{"xl/styles.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -119,7 +139,7 @@ func ScoresXlsxZip(rep *score.Report, questionLabels []string) ([]byte, error) {
 </styleSheet>`},
 		{"xl/worksheets/sheet1.xml", sheet1},
 		{"xl/worksheets/sheet2.xml", sheet2},
-	}
+	}...)
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	for _, p := range parts {
@@ -133,12 +153,31 @@ func ScoresXlsxZip(rep *score.Report, questionLabels []string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// buildKnowledgeSheet 知识点掌握度表:名称/覆盖题数/掌握度/涉及总分/作答样本。
+func buildKnowledgeSheet(knowledge []score.KnowledgeStat) string {
+	var rows []string
+	rows = append(rows, rowXML(0,
+		cell(0, 0, "知识点"), cell(1, 0, "覆盖题数"), cell(2, 0, "掌握度"),
+		cell(3, 0, "涉及总分"), cell(4, 0, "实际得分"), cell(5, 0, "作答样本")))
+	for i, k := range knowledge {
+		rows = append(rows, rowXML(i+1,
+			cell(0, i+1, k.Name),
+			cell(1, i+1, k.Questions),
+			cell(2, i+1, k.Rate),
+			cell(3, i+1, k.Max),
+			cell(4, i+1, k.Earned),
+			cell(5, i+1, k.Answers)))
+	}
+	return sheetHeader + strings.Join(rows, "") + sheetFooter
+}
+
 func buildScoresSheet(rep *score.Report) string {
 	var rows []string
 	rows = append(rows, rowXML(0,
 		cell(0, 0, "卷号"), cell(1, 0, "考号"), cell(2, 0, "姓名"),
 		cell(3, 0, "考号有效"), cell(4, 0, "客观"), cell(5, 0, "主观"),
-		cell(6, 0, "总分"), cell(7, 0, "满分"), cell(8, 0, "待复核")))
+		cell(6, 0, "总分"), cell(7, 0, "满分"), cell(8, 0, "排名"),
+		cell(9, 0, "待复核"), cell(10, 0, "缺考")))
 	for i, s := range rep.Students {
 		rows = append(rows, rowXML(i+1,
 			cell(0, i+1, s.Index),
@@ -149,7 +188,9 @@ func buildScoresSheet(rep *score.Report) string {
 			cell(5, i+1, s.Subjective),
 			cell(6, i+1, s.Score),
 			cell(7, i+1, s.Total),
-			cell(8, i+1, boolMark(s.Flagged))))
+			cell(8, i+1, s.Rank),
+			cell(9, i+1, boolMark(s.Flagged)),
+			cell(10, i+1, absentMark(s.Absent))))
 	}
 	return sheetHeader + strings.Join(rows, "") + sheetFooter
 }
@@ -161,11 +202,22 @@ func boolMark(b bool) string {
 	return ""
 }
 
+func absentMark(b bool) string {
+	if b {
+		return "缺考"
+	}
+	return ""
+}
+
+// buildDetailSheet 细目表:逐题满分/作答情况 + 难度系数 + 区分度 + 客观题选项人数分布,
+// 拆分小问的题目附逐问子行(题号"17.1"),与网页端学情分析同源,便于线下留存与教研归档。
 func buildDetailSheet(rep *score.Report, labels []string) string {
 	var rows []string
 	rows = append(rows, rowXML(0,
 		cell(0, 0, "题号"), cell(1, 0, "题型"), cell(2, 0, "满分"),
-		cell(3, 0, "答对/已阅"), cell(4, 0, "均分"), cell(5, 0, "得分率")))
+		cell(3, 0, "答对/已阅"), cell(4, 0, "均分"), cell(5, 0, "得分率"),
+		cell(6, 0, "难度系数"), cell(7, 0, "区分度"), cell(8, 0, "选项分布")))
+	rowIdx := 0
 	for i, q := range rep.PerQuestion {
 		label := ""
 		if i < len(labels) {
@@ -176,33 +228,75 @@ func buildDetailSheet(rep *score.Report, labels []string) string {
 		switch q.Kind {
 		case "fillblank", "subjective":
 			mean = trimFloat(q.Mean)
-			correct = fmt.Sprintf("%d/%d", q.Graded, q.Count)
+			if q.Elective != "" { // 选做题:分母为实际选做人数(未被所选的不进统计)
+				correct = fmt.Sprintf("%d/%d(选做)", q.Graded, q.Chosen)
+			} else {
+				correct = fmt.Sprintf("%d/%d", q.Graded, q.Count)
+			}
 		default:
 			correct = fmt.Sprintf("%d/%d", q.Correct, q.Count)
 		}
-		rows = append(rows, rowXML(i+1,
-			cell(0, i+1, q.Index),
-			cell(1, i+1, label),
-			cell(2, i+1, q.Max),
-			cell(3, i+1, correct),
-			cell(4, i+1, mean),
-			cell(5, i+1, q.Rate)))
+		rowIdx++
+		mk := func(col int, v any) string { return cell(col, rowIdx, v) }
+		rows = append(rows, rowXML(rowIdx,
+			mk(0, q.Index),
+			mk(1, label),
+			mk(2, q.Max),
+			mk(3, correct),
+			mk(4, mean),
+			mk(5, q.Rate),
+			mk(6, q.Difficulty),
+			mk(7, q.Discrimination),
+			mk(8, optionsText(q.Options))))
+		for _, p := range q.Parts { // 小问子行:题号 "17.1",带逐问均分与得分率
+			rowIdx++
+			mk := func(col int, v any) string { return cell(col, rowIdx, v) }
+			rows = append(rows, rowXML(rowIdx,
+				mk(0, fmt.Sprintf("%d.%d", q.Index, p.Index)),
+				mk(1, p.Label),
+				mk(2, p.Max),
+				mk(3, fmt.Sprintf("%d/*", p.Graded)),
+				mk(4, trimFloat(p.Mean)),
+				mk(5, p.Rate),
+				mk(6, p.Rate)))
+		}
 	}
 	return sheetHeader + strings.Join(rows, "") + sheetFooter
+}
+
+// optionsText 把选项人数分布渲染为紧凑文本:"A:12 B:3 C:1 D:0 未答:2"。
+func optionsText(opts map[string]int) string {
+	if len(opts) == 0 {
+		return ""
+	}
+	letters := make([]string, 0, len(opts))
+	for k := range opts {
+		letters = append(letters, k)
+	}
+	sort.Strings(letters)
+	parts := make([]string, 0, len(letters))
+	for _, k := range letters {
+		parts = append(parts, fmt.Sprintf("%s:%d", k, opts[k]))
+	}
+	return strings.Join(parts, " ")
 }
 
 // ScoresCSV 输出 UTF-8 BOM 的 CSV(Excel 直接打开不乱码)。
 func ScoresCSV(rep *score.Report) []byte {
 	var b strings.Builder
 	b.WriteString("\xEF\xBB\xBF") // BOM
-	b.WriteString("卷号,考号,考号有效,客观,主观,总分,满分,待复核\r\n")
+	b.WriteString("卷号,考号,考号有效,客观,主观,总分,满分,排名,待复核,缺考\r\n")
 	for _, s := range rep.Students {
 		mark := ""
 		if s.Flagged {
 			mark = "1"
 		}
-		fmt.Fprintf(&b, "%d,%s,%v,%.2f,%.2f,%.2f,%.2f,%s\r\n",
-			s.Index, s.RegNumber, s.RegValid, s.Objective, s.Subjective, s.Score, s.Total, mark)
+		absent := ""
+		if s.Absent {
+			absent = "缺考"
+		}
+		fmt.Fprintf(&b, "%d,%s,%v,%.2f,%.2f,%.2f,%.2f,%d,%s,%s\r\n",
+			s.Index, s.RegNumber, s.RegValid, s.Objective, s.Subjective, s.Score, s.Total, s.Rank, mark, absent)
 	}
 	return []byte(b.String())
 }

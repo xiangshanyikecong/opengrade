@@ -66,16 +66,40 @@ func RenderSVG(s *Sheet, f *Filling) []byte {
 		}
 	}
 
-	// 主观题区块:标签行(左对齐)+ 作答框
+	// 主观题区块:标签行(左对齐)+ 作答框;拆分小问时标签列出小问分值,作答区右上角画逐问得分框;
+	// 选做题(版式 v3)在组内第一道题的标签行右端印题号区涂点
 	for i, sg := range g.subjectives {
 		label := itoa(len(g.choice)+i+1) + ". "
 		if i < len(n.Subjectives) && n.Subjectives[i].Label != "" {
 			label += n.Subjectives[i].Label + " "
 		}
-		label += "(" + kindName(sg.kind) + " " + trimScore(sg.score) + "分)"
+		label += "(" + kindName(sg.kind) + " " + trimScore(sg.score) + "分"
+		if len(sg.parts) > 0 {
+			label += ":" + partsBreakdown(sg.parts)
+		}
+		label += ")"
+		if sg.elective != nil {
+			label += " 选做 " + strings.Join(sg.elective.labels, "/") + "(任选一题,涂所选题号)"
+		}
 		textStart(&b, marginX+1, sg.qNum.y, 3.5, xmlEscape(label))
 		fmt.Fprintf(&b, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" fill=\"none\" stroke=\"black\" stroke-width=\"0.4\"/>\n",
 			marginX, sg.boxTop, PageWMM-2*marginX, sg.boxH)
+		for pi, r := range partScoreBoxes(sg) {
+			fmt.Fprintf(&b, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" fill=\"none\" stroke=\"black\" stroke-width=\"0.3\"/>\n", r.x, r.y, r.w, r.h)
+			text(&b, r.x+r.w/2, r.y+r.h/2, 2.8, xmlEscape(trimScore(sg.parts[pi].Score)+"分"))
+		}
+		if sg.elective != nil {
+			text(&b, sg.elective.prefix.x, sg.elective.prefix.y, 3, "题号")
+			for oi, p := range sg.elective.points {
+				filled := f != nil && f.Electives != nil && f.Electives[sg.elective.members[0]] == oi
+				if filled {
+					fmt.Fprintf(&b, "<circle cx=\"%.2f\" cy=\"%.2f\" r=\"%.2f\" fill=\"black\"/>\n", p.x, p.y, electiveRMM)
+				} else {
+					fmt.Fprintf(&b, "<circle cx=\"%.2f\" cy=\"%.2f\" r=\"%.2f\" fill=\"none\" stroke=\"black\" stroke-width=\"%.2f\"/>\n", p.x, p.y, electiveRMM, strokeMM)
+				}
+				text(&b, p.x-electiveRMM-2.8, p.y, 3, sg.elective.labels[oi])
+			}
+		}
 	}
 
 	b.WriteString("</svg>\n")

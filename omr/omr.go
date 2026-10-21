@@ -40,7 +40,13 @@ type Result struct {
 	RegValid  bool     `json:"regValid"`            // 考号是否每一位都唯一判读成功;无考号区时恒为 true
 	RegMarks  [][]int  `json:"regMarks,omitempty"`  // 考号每位判涂数字明细(漏涂为空、多涂多值),供名册模糊匹配
 	Answers   []string `json:"answers"`             // 每题:"A".."F"/"T"/"F";""=未涂;"AB"=多涂
-	Warnings  []string `json:"warnings,omitempty"`
+	// Electives 是选做题号区的判涂明细(版式 v3):键 = 题号区所在主观题号(1-based),
+	// 值 = 涂点下标(0-based,对应该组按题号升序的第几道题)。唯一涂选才参与判分;
+	// 漏涂/多涂由统分层按批阅结果回退判定。
+	Electives map[int][]int `json:"electives,omitempty"`
+	Warnings  []string      `json:"warnings,omitempty"`
+	Absent    bool          `json:"absent,omitempty"` // 缺考(手工标记或补录时标注):不计入统计、排名与选项分布
+	Manual    bool          `json:"manual,omitempty"` // 手工补录卷(漏扫/答题卡作废后补录,无扫描原图与切片)
 }
 
 // Debug 携带中间产物,供可视化排障(矫正图 / 叠加图 / 原始占比)。
@@ -126,6 +132,7 @@ func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 	}
 
 	if len(sheet.Reg) == 0 {
+		readElectives(bin, sheet, opt, res, dbg)
 		return res, dbg
 	}
 
@@ -161,5 +168,33 @@ func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 		}
 		res.RegNumber = sb.String()
 	}
+	readElectives(bin, sheet, opt, res, dbg)
 	return res, dbg
+}
+
+// readElectives 判读选做题号区(版式 v3):逐涂点按墨迹占比判定,
+// 结果挂到 res.Electives(键 = 题号区所在主观题号)。漏涂/多涂不判失败,
+// 只给提示——统分层会按"组内恰一题已批阅则取该题"回退。
+func readElectives(bin *bitmap, sheet *card.Sheet, opt Options, res *Result, dbg *Debug) {
+	if len(sheet.Electives) == 0 {
+		return
+	}
+	th := opt.MarkThreshold
+	sampleR := int(float64(sheet.RegR) * 0.8) // 与考号涂点同规格,同样只看内部
+	for _, row := range sheet.Electives {
+		marked := []int{}
+		for oi, p := range row.Points {
+			if inkRatio(bin, p.X, p.Y, sampleR) >= th {
+				marked = append(marked, oi)
+			}
+		}
+		if res.Electives == nil {
+			res.Electives = map[int][]int{}
+		}
+		res.Electives[row.Subjective] = marked
+		if len(marked) != 1 {
+			res.Warnings = append(res.Warnings,
+				fmt.Sprintf("第 %s 题选做题号区未唯一涂选(%d 处),判分按批阅结果计入", row.Labels[0], len(marked)))
+		}
+	}
 }

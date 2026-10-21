@@ -35,6 +35,7 @@ type Server struct {
 	Handler http.Handler
 	Auth    *auth.Store
 	Exams   *Store
+	Bank    *BankStore
 }
 
 // newServer 组装账号库、考试存储与全部路由(不含网络监听,便于 httptest 复测)。
@@ -57,6 +58,10 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	store, err := NewStore(dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("初始化数据目录失败: %w", err)
+	}
+	bank, err := LoadBank(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("初始化题库失败: %w", err)
 	}
 
 	mux := http.NewServeMux()
@@ -102,26 +107,55 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	mux.HandleFunc("GET /api/v1/exams/{id}/export.csv", staff(withStore(handleExportCSV)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/export.zip", staff(withStore(handleExportFullZip)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/review.pptx", staff(withStore(handleReviewPPTX)))
+	mux.HandleFunc("GET /api/v1/exams/{id}/analytics", staff(withStore(handleAnalytics)))
+	mux.HandleFunc("GET /api/v1/exams/{id}/knowledge", staff(withStore(handleKnowledgeGet)))
+	mux.HandleFunc("POST /api/v1/exams/{id}/knowledge", staff(withStore(handleKnowledgeSet)))
+	mux.HandleFunc("GET /api/v1/exams/{id}/practice", staff(withStore(handleStaffPractice)))
+	mux.HandleFunc("POST /api/v1/exams/{id}/grade-convert", staff(withStore(handleGradeConvert)))
+	// 纵向学情(跨考试按考号对齐)与扫描/补录补救语义
+	mux.HandleFunc("GET /api/v1/trends", staff(withStore(handleStaffTrends)))
+	mux.HandleFunc("POST /api/v1/exams/{id}/scans", staff(withStore(handleAppendScans)))
+	mux.HandleFunc("POST /api/v1/exams/{id}/manual", staff(withStore(handleManualEntry)))
+	mux.HandleFunc("POST /api/v1/exams/{id}/absent", staff(withStore(handleSetAbsentFlag)))
+
+	// —— 校本题库(学校自录题;建考选题带出题型/答案/知识点) ——
+	withBank := func(h func(http.ResponseWriter, *http.Request, *BankStore, *auth.User)) authedHandler {
+		return func(w http.ResponseWriter, r *http.Request, u *auth.User) { h(w, r, bank, u) }
+	}
+	mux.HandleFunc("GET /api/v1/bank", staff(withBank(handleBankList)))
+	mux.HandleFunc("GET /api/v1/bank/{id}", staff(withBank(handleBankGet)))
+	mux.HandleFunc("POST /api/v1/bank", staff(withBank(handleBankCreate)))
+	mux.HandleFunc("POST /api/v1/bank/{id}", staff(withBank(handleBankUpdate)))
+	mux.HandleFunc("DELETE /api/v1/bank/{id}", staff(withBank(handleBankDelete)))
 
 	// —— 管理员/年级组长 ——
 	manage := guard(authStore, auth.RoleAdmin, auth.RoleLeader)
 	mux.HandleFunc("DELETE /api/v1/exams/{id}", manage(withStore(handleDeleteExam)))
 	mux.HandleFunc("POST /api/v1/exams/{id}/tasks", manage(withStore(handleTaskSet)))
+	mux.HandleFunc("GET /api/v1/exams/{id}/audit", manage(withStore(handleAudit)))
+	// 参考答案修正与成绩发布:管理员/组长/建卷教师(处理器内再校验建卷人)
+	mux.HandleFunc("POST /api/v1/exams/{id}/key", staff(withStore(handleSetKey)))
+	mux.HandleFunc("POST /api/v1/exams/{id}/publish", staff(withStore(handlePublish)))
 
 	// —— 管理员 ——
 	adminOnly := guard(authStore, auth.RoleAdmin)
 	mux.HandleFunc("GET /api/v1/users", adminOnly(withAuth(handleUserList)))
 	mux.HandleFunc("POST /api/v1/users", adminOnly(withAuth(handleUserCreate)))
+	mux.HandleFunc("POST /api/v1/users/import", adminOnly(withAuth(handleUserImport)))
 	mux.HandleFunc("POST /api/v1/users/{username}", adminOnly(withAuth(handleUserUpdate)))
 	mux.HandleFunc("DELETE /api/v1/users/{username}", adminOnly(withAuth(handleUserDelete)))
 	mux.HandleFunc("POST /api/v1/users/{username}/password", adminOnly(withAuth(handleUserResetPassword)))
 
-	// —— 学生端(仅本人) ——
-	studentOnly := guard(authStore, auth.RoleStudent)
+	// —— 学生端(仅本人);家长端(仅绑定子女)复用同一组处理器 ——
+	studentOnly := guard(authStore, auth.RoleStudent, auth.RoleParent)
 	mux.HandleFunc("GET /api/v1/student/exams", studentOnly(withStore(handleStudentExams)))
 	mux.HandleFunc("GET /api/v1/student/exams/{id}", studentOnly(withStore(handleStudentExam)))
+	mux.HandleFunc("GET /api/v1/student/trends", studentOnly(withStore(handleStudentTrends)))
 	mux.HandleFunc("GET /api/v1/student/exams/{id}/slice/{q}", studentOnly(withStore(handleStudentSlice)))
 	mux.HandleFunc("GET /api/v1/student/exams/{id}/page", studentOnly(withStore(handleStudentPage)))
+	mux.HandleFunc("GET /api/v1/student/exams/{id}/practice", studentOnly(withStore(handleStudentPractice)))
+	mux.HandleFunc("GET /api/v1/student/exams/{id}/practice.svg", studentOnly(withStore(handleStudentPracticeSVG)))
+	mux.HandleFunc("GET /api/v1/student/exams/{id}/report.pdf", studentOnly(withStore(handleStudentReportPDF)))
 
 	if _, err := fs.Stat(os.DirFS("web"), "index.html"); err == nil {
 		mux.Handle("GET /", http.FileServerFS(os.DirFS("web")))
@@ -131,7 +165,7 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 		})
 	}
 
-	return &Server{Handler: mux, Auth: authStore, Exams: store}, nil
+	return &Server{Handler: mux, Auth: authStore, Exams: store, Bank: bank}, nil
 }
 
 func main() {
@@ -379,6 +413,8 @@ func handleListExams(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		Students   int    `json:"students"`
 		Objective  int    `json:"objective"`
 		Subjective int    `json:"subjective"`
+		Published  bool   `json:"published"`
+		Mine       bool   `json:"mine"` // 是否为当前账号创建的
 	}
 	var out []summary
 	for _, ex := range store.List() {
@@ -389,6 +425,7 @@ func handleListExams(w http.ResponseWriter, r *http.Request, store *Store, u *au
 			ID: ex.ID, CreatedAt: ex.CreatedAt.Format("2006-01-02 15:04"), CreatedBy: ex.CreatedBy,
 			Subject: ex.Subject, Students: len(ex.Results),
 			Objective: len(ex.Layout.Questions), Subjective: len(ex.Layout.Subjectives),
+			Published: ex.Published, Mine: ex.CreatedBy == u.Username,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -402,11 +439,24 @@ type examDetail struct {
 	Subject    string                `json:"subject,omitempty"`
 	Students   int                   `json:"students"`
 	Objective  []card.QuestionSpec   `json:"objective"`
+	Key        []string              `json:"key"` // 客观题参考答案(供修正)
 	Subjective []card.SubjectiveSpec `json:"subjective"`
 	Progress   []questionProgress    `json:"progress"`
 	Tasks      map[string]string     `json:"tasks,omitempty"`
+	TaskMode   string                `json:"taskMode,omitempty"`   // "" | question | class
+	ClassTasks map[string]string     `json:"classTasks,omitempty"` // 班级 → 教师账号
+	Classes    []string              `json:"classes,omitempty"`    // 名册中出现的班级(按班分配下拉)
 	Threshold  string                `json:"threshold"`
-	Staff      []staffInfo           `json:"staff"` // 可分配的阅卷教师(任务分配下拉)
+	Published  bool                  `json:"published"`
+	CanEdit    bool                  `json:"canEditKey"` // 当前账号是否可修正参考答案
+	Staff      []staffInfo           `json:"staff"`      // 可分配的阅卷教师(任务分配下拉)
+	Absent     []absentInfo          `json:"absent"`     // 缺考名单(卷号+考号)
+	Manual     int                   `json:"manual"`     // 手工补录卷数
+}
+
+type absentInfo struct {
+	Student int    `json:"student"`
+	Reg     string `json:"reg"`
 }
 
 type staffInfo struct {
@@ -421,7 +471,8 @@ type questionProgress struct {
 	Max      float64 `json:"max"`
 	Graded   int     `json:"graded"`
 	Total    int     `json:"total"`
-	Teacher  string  `json:"teacher,omitempty"` // 已分配的阅卷人
+	Teacher  string  `json:"teacher,omitempty"`  // 已分配的阅卷人
+	Elective string  `json:"elective,omitempty"` // 选做组标签(版式 v3);非空即选做题
 }
 
 func handleExamDetail(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User, authStore *auth.Store) {
@@ -433,7 +484,10 @@ func handleExamDetail(w http.ResponseWriter, r *http.Request, store *Store, u *a
 	d := examDetail{
 		ID: ex.ID, CreatedAt: ex.CreatedAt.Format("2006-01-02 15:04"), CreatedBy: ex.CreatedBy,
 		Subject: ex.Subject, Students: len(ex.Results), Objective: ex.Layout.Questions,
-		Subjective: ex.Layout.Subjectives, Tasks: ex.Tasks, Threshold: ex.Threshold,
+		Key: ex.ObjectiveKey, Subjective: ex.Layout.Subjectives, Tasks: ex.Tasks, Threshold: ex.Threshold,
+		TaskMode: ex.TaskMode, ClassTasks: ex.ClassTasks, Classes: examClasses(ex),
+		Published: ex.Published,
+		CanEdit:   u.Role == auth.RoleAdmin || u.Role == auth.RoleLeader || ex.CreatedBy == u.Username,
 	}
 	for _, su := range authStore.List() {
 		if su.Role == auth.RoleTeacher || su.Role == auth.RoleLeader || su.Role == auth.RoleAdmin {
@@ -445,18 +499,45 @@ func handleExamDetail(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		if qi < len(ex.Layout.Subjectives) {
 			p.Kind = ex.Layout.Subjectives[qi].Kind
 			p.Max = ex.Layout.Subjectives[qi].Score
+			p.Elective = ex.Layout.Subjectives[qi].Elective
 		}
 		if ex.Tasks != nil {
 			p.Teacher = ex.Tasks[fmt.Sprintf("q%d", qi+1)]
 		}
 		for si := range ex.Results {
-			if g, ok := ex.Grades[score.GradeKey(si+1, qi+1)]; ok && g.Graded {
+			if subjectiveGraded(ex, si+1, qi+1) {
 				p.Graded++
 			}
 		}
 		d.Progress = append(d.Progress, p)
 	}
+	for si, res := range ex.Results {
+		if res == nil {
+			continue
+		}
+		if res.Manual {
+			d.Manual++
+		}
+		if res.Absent {
+			d.Absent = append(d.Absent, absentInfo{Student: si + 1, Reg: ex.AssignedReg(si + 1)})
+		}
+	}
 	writeJSON(w, http.StatusOK, d)
+}
+
+// partState 是切片列表中一道拆分小问的当前评分状态。
+type partState struct {
+	Part   int     `json:"part"`
+	Score  float64 `json:"score"`
+	Graded bool    `json:"graded"`
+}
+
+// electiveView 是切片列表里某生在某选做组的题号区涂选情况(版式 v3)。
+type electiveView struct {
+	Group  []int    `json:"group"`  // 组内主观题号(1-based,升序)
+	Labels []string `json:"labels"` // 卷面全局题号(如 "23")
+	Marks  []int    `json:"marks"`  // 该生涂点下标(0-based);漏涂为空、多涂多值
+	Chosen int      `json:"chosen"` // 判分计入的主观题号;0 = 该组无一题计入
 }
 
 // handleSlices 列出某道主观题的全部学生切片(含当前评分状态与批注笔迹),按学生号排序。
@@ -471,6 +552,11 @@ func handleSlices(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 		httpError(w, http.StatusBadRequest, fmt.Errorf("q 参数必须是 1~%d 的主观题号", len(ex.Layout.Subjectives)))
 		return
 	}
+	groups := score.ElectiveGroups(ex.Layout.Subjectives)
+	var eg *score.ElectiveGroup
+	if g := score.GroupOf(groups, q); g != nil {
+		eg = g
+	}
 	type item struct {
 		Student  int            `json:"student"`
 		Reg      string         `json:"reg"`
@@ -480,6 +566,9 @@ func handleSlices(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 		Score    float64        `json:"score"`
 		Mark     string         `json:"mark"`
 		Ink      []score.Stroke `json:"ink,omitempty"`
+		Missing  bool           `json:"missing"`         // 无切片图(手工补录卷),工作台显示占位
+		Parts    []partState    `json:"parts,omitempty"` // 拆分小问的当前评分(版式 v3)
+		Elective *electiveView  `json:"elective,omitempty"`
 	}
 	out := make([]item, 0, len(ex.Results))
 	for si := range ex.Results {
@@ -491,9 +580,53 @@ func handleSlices(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 			it.Reg = ex.AssignedReg(si + 1)
 			it.RegValid = ex.Results[si].RegValid || ex.Assignments[fmt.Sprintf("s%d", si+1)] != ""
 		}
+		if eg != nil {
+			marks := []int{}
+			if res := ex.Results[si]; res != nil && len(res.Electives) > 0 {
+				marks = res.Electives[eg.Members[0]]
+			}
+			if marks == nil {
+				marks = []int{}
+			}
+			labels := make([]string, len(eg.Members))
+			for mi, mq := range eg.Members {
+				labels[mi] = fmt.Sprintf("%d", len(ex.Layout.Questions)+mq)
+			}
+			// 判分计入的题:排除集合之外的那道;整组都不计(漏涂且无批阅)时为 0
+			excluded := score.ElectiveExcluded(groups, ex.Layout.Subjectives, ex.Grades, ex.Results[si], si+1)
+			chosen := 0
+			for _, mq := range eg.Members {
+				if !excluded[mq] {
+					chosen = mq
+					break
+				}
+			}
+			it.Elective = &electiveView{Group: eg.Members, Labels: labels, Marks: marks, Chosen: chosen}
+		}
 		if g, ok := ex.Grades[score.GradeKey(si+1, q)]; ok {
 			it.Graded, it.Score, it.Mark, it.Ink = g.Graded, g.Score, g.Mark, g.Ink
 		}
+		if spec := ex.Layout.Subjectives[q-1]; len(spec.Parts) > 0 {
+			it.Parts = make([]partState, len(spec.Parts))
+			var sum float64
+			for pi := range spec.Parts {
+				ps := partState{Part: pi + 1}
+				if g, ok := ex.Grades[score.GradePartKey(si+1, q, pi+1)]; ok {
+					ps.Score, ps.Graded = g.Score, g.Graded
+					if g.Graded {
+						sum += g.Score
+					}
+				}
+				it.Parts[pi] = ps
+			}
+			it.Score = sum
+			// 小问拆分题:题级标注(✓✗⚑/笔迹)同步存在每个小问上,读第 1 问
+			if g, ok := ex.Grades[score.GradePartKey(si+1, q, 1)]; ok {
+				it.Mark, it.Ink = g.Mark, g.Ink
+			}
+			_, it.Graded, _ = score.SubjectiveScore(spec, ex.Grades, si+1, q)
+		}
+		it.Missing = !fileExists(filepath.Join(store.SliceDir(ex.ID), fmt.Sprintf("s%02d_q%02d.png", si+1, q)))
 		out = append(out, it)
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -521,12 +654,13 @@ func pad2(s string) string {
 	return fmt.Sprintf("%02d", n)
 }
 
-// handleSetGrade 写入一条主观题评分(含手写批注笔迹)。
+// handleSetGrade 写入一条主观题评分(含手写批注笔迹);part>0 时为小问评分(版式 v3)。
 func handleSetGrade(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	var req struct {
 		ExamID   string         `json:"examId"`
 		Student  int            `json:"student"`
 		Question int            `json:"question"`
+		Part     int            `json:"part"` // 1-based 小问号;0 = 整题
 		Score    float64        `json:"score"`
 		Mark     string         `json:"mark"`
 		Graded   *bool          `json:"graded"`
@@ -545,11 +679,27 @@ func handleSetGrade(w http.ResponseWriter, r *http.Request, store *Store, u *aut
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
-	if err := store.SetGrade(req.ExamID, req.Student, req.Question, score.Grade{Score: req.Score, Mark: req.Mark, Graded: graded, Ink: req.Ink}); err != nil {
+	g := score.Grade{Score: req.Score, Mark: req.Mark, Graded: graded, Ink: req.Ink}
+	var err error
+	if req.Part > 0 {
+		err = store.SetGradePart(req.ExamID, req.Student, req.Question, req.Part, g, u.Username)
+	} else {
+		err = store.SetGrade(req.ExamID, req.Student, req.Question, g, u.Username)
+	}
+	if err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// subjectiveGraded 报告某生某道主观题是否完成评分(拆分小问时要求全部小问已阅)。
+func subjectiveGraded(ex *Exam, student, question int) bool {
+	if question < 1 || question > len(ex.Layout.Subjectives) {
+		return false
+	}
+	_, done, _ := score.SubjectiveScore(ex.Layout.Subjectives[question-1], ex.Grades, student, question)
+	return done
 }
 
 // handleExamReport 统分报告(附加按班级聚合的对比统计)。

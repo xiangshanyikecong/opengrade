@@ -128,6 +128,11 @@ func (c *Canvas) TextCenter(cx, cy int, s string, scale int, v uint8) {
 	c.Text(cx-w/2, cy-(7*scale)/2, s, scale, v)
 }
 
+// TextRight 以文本右边缘 (x,y) 为左上角基准绘制(右对齐)。
+func (c *Canvas) TextRight(x, y int, s string, scale int, v uint8) {
+	c.Text(x-TextWidth(s, scale), y, s, scale, v)
+}
+
 // TextWidth 返回文本渲染后的像素宽度。
 func TextWidth(s string, scale int) int {
 	return len([]rune(s)) * 6 * scale

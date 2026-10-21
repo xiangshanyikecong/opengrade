@@ -173,6 +173,11 @@ func (f *Font) DrawCenter(c *raster.Canvas, cx, cyTop int, s string, sizePx int,
 	f.Draw(c, cx-f.WidthPx(s, sizePx)/2, cyTop, s, sizePx, v)
 }
 
+// DrawRight 以文本右边缘 (x,cyTop) 绘制(右对齐)。
+func (f *Font) DrawRight(c *raster.Canvas, x, cyTop int, s string, sizePx int, v uint8) {
+	f.Draw(c, x-f.WidthPx(s, sizePx), cyTop, s, sizePx, v)
+}
+
 // ---- 字体发现与默认实例 ----
 
 var (

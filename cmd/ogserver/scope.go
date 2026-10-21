@@ -107,16 +107,29 @@ func scopeExamForTeacher(ex *Exam, u *auth.User) *Exam {
 // openExamFor 取考试并做可见性与数据范围裁剪:
 //   - 不可见(不存在)→ (nil,false),对外一律 404,不泄露考试存在性;
 //   - grading=true 时教师获得全量视图(跨班阅卷职责),否则按任教班级过滤;
+//   - 按班分配模式(TaskMode=class)下,被分到某班的教师只看到该班学生的卷;
 //   - 管理员/年级组长恒为全量。
 func (s *Store) openExamFor(r *http.Request, u *auth.User, grading bool) (*Exam, bool) {
 	ex, ok := s.Get(r.PathValue("id"))
 	if !ok || !canOpenExam(u, ex) {
 		return nil, false
 	}
-	if grading || u.Role != auth.RoleTeacher {
+	if grading && !classAssigned(ex, u) {
+		return ex, true
+	}
+	if u.Role != auth.RoleTeacher {
 		return ex, true
 	}
 	return scopeExamForTeacher(ex, u), true
+}
+
+// classAssigned 判定教师是否处于"按班分配"任务模式且被分到了班级。
+// 此时即便在阅卷流(grading=1),也只应看到本班学生的卷。
+func classAssigned(ex *Exam, u *auth.User) bool {
+	if u == nil || u.Role != auth.RoleTeacher || u.Class == "" {
+		return false
+	}
+	return ex.TaskMode == "class" && ex.ClassTasks[u.Class] == u.Username
 }
 
 var _ = strings.TrimSpace

@@ -427,6 +427,102 @@ func TestFullSystemReview(t *testing.T) {
 		}
 	})
 
+	// ---------- G2. 发布控制与学情分析(发布后学生端才可查) ----------
+	t.Run("G2_发布控制_学情分析与审计", func(t *testing.T) {
+		// 发布前:学生不可查
+		if got := student.code("GET", "/api/v1/student/exams/"+examID, nil, ""); got != http.StatusNotFound {
+			t.Fatalf("未发布成绩应 404,得到 %d", got)
+		}
+		// 他科教师看不到本场考试(404,不泄露存在性),更无法改答案
+		teacher2c := newClient(t, ts.URL)
+		teacher2c.login("teacher2", "teach123")
+		if got := teacher2c.code("POST", "/api/v1/exams/"+examID+"/key", strings.NewReader(`{"key":[]}`), "application/json"); got != http.StatusNotFound {
+			t.Fatalf("他科教师改答案应 404,得到 %d", got)
+		}
+		// 建卷教师修正答案(第 1 题改为不存在的选项)→ 全班客观分重统
+		newKey := append([]string{}, fx.key...)
+		newKey[0] = "Z"
+		teacher.json("POST", "/api/v1/exams/"+examID+"/key", map[string]any{"key": newKey}, http.StatusOK)
+		rep1 := teacher.json("GET", "/api/v1/exams/"+examID+"/report", nil, http.StatusOK)
+		for i, line := range rep1["students"].([]any) {
+			obj := line.(map[string]any)["objective"].(float64)
+			if fx.fillings[i].Answers[0] == fx.key[0] && obj >= fx.wantObj[i] {
+				t.Fatalf("答案修正后第 %d 卷客观分未重统:%v(原 %v)", i+1, obj, fx.wantObj[i])
+			}
+		}
+		// 恢复原答案
+		teacher.json("POST", "/api/v1/exams/"+examID+"/key", map[string]any{"key": fx.key}, http.StatusOK)
+		rep2 := teacher.json("GET", "/api/v1/exams/"+examID+"/report", nil, http.StatusOK)
+		for i, line := range rep2["students"].([]any) {
+			if got := line.(map[string]any)["objective"].(float64); got != fx.wantObj[i] {
+				t.Fatalf("答案恢复后第 %d 卷客观分 = %v,期望 %v", i+1, got, fx.wantObj[i])
+			}
+		}
+		// 学情分析:统计摘要与逐题维度(用组长看全量)
+		an := leader.json("GET", "/api/v1/exams/"+examID+"/analytics", nil, http.StatusOK)
+		st := an["stats"].(map[string]any)
+		if st["count"].(float64) != 5 || st["total"].(float64) != 80 {
+			t.Fatalf("统计摘要异常: %v", st)
+		}
+		if len(st["segments"].([]any)) != 10 {
+			t.Fatal("分数段应为 10 段")
+		}
+		qs := an["questions"].([]any)
+		if len(qs) != 33 {
+			t.Fatalf("逐题分析数 = %d,期望 33", len(qs))
+		}
+		q0 := qs[0].(map[string]any)
+		if q0["options"] == nil || q0["difficulty"] == nil {
+			t.Fatal("客观题应含选项分布与难度")
+		}
+		// 发布 → 学生可查;教师(建卷人)可发布
+		teacher.json("POST", "/api/v1/exams/"+examID+"/publish", map[string]any{"published": true}, http.StatusOK)
+		if got := student.code("GET", "/api/v1/student/exams/"+examID, nil, ""); got != http.StatusOK {
+			t.Fatalf("发布后学生查分应 200,得到 %d", got)
+		}
+		d := student.json("GET", "/api/v1/student/exams/"+examID, nil, http.StatusOK)
+		if d["rank"] == nil || d["classRank"] == nil {
+			t.Fatal("学生报告应含排名")
+		}
+		// 组长审计日志:应含 setKey/publish/setGrade/assign 记录
+		au := leader.json("GET", "/api/v1/exams/"+examID+"/audit", nil, http.StatusOK)
+		acts := map[string]bool{}
+		for _, e := range au["entries"].([]any) {
+			acts[e.(map[string]any)["action"].(string)] = true
+		}
+		for _, want := range []string{"setKey", "publish", "setGrade", "assign"} {
+			if !acts[want] {
+				t.Fatalf("审计缺少 %s 记录: %v", want, acts)
+			}
+		}
+		// 学生不可看审计
+		if got := student.code("GET", "/api/v1/exams/"+examID+"/audit", nil, ""); got != http.StatusForbidden {
+			t.Fatalf("学生看审计应 403,得到 %d", got)
+		}
+	})
+
+	// ---------- G3. 等级赋分 ----------
+	t.Run("G3_等级赋分", func(t *testing.T) {
+		cv := leader.json("POST", "/api/v1/exams/"+examID+"/grade-convert", map[string]any{}, http.StatusOK)
+		rows := cv["converted"].([]any)
+		if len(rows) != 5 {
+			t.Fatalf("赋分行数 = %d,期望 5", len(rows))
+		}
+		first := rows[0].(map[string]any)
+		if first["grade"] == nil || first["converted"] == nil {
+			t.Fatalf("赋分结果不完整: %v", first)
+		}
+		// 最高原始分应拿最高赋分(按转换后降序)
+		prev := 1e9
+		for _, r := range rows {
+			c := r.(map[string]any)["converted"].(float64)
+			if c > prev {
+				t.Fatal("赋分应单调不增")
+			}
+			prev = c
+		}
+	})
+
 	// ---------- H. 导出产物深度校验 ----------
 	t.Run("H1_成绩册xlsx", func(t *testing.T) {
 		resp, data := leader.do("GET", "/api/v1/exams/"+examID+"/export.xlsx", nil, "")
@@ -571,6 +667,40 @@ func TestFullSystemReview(t *testing.T) {
 		d := student.json("GET", "/api/v1/student/exams/"+examID, nil, http.StatusOK)
 		if d["reg"] != "00000001" {
 			t.Fatalf("学生报告考号应为本人: %v", d["reg"])
+		}
+	})
+
+	t.Run("I5_家长端只读绑定子女", func(t *testing.T) {
+		// 管理员创建家长账号,绑定 s0001(考号 00000001)
+		admin.json("POST", "/api/v1/users", map[string]any{
+			"username": "p0001", "displayName": "李雷家长", "role": "parent",
+			"password": "parent123", "children": []string{"00000001"},
+		}, http.StatusCreated)
+		parent := newClient(t, ts.URL)
+		parent.login("p0001", "parent123")
+		// 家长账号不能进教师端
+		if got := parent.code("GET", "/api/v1/exams", nil, ""); got != http.StatusForbidden {
+			t.Fatalf("家长访问教师考试列表应 403,得到 %d", got)
+		}
+		// 不加 child 参数 → 400
+		if got := parent.code("GET", "/api/v1/student/exams/"+examID, nil, ""); got != http.StatusBadRequest {
+			t.Fatalf("家长未指定 child 应 400,得到 %d", got)
+		}
+		// 指定非绑定子女 → 403
+		if got := parent.code("GET", "/api/v1/student/exams/"+examID+"?child=00000004", nil, ""); got != http.StatusForbidden {
+			t.Fatalf("家长看非绑定子女应 403,得到 %d", got)
+		}
+		// 指定绑定子女 → 200,且数据为该子女
+		d := parent.json("GET", "/api/v1/student/exams/"+examID+"?child=00000001", nil, http.StatusOK)
+		if d["reg"] != "00000001" {
+			t.Fatalf("家长视图考号 = %v,期望 00000001", d["reg"])
+		}
+		if d["objective"].(float64) != fx.wantObj[0] {
+			t.Fatalf("家长视图客观分 = %v,期望 %v", d["objective"], fx.wantObj[0])
+		}
+		// 家长也不能查看阅卷切片列表
+		if got := parent.code("GET", "/api/v1/exams/"+examID+"/slices?q=1", nil, ""); got != http.StatusForbidden {
+			t.Fatalf("家长访问阅卷切片应 403,得到 %d", got)
 		}
 	})
 

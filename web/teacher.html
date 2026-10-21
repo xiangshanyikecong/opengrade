@@ -5,29 +5,39 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>教师工作台 · OpenGrade</title>
 <style>
-  :root { --ink:#1c2430; --line:#dde3ea; --brand:#0b6e4f; --warn:#b45309; }
+  :root { --ink:#1c2430; --line:#dde3ea; --brand:#0b6e4f; --warn:#b45309; --bad:#c2410c; }
   * { box-sizing:border-box; }
   body { margin:0; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; color:var(--ink); background:#f5f7fa; }
   header { display:flex; align-items:center; gap:14px; padding:12px 24px; background:#fff; border-bottom:1px solid var(--line); }
   header h1 { font-size:17px; margin:0; }
   header .u { font-size:13px; color:#66707d; }
-  nav.tabs { display:flex; gap:4px; padding:0 24px; background:#fff; border-bottom:1px solid var(--line); }
+  nav.tabs { display:flex; gap:4px; padding:0 24px; background:#fff; border-bottom:1px solid var(--line); flex-wrap:wrap; }
   nav.tabs button { border:0; background:none; padding:11px 16px; font-size:14px; cursor:pointer; color:#66707d; border-bottom:2px solid transparent; }
   nav.tabs button.active { color:var(--brand); border-bottom-color:var(--brand); font-weight:600; }
-  main { max-width:1150px; margin:0 auto; padding:20px 24px; }
+  main { max-width:1180px; margin:0 auto; padding:20px 24px; }
   .panel { background:#fff; border:1px solid var(--line); border-radius:10px; padding:18px 20px; margin-bottom:18px; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
   td, th { border-bottom:1px solid var(--line); padding:7px 8px; text-align:left; }
   a { color:var(--brand); text-decoration:none; }
-  a.danger { color:#c2410c; }
+  a.danger { color:var(--bad); }
   select, input { padding:7px 9px; border:1px solid var(--line); border-radius:6px; font-size:13px; }
   button.primary { padding:9px 14px; border:0; border-radius:8px; background:var(--brand); color:#fff; font-size:13px; cursor:pointer; }
+  button.ghost { padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; font-size:13px; cursor:pointer; }
   .hint { font-size:12px; color:#8a94a3; }
-  .stat { display:inline-block; margin-right:28px; }
-  .stat b { font-size:22px; display:block; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:10px; margin-bottom:14px; }
+  .card { background:#f8fafc; border:1px solid var(--line); border-radius:9px; padding:10px 12px; }
+  .card b { display:block; font-size:21px; line-height:1.3; }
+  .card span { font-size:12px; color:#66707d; }
   .bar { height:8px; background:#eef2f6; border-radius:4px; overflow:hidden; width:130px; display:inline-block; vertical-align:middle; }
   .bar > div { height:100%; background:var(--brand); }
   .bad > div { background:#c2410c; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:12px; }
+  .pill.on { background:#e7f5ef; color:var(--brand); }
+  .pill.off { background:#fdece8; color:var(--bad); }
+  canvas { max-width:100%; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media (max-width:820px){ .grid2 { grid-template-columns:1fr; } }
+  .keyinput { width:52px; text-align:center; }
 </style>
 </head>
 <body>
@@ -40,10 +50,13 @@
 <nav class="tabs" id="tabs"></nav>
 <main>
   <div id="tab-exams"></div>
+  <div id="tab-bank" hidden></div>
   <div id="tab-tasks" hidden></div>
   <div id="tab-reports" hidden></div>
+  <div id="tab-trends" hidden></div>
   <div id="tab-me" hidden></div>
 </main>
+<input type="file" id="scanFiles" multiple accept="image/*" hidden>
 <script src="/common.js"></script>
 <script>
 let exams = [];
@@ -51,8 +64,8 @@ let exams = [];
 async function main() {
   if (!await OG.init()) return;
   if (OG.is("admin")) document.getElementById("adminLink").hidden = false;
-  const tabs = [["exams", "考试"], ["reports", "班级报告"], ["me", "账号设置"]];
-  if (OG.is("admin", "leader")) tabs.splice(1, 0, ["tasks", "任务分配"]);
+  const tabs = [["exams", "考试"], ["bank", "题库"], ["reports", "学情分析"], ["trends", "纵向趋势"], ["me", "账号设置"]];
+  if (OG.is("admin", "leader")) tabs.splice(2, 0, ["tasks", "任务分配"]);
   document.getElementById("tabs").innerHTML = tabs.map(([id, name], i) =>
     `<button class="${i === 0 ? 'active' : ''}" data-t="${id}" onclick="showTab('${id}')">${name}</button>`).join("");
   showTab("exams");
@@ -60,23 +73,29 @@ async function main() {
 
 function showTab(id) {
   document.querySelectorAll("nav.tabs button").forEach(b => b.classList.toggle("active", b.dataset.t === id));
-  ["exams", "tasks", "reports", "me"].forEach(t => document.getElementById("tab-" + t).hidden = t !== id);
+  ["exams", "bank", "tasks", "reports", "trends", "me"].forEach(t => document.getElementById(tab_(t)).hidden = t !== id);
   if (id === "exams") loadExams();
+  if (id === "bank") loadBank();
   if (id === "tasks") loadTasks();
   if (id === "reports") loadReports();
+  if (id === "trends") loadTrendInit();
   if (id === "me") renderMe();
 }
+function tab_(t) { return "tab-" + t; }
 
 /* —— 考试列表 —— */
 async function loadExams() {
   exams = await OG.jget("/api/v1/exams");
   const box = document.getElementById("tab-exams");
-  let html = `<div class="panel"><table><tr><th>考试</th><th>时间</th><th>建卷人</th><th>学科</th><th>卷数</th><th>题型</th><th>操作</th></tr>`;
+  let html = `<div class="panel"><table><tr><th>考试</th><th>时间</th><th>建卷人</th><th>学科</th><th>卷数</th><th>题型</th><th>状态</th><th>操作</th></tr>`;
   for (const e of exams) {
     html += `<tr><td>${e.id}</td><td>${e.createdAt}</td><td>${e.createdBy || "-"}</td>
       <td>${e.subject || "-"}</td><td>${e.students}</td><td>客观 ${e.objective} + 主观 ${e.subjective}</td>
+      <td><span class="pill ${e.published ? 'on' : 'off'}">${e.published ? '已发布' : '未发布'}</span></td>
       <td style="display:flex;gap:8px;flex-wrap:wrap">
         <a href="/grader.html?exam=${e.id}">阅卷</a>
+        <a href="#" onclick="pickScans('${e.id}');return false">补传扫描</a>
+        <a href="#" onclick="pubExam('${e.id}',${!e.published});return false">${e.published ? '撤回发布' : '发布成绩'}</a>
         <a href="/api/v1/exams/${e.id}/export.xlsx">成绩册</a>
         <a href="/api/v1/exams/${e.id}/review.pptx">讲评课件</a>
         <a href="/api/v1/exams/${e.id}/export.zip">数据包</a>
@@ -87,13 +106,119 @@ async function loadExams() {
   if (!exams.length) html += `<p class="hint">暂无考试:先到「设计器」出卡,再在建考流程上传扫描件</p>`;
   box.innerHTML = html + "</div>";
 }
+
+/* —— 补传扫描件(批量扫描会话/断点续传):建考后中途扫完的一批卷续接进同一会话 —— */
+let scanExamId = null;
+function pickScans(id) {
+  scanExamId = id;
+  document.getElementById("scanFiles").click();
+}
+document.getElementById("scanFiles").addEventListener("change", async ev => {
+  const files = [...ev.target.files];
+  ev.target.value = "";
+  if (!scanExamId || !files.length) return;
+  const fd = new FormData();
+  for (const f of files) fd.append("images", f);
+  const r = await fetch(`/api/v1/exams/${scanExamId}/scans`, { method: "POST", body: fd });
+  const d = await r.json();
+  if (!r.ok) { alert(d.error || "补传失败"); return; }
+  let msg = `已补传 ${d.added} 卷,本考试现有 ${d.students} 卷。`;
+  if ((d.failed || []).length) msg += `\n失败 ${d.failed.length} 张(未计入):\n` + d.failed.map(f => `第 ${f.index} 张:${f.error}`).join("\n");
+  alert(msg);
+  loadExams();
+});
 async function delExam(id) {
   if (!confirm(`删除考试 ${id} 及全部数据?不可恢复。`)) return;
   await OG.jpost(`/api/v1/exams/${id}`, {}, "DELETE");
   loadExams();
 }
+async function pubExam(id, pub) {
+  await OG.jpost(`/api/v1/exams/${id}/publish`, { published: pub });
+  loadExams();
+}
 
-/* —— 阅卷任务分配(管理员/年级组长)—— */
+/* —— 校本题库:学校自录题(题干/答案/知识点/难度),设计器可从这里选题带出 —— */
+const bankKinds = { choice: "单选", judge: "判断", multiple: "多选", fillblank: "填空", subjective: "解答" };
+async function loadBank() {
+  const box = document.getElementById("tab-bank");
+  box.innerHTML = `<div class="panel">
+    <b>校本题库</b> <span class="hint">学校自录的题目,数据在本机 data/ 目录。到「设计器 → 从题库选题」可把题目插入答题卡版式,客观题答案随题带出。</span>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      学科 <input id="bankSubject" placeholder="数学" style="width:90px">
+      题型 <select id="bankKind">
+        <option value="">全部</option>
+        ${Object.entries(bankKinds).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
+      </select>
+      搜索 <input id="bankQ" placeholder="题干/答案/知识点" style="width:150px">
+      <button class="ghost" onclick="renderBank()">查询</button>
+    </div>
+    <div id="bankForm" style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px"></div>
+    <div id="bankList" style="margin-top:12px"></div></div>`;
+  renderBankForm();
+  renderBank();
+}
+function renderBankForm() {
+  document.getElementById("bankForm").innerHTML = `
+    <b style="font-size:13px">录入新题</b>
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <input id="nbSubject" placeholder="学科" style="width:80px">
+      <select id="nbKind" onchange="document.getElementById('nbOptions').style.visibility=this.value==='judge'?'hidden':'visible'">
+        ${Object.entries(bankKinds).map(([k, v]) => `<option value="${k}">${v}</option>`).join("")}
+      </select>
+      <input id="nbOptions" type="number" value="4" min="2" max="6" title="选项数" style="width:60px">
+      <input id="nbScore" type="number" value="2" min="0.5" step="0.5" title="建议分值" style="width:60px">
+      <select id="nbDiff"><option value="">难度(可空)</option><option>容易</option><option>中等</option><option>较难</option><option>难</option></select>
+    </div>
+    <div style="margin-top:8px"><textarea id="nbStem" rows="2" placeholder="题干文本(可空)" style="width:100%"></textarea></div>
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      参考答案 <input id="nbAnswer" placeholder="客观题如 A / AC;判断 T/F;主观题填要点" style="width:220px">
+      知识点 <input id="nbKnow" placeholder="如 函数、导数" style="width:160px">
+      <button class="primary" onclick="addBankQuestion()">入库</button>
+      <span class="hint" id="bankMsg"></span>
+    </div>`;
+}
+async function renderBank() {
+  const q = new URLSearchParams();
+  if (document.getElementById("bankSubject").value.trim()) q.set("subject", document.getElementById("bankSubject").value.trim());
+  if (document.getElementById("bankKind").value) q.set("kind", document.getElementById("bankKind").value);
+  if (document.getElementById("bankQ").value.trim()) q.set("q", document.getElementById("bankQ").value.trim());
+  const items = await OG.jget("/api/v1/bank" + (q.toString() ? "?" + q.toString() : ""));
+  const box = document.getElementById("bankList");
+  if (!items.length) { box.innerHTML = `<p class="hint">题库为空(或无符合条件的题)。用上方表单录入第一道题。</p>`; return; }
+  let html = `<table><tr><th>学科</th><th>题型</th><th>分值</th><th>题干</th><th>答案</th><th>知识点</th><th>难度</th><th>录入人</th><th></th></tr>`;
+  for (const it of items) {
+    const mine = it.createdBy === OG.me.username;
+    html += `<tr><td>${it.subject || "-"}</td><td>${bankKinds[it.kind] || it.kind}${it.options ? "(" + it.options + "选)" : ""}</td>
+      <td>${it.score || "-"}</td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${it.stem || ""}">${it.stem || "-"}</td>
+      <td>${it.answer || "-"}</td><td>${it.knowledge || "-"}</td><td>${it.difficulty || "-"}</td><td>${it.createdBy || "-"}</td>
+      <td>${mine || OG.is("admin", "leader") ? `<a href="#" class="danger" onclick="delBankQuestion('${it.id}');return false">删除</a>` : ""}</td></tr>`;
+  }
+  box.innerHTML = html + "</table>";
+}
+async function addBankQuestion() {
+  const msg = document.getElementById("bankMsg");
+  try {
+    await OG.jpost("/api/v1/bank", {
+      subject: document.getElementById("nbSubject").value.trim(),
+      kind: document.getElementById("nbKind").value,
+      options: +document.getElementById("nbOptions").value || 0,
+      score: +document.getElementById("nbScore").value || 0,
+      stem: document.getElementById("nbStem").value,
+      answer: document.getElementById("nbAnswer").value.trim(),
+      knowledge: document.getElementById("nbKnow").value.trim(),
+      difficulty: document.getElementById("nbDiff").value,
+    });
+    msg.textContent = "已入库 ✓";
+    renderBank();
+  } catch (e) { msg.textContent = e.message; }
+}
+async function delBankQuestion(id) {
+  if (!confirm("从题库删除这道题?")) return;
+  try { await OG.jpost(`/api/v1/bank/${id}`, {}, "DELETE"); renderBank(); }
+  catch (e) { alert(e.message); }
+}
+
+/* —— 阅卷任务分配 —— */
 async function loadTasks() {
   exams = await OG.jget("/api/v1/exams");
   const box = document.getElementById("tab-tasks");
@@ -101,14 +226,42 @@ async function loadTasks() {
   box.innerHTML = `<div class="panel">
     选择考试:<select id="taskExam" onchange="renderTask()"></select>
     <div id="taskList" style="margin-top:14px"></div></div>`;
-  const sel = document.getElementById("taskExam");
-  sel.innerHTML = exams.map(e => `<option value="${e.id}">${e.id}(${e.createdAt})</option>`).join("");
+  document.getElementById("taskExam").innerHTML = exams.map(e => `<option value="${e.id}">${e.id}(${e.createdAt})</option>`).join("");
   renderTask();
 }
 async function renderTask() {
   const id = document.getElementById("taskExam").value;
   const d = await OG.jget(`/api/v1/exams/${id}`);
-  const staff = d.staff.filter(s => s.role !== "admin" || true);
+  const staff = d.staff;
+  const classes = d.classes || [];
+  let html = `<div style="margin-bottom:10px">
+    分配方式:
+    <label><input type="radio" name="taskmode" value="question" ${d.taskMode !== 'class' ? 'checked' : ''} onchange="renderTaskMode()"> 按题分配(每题一位教师,跨班)</label>
+    &nbsp;&nbsp;
+    <label><input type="radio" name="taskmode" value="class" ${d.taskMode === 'class' ? 'checked' : ''} onchange="renderTaskMode()"> 按班分配(班主任改本班)</label>
+  </div><div id="taskModeBody"></div>`;
+  document.getElementById("taskList").innerHTML = html;
+  renderTaskMode(d);
+}
+async function renderTaskMode(d) {
+  if (!d) { d = await OG.jget(`/api/v1/exams/${document.getElementById("taskExam").value}`); }
+  const id = d.id;
+  const staff = d.staff;
+  const mode = document.querySelector("input[name=taskmode]:checked").value;
+  const box = document.getElementById("taskModeBody");
+  if (mode === "class") {
+    if (!(d.classes || []).length) { box.innerHTML = `<p class="hint">本场考试名册没有班级信息,无法按班分配(建考时上传名册即可)。</p>`; return; }
+    let html = `<table><tr><th>班级</th><th>主观题阅卷人</th></tr>`;
+    for (const cls of d.classes) {
+      html += `<tr><td>${cls}</td><td><select onchange="setClassTask('${id}','${cls}', this.value)">
+        <option value="">(未分配)</option>
+        ${staff.map(s => `<option value="${s.username}" ${(d.classTasks||{})[cls] === s.username ? "selected" : ""}>${s.displayName || s.username}</option>`).join("")}
+      </select></td></tr>`;
+    }
+    html += `</table><p class="hint">按班分配后,被分到的教师在工作台只看到本班学生的卷;管理员/组长仍见全量。</p>`;
+    box.innerHTML = html;
+    return;
+  }
   let html = `<table><tr><th>主观题</th><th>满分</th><th>已阅/总数</th><th>阅卷人</th></tr>`;
   for (const p of d.progress) {
     html += `<tr><td>第 ${d.objective.length + p.question} 题(${p.kind === "fillblank" ? "填空" : "解答"})</td>
@@ -118,38 +271,428 @@ async function renderTask() {
         ${staff.map(s => `<option value="${s.username}" ${d.tasks && d.tasks["q" + p.question] === s.username ? "selected" : ""}>${s.displayName || s.username}</option>`).join("")}
       </select></td></tr>`;
   }
-  document.getElementById("taskList").innerHTML = html + "</table>";
+  box.innerHTML = html + "</table>";
 }
 async function setTask(q, teacher) {
   await OG.jpost(`/api/v1/exams/${document.getElementById("taskExam").value}/tasks`, { question: q, teacher });
 }
+async function setClassTask(id, cls, teacher) {
+  await OG.jpost(`/api/v1/exams/${id}/tasks`, { class: cls, teacher });
+}
 
-/* —— 班级报告 —— */
+/* —— 学情分析 —— */
 async function loadReports() {
   exams = await OG.jget("/api/v1/exams");
   const box = document.getElementById("tab-reports");
   if (!exams.length) { box.innerHTML = `<div class="panel hint">暂无考试</div>`; return; }
   box.innerHTML = `<div class="panel">
     选择考试:<select id="repExam" onchange="renderReport()"></select>
+    <span id="pubState" style="margin-left:12px"></span>
     <div id="repBody" style="margin-top:14px"></div></div>`;
-  const sel = document.getElementById("repExam");
-  sel.innerHTML = exams.map(e => `<option value="${e.id}">${e.id}(${e.createdAt})</option>`).join("");
+  document.getElementById("repExam").innerHTML = exams.map(e => `<option value="${e.id}">${e.id}·${e.subject || "无学科"}(${e.createdAt})</option>`).join("");
   renderReport();
 }
+
+const pct = v => (v == null ? "-" : (v * 100).toFixed(1) + "%");
+const f1 = v => (v == null ? "-" : v.toFixed(1));
+
 async function renderReport() {
   const id = document.getElementById("repExam").value;
-  const rep = await OG.jget(`/api/v1/exams/${id}/report`);
-  let html = `<div style="margin-bottom:12px">
-    <span class="stat"><b>${rep.count}</b>卷数</span>
-    <span class="stat"><b>${rep.mean.toFixed(1)}</b>均分/${rep.total}</span>
-    ${rep.byClass.map(c => `<span class="stat"><b>${c.mean.toFixed(1)}</b>${c.class}(${c.count}人)</span>`).join("")}
-  </div><table><tr><th>卷号</th><th>考号</th><th>客观</th><th>主观</th><th>总分</th><th>待复核</th></tr>`;
-  for (const s of rep.students) {
-    html += `<tr><td>${s.index}</td><td>${s.regNumber || "?"}</td><td>${s.objective}</td><td>${s.subjective}</td>
-      <td><b>${s.score}</b>/${rep.total}</td><td>${s.flagged ? "⚑" : ""}</td></tr>`;
+  const a = await OG.jget(`/api/v1/exams/${id}/analytics`);
+  const d = await OG.jget(`/api/v1/exams/${id}`);
+  const ex = exams.find(e => e.id === id) || {};
+  document.getElementById("pubState").innerHTML =
+    `<span class="pill ${ex.published ? 'on' : 'off'}">${ex.published ? '已发布(学生/家长可查)' : '未发布'}</span>
+     <button class="ghost" onclick="pubExam('${id}',${!ex.published}).then(renderReport)">${ex.published ? '撤回发布' : '发布成绩'}</button>`;
+
+  const s = a.stats || {};
+  let html = `<div class="cards">
+    ${card(s.mean, "平均分 / " + f1(s.total))}
+    ${card(s.max, "最高分")}
+    ${card(s.min, "最低分")}
+    ${card(f1(s.median), "中位数")}
+    ${card(f1(s.stdDev), "标准差")}
+    ${card(pct(s.passRate), "及格率 (≥" + f1(s.passLine) + ")")}
+    ${card(pct(s.goodRate), "优秀率 (≥" + f1(s.goodLine) + ")")}
+    ${card(pct(s.lowRate), "低分率 (<" + f1(s.lowLine) + ")")}
+    ${card(s.count, "参考人数")}
+  </div>`;
+  // 分数段柱状图
+  html += `<div class="grid2">
+    <div><b>分数段分布</b><br><canvas id="segChart" width="520" height="220"></canvas></div>
+    <div><b>班级对比</b><table><tr><th>班级</th><th>人数</th><th>均分</th><th>得分率</th></tr>`;
+  for (const c of a.byClass) html += `<tr><td>${c.class}</td><td>${c.count}</td><td>${f1(c.mean)}</td><td>${pct(c.meanRate)}</td></tr>`;
+  html += `</table></div></div>`;
+
+  // 逐题分析
+  html += `<div class="panel" style="margin-top:14px"><b>逐题分析</b>
+    <table><tr><th>题号</th><th>题型</th><th>满分</th><th>得分率/难度</th><th>区分度</th><th>作答分布</th></tr>`;
+  for (const q of a.questions) {
+    let dist = "-";
+    if (q.options) {
+      dist = Object.keys(q.options).map(k =>
+        `<span class="hint">${k}:${q.options[k]}</span>`).join(" ");
+    }
+    if (q.elective) { // 选做题(版式 v3):统计口径为实际选做人数
+      dist = `<span class="hint">选做 ${q.chosen || 0} 人</span>`;
+    }
+    const diff = q.difficulty != null ? (q.difficulty * 100).toFixed(0) + "%" : "-";
+    html += `<tr><td>${q.index}</td><td>${q.label || q.kind}</td><td>${q.max}</td>
+      <td>${diff}</td><td>${f1(q.discrimination)}</td><td>${dist}</td></tr>`;
+    if (q.parts) { // 版式 v3:小问拆分的逐问明细
+      html += `<tr><td></td><td colspan="5" class="hint">小问:` +
+        q.parts.map(p => `${p.label || "(" + p.index + ")"} 均分 ${f1(p.mean)}/${p.max}(得分率 ${pct(p.rate)},已阅 ${p.graded})`).join(" · ") +
+        `</td></tr>`;
+    }
   }
-  html += `</table><p class="hint">逐题得分率见成绩册 xlsx 细目表;讲评课件自动聚合低分率题。</p>`;
+  html += `</table><p class="hint">难度=得分率(越接近 100% 越易);区分度=高分组率−低分组率(<0.2 区分度偏低)。</p></div>`;
+
+  // 知识点掌握度(CE 轨道 G2:建考录入标签 → 班级掌握雷达)
+  html += `<div class="panel"><b>知识点掌握度</b> <span class="hint">掌握度 = 该知识点下所有题目的分值加权得分率;掌握度低的排前面。</span>
+    <div id="knowBody" style="margin-top:10px"></div></div>`;
+
+  // 错题重练卡(按学生):后端 /exams/{id}/practice?student=N 出重组版式,交 /api/v1/cards 渲染打印
+  html += `<div class="panel"><b>错题重练卡</b> <span class="hint">按学生抽取其错题/丢分题,重组成一张可打印的新答题卡(保留题型/分值/知识点),打印作答后可走正常扫描判读。</span>
+    <div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <select id="pracStu"></select>
+      <button class="primary" onclick="makePracticeStaff('${id}')">生成练习卡</button>
+      <span class="hint" id="pracMsg"></span>
+    </div></div>`;
+
+  // 知识点标签编辑(仅可编辑者)
+  if (d.canEditKey) {
+    html += `<div class="panel"><b>知识点标签</b> <span class="hint">为逐题录入知识点(多个用 , 或 、 分隔),保存后可出掌握度雷达。</span>
+      <div id="knowEdit" style="margin-top:10px"></div></div>`;
+  }
+
+  // 客观题答案修正
+  if (d.canEditKey) {
+    html += `<div class="panel"><b>客观题参考答案</b> <span class="hint">录错答案键可在此修正,保存后全班客观分自动重统。</span>
+      <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px">`;
+    (d.key || []).forEach((k, i) => {
+      html += `<label class="hint">${i + 1}<input class="keyinput" id="key_${i}" value="${k}"></label>`;
+    });
+    html += `</div><button class="primary" style="margin-top:12px" onclick="saveKey('${id}',${(d.key || []).length})">保存并重统</button>
+      <span class="hint" id="keyMsg" style="margin-left:10px"></span></div>`;
+  }
+
+  // 等级赋分
+  html += `<div class="panel"><b>新高考等级赋分换算</b>
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="ghost" onclick="convert('${id}',false)">五等(3+1+2)</button>
+      <button class="ghost" onclick="convert('${id}',true)">21 级细分档</button>
+    </div>
+    <div id="convBody" style="margin-top:12px"></div></div>`;
+
+  // 审计日志
+  if (OG.is("admin", "leader")) {
+    html += `<div class="panel"><b>操作审计</b><div id="auditBody" style="margin-top:8px" class="hint">加载中…</div></div>`;
+  }
+
+  // 补录与缺考:漏扫/答题卡作废的补救语义
+  html += `<div class="panel"><b>补录与缺考</b> <span class="hint">漏扫、答题卡作废的学生在此补救:按考号手工补录(卷号续排),缺考不计入统计与排名。</span>
+    <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      考号 <input id="manualReg" placeholder="如 00000006" style="width:110px">
+      <label class="hint"><input type="checkbox" id="manualAbsent"> 登记为缺考</label>
+      客观题作答 <input id="manualAns" placeholder="如 A,B,AB,C(可留空)" style="width:190px">
+      <button class="primary" onclick="submitManual('${id}')">补录</button>
+      <span class="hint" id="manualMsg"></span>
+    </div>
+    <div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      已扫卷标记缺考 · 卷号 <input id="absentIdx" type="number" min="1" style="width:70px">
+      <button class="ghost" onclick="markAbsent('${id}')">标记缺考</button>
+    </div>
+    <div id="absentBox" style="margin-top:10px"></div></div>`;
+
   document.getElementById("repBody").innerHTML = html;
+  drawSegments(a.stats ? a.stats.segments : []);
+  renderKnowledge(id, a);
+  renderPracticeStudents(id);
+  renderAbsent(id, d);
+  if (OG.is("admin", "leader")) loadAudit(id);
+}
+
+/* —— 错题重练卡(按学生) —— */
+async function renderPracticeStudents(id) {
+  const sel = document.getElementById("pracStu");
+  if (!sel) return;
+  try {
+    const rep = await OG.jget(`/api/v1/exams/${id}/report`);
+    sel.innerHTML = (rep.students || []).map(s =>
+      `<option value="${s.index}">卷 ${s.index} · ${s.regNumber || "?"} · ${f1(s.score)}/${f1(s.total)} 分${s.absent ? " · 缺考" : ""}</option>`).join("");
+  } catch (e) { sel.innerHTML = `<option value="">无法读取学生名单</option>`; }
+}
+async function makePracticeStaff(id) {
+  const msg = document.getElementById("pracMsg");
+  const stu = document.getElementById("pracStu").value;
+  if (!stu) { msg.textContent = "请选择学生"; return; }
+  msg.textContent = "生成中…";
+  try {
+    const r = await OG.jget(`/api/v1/exams/${id}/practice?student=${stu}`);
+    const svg = await fetch("/api/v1/cards", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ layout: r.layout }),
+    }).then(x => x.text());
+    const w = window.open("", "_blank");
+    w.document.write(`<title>错题重练卡 · ${r.questions.length} 题</title>
+      <div style="font-family:sans-serif;padding:12px">
+      <p>重练题号(原卷):${r.questions.join("、")} · 客观 ${r.objective} 题 + 主观 ${r.subjective} 题。打印后可直接作答。</p>
+      <button onclick="print()">🖨 打印</button></div>${svg}`);
+    w.document.close();
+    msg.textContent = "";
+  } catch (e) { msg.textContent = e.message; }
+}
+
+/* —— 知识点掌握度 —— */
+function renderKnowledge(id, a) {
+  const box = document.getElementById("knowBody");
+  if (!box) return;
+  const ks = a.knowledge || [];
+  if (!ks.length) {
+    box.innerHTML = `<p class="hint">本场尚未录入知识点标签。在下方「知识点标签」为逐题填写后即可出掌握度雷达。</p>`;
+  } else {
+    let html = `<canvas id="knowChart" width="820" height="${Math.max(120, ks.length * 30 + 30)}"></canvas>
+      <table style="margin-top:10px"><tr><th>知识点</th><th>题数</th><th>掌握度</th><th>涉及总分</th><th>实际得分</th></tr>`;
+    for (const k of ks) {
+      html += `<tr><td>${k.name}</td><td>${k.questions}</td>
+        <td><span class="bar"><div style="width:${Math.round(k.rate * 100)}%;background:${k.rate < 0.5 ? 'var(--bad)' : k.rate < 0.75 ? 'var(--warn)' : 'var(--brand)'}"></div></span> ${pct(k.rate)}</td>
+        <td>${f1(k.max)}</td><td>${f1(k.earned)}</td></tr>`;
+    }
+    html += `</table>`;
+    box.innerHTML = html;
+    drawKnowledge(ks);
+  }
+  // 标签编辑器
+  const ed = document.getElementById("knowEdit");
+  if (ed) {
+    OG.jget(`/api/v1/exams/${id}/knowledge`).then(k => {
+      ed.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:8px">` +
+        (a.questions || []).map(q => `<label class="hint">${q.label || q.index}<input class="keyinput" id="know_${q.index}" style="width:150px" value="${(k.tags||{})[q.index] || ''}" placeholder="如 函数、导数"></label>`).join("") + `</div>
+        <button class="primary" style="margin-top:12px" onclick="saveKnowledge('${id}')">保存知识点</button>
+        <span class="hint" id="knowMsg" style="margin-left:10px"></span>`;
+    });
+  }
+}
+function drawKnowledge(ks) {
+  const cv = document.getElementById("knowChart");
+  if (!cv) return;
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height, padL = 130, padR = 60, rowH = 30;
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = "12px sans-serif";
+  ks.forEach((k, i) => {
+    const y = 14 + i * rowH;
+    ctx.fillStyle = "#1c2430"; ctx.textAlign = "right";
+    ctx.fillText(k.name.length > 12 ? k.name.slice(0, 12) + "…" : k.name, padL - 8, y + 12);
+    const barW = W - padL - padR;
+    ctx.fillStyle = "#eef2f6"; ctx.fillRect(padL, y, barW, 16);
+    ctx.fillStyle = k.rate < 0.5 ? "#c2410c" : k.rate < 0.75 ? "#b45309" : "#0b6e4f";
+    ctx.fillRect(padL, y, barW * Math.max(0, Math.min(1, k.rate)), 16);
+    ctx.fillStyle = "#1c2430"; ctx.textAlign = "left";
+    ctx.fillText((k.rate * 100).toFixed(0) + "%", padL + barW + 8, y + 12);
+  });
+}
+async function saveKnowledge(id) {
+  const tags = {};
+  document.querySelectorAll("#knowEdit input[id^=know_]").forEach(inp => {
+    tags[parseInt(inp.id.slice(5), 10)] = inp.value.trim();
+  });
+  try {
+    await OG.jpost(`/api/v1/exams/${id}/knowledge`, { tags });
+    document.getElementById("knowMsg").textContent = "已保存 ✓";
+    renderReport();
+  } catch (e) { document.getElementById("knowMsg").textContent = e.message; }
+}
+
+/* —— 补录与缺考 —— */
+function renderAbsent(id, d) {
+  const box = document.getElementById("absentBox");
+  if (!box) return;
+  let html = "";
+  if ((d.absent || []).length) {
+    html += `<table><tr><th>缺考卷</th><th>考号</th><th></th></tr>`;
+    for (const a of d.absent) {
+      html += `<tr><td>第 ${a.student} 卷</td><td>${a.reg}</td>
+        <td><a href="#" onclick="setAbsent('${id}',${a.student},false);return false">取消缺考</a></td></tr>`;
+    }
+    html += `</table>`;
+  }
+  const tips = [];
+  if (d.absent) tips.push(`缺考 ${d.absent.length} 人`);
+  if (d.manual) tips.push(`手工补录卷 ${d.manual} 张`);
+  if (!tips.length) tips.push("当前无缺考登记、无补录卷");
+  html = `<p class="hint" style="margin:4px 0">${tips.join(" · ")}</p>` + html;
+  box.innerHTML = html;
+}
+async function setAbsent(id, student, absent) {
+  await OG.jpost(`/api/v1/exams/${id}/absent`, { student, absent });
+  renderReport();
+}
+async function markAbsent(id) {
+  const idx = parseInt(document.getElementById("absentIdx").value, 10);
+  if (!idx) return;
+  await setAbsent(id, idx, true);
+}
+async function submitManual(id) {
+  const reg = document.getElementById("manualReg").value.trim();
+  const absent = document.getElementById("manualAbsent").checked;
+  const raw = document.getElementById("manualAns").value.trim();
+  const answers = raw ? raw.split(/[,，\s]+/).filter(x => x !== "") : [];
+  try {
+    await OG.jpost(`/api/v1/exams/${id}/manual`, { reg, absent, answers });
+    document.getElementById("manualMsg").textContent = "已补录 ✓";
+    renderReport();
+  } catch (e) { document.getElementById("manualMsg").textContent = e.message; }
+}
+function card(v, label) { return `<div class="card"><b>${v == null ? "-" : v}</b><span>${label}</span></div>`; }
+
+/* 原生 canvas 画分数段柱状图(零依赖) */
+function drawSegments(segs) {
+  const cv = document.getElementById("segChart");
+  if (!cv || !segs) return;
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height, pad = 26, base = H - 24;
+  ctx.clearRect(0, 0, W, H);
+  const maxC = Math.max(1, ...segs.map(s => s.count));
+  const bw = (W - 2 * pad) / segs.length;
+  ctx.font = "11px sans-serif";
+  segs.forEach((s, i) => {
+    const h = (base - 16) * (s.count / maxC);
+    const x = pad + i * bw + bw * 0.15, w = bw * 0.7;
+    ctx.fillStyle = s.count ? "#0b6e4f" : "#eef2f6";
+    ctx.fillRect(x, base - h, w, h);
+    ctx.fillStyle = "#1c2430";
+    ctx.textAlign = "center";
+    if (s.count) ctx.fillText(s.count, x + w / 2, base - h - 3);
+    ctx.fillStyle = "#8a94a3";
+    ctx.fillText(`${s.low.toFixed(0)}-${s.high.toFixed(0)}`, x + w / 2, base + 14);
+  });
+  ctx.strokeStyle = "#dde3ea";
+  ctx.beginPath(); ctx.moveTo(pad, base); ctx.lineTo(W - pad, base); ctx.stroke();
+}
+
+async function saveKey(id, n) {
+  const key = [];
+  for (let i = 0; i < n; i++) key.push(document.getElementById("key_" + i).value.trim().toUpperCase());
+  try {
+    await OG.jpost(`/api/v1/exams/${id}/key`, { key });
+    document.getElementById("keyMsg").textContent = "已保存并重统 ✓";
+    renderReport();
+  } catch (e) { document.getElementById("keyMsg").textContent = e.message; }
+}
+
+async function convert(id, fine) {
+  const r = await OG.jpost(`/api/v1/exams/${id}/grade-convert`, { fine: !!fine });
+  let html = `<table><tr><th>考号</th><th>原始分</th><th>等级</th><th>赋分</th><th>原始排名</th></tr>`;
+  for (const c of r.converted) {
+    html += `<tr><td>${c.reg}</td><td>${c.raw}</td><td>${c.grade}</td><td><b>${c.converted}</b></td><td>${c.rank}</td></tr>`;
+  }
+  html += `</table><p class="hint">赋分方案:${fine ? "21 级细分档(等级内 3 分一档)" : "A " + (r.scale.bands[0].ratio * 100).toFixed(0) + "% · 均衡五等"},赋分起点 ${r.scale.start}。</p>`;
+  document.getElementById("convBody").innerHTML = html;
+}
+
+async function loadAudit(id) {
+  try {
+    const a = await OG.jget(`/api/v1/exams/${id}/audit`);
+    if (!a.entries.length) { document.getElementById("auditBody").textContent = "暂无操作记录"; return; }
+    let html = `<table><tr><th>时间</th><th>操作人</th><th>动作</th><th>说明</th></tr>`;
+    for (const e of a.entries) html += `<tr><td>${e.time}</td><td>${e.by}</td><td>${e.action}</td><td>${e.detail}</td></tr>`;
+    document.getElementById("auditBody").innerHTML = html + "</table>";
+  } catch (e) { document.getElementById("auditBody").textContent = "无权查看审计"; }
+}
+
+/* —— 纵向趋势(跨考试按考号对齐) —— */
+let trendData = null;
+
+async function loadTrendInit() {
+  const subjects = [...new Set(exams.map(e => e.subject).filter(Boolean))];
+  document.getElementById("tab-trends").innerHTML = `<div class="panel">
+    班级 <select id="trendClass" onchange="loadTrend()"></select>
+    学科 <select id="trendSubject" onchange="loadTrend()">
+      <option value="">全部学科</option>${subjects.map(s => `<option>${s}</option>`).join("")}
+    </select>
+    <span class="hint" style="margin-left:10px">跨考试按考号对齐;不同学科/满分混排时得分率与名次无可比性,建议按学科筛选。</span>
+  </div><div id="trendBody"></div>`;
+  await loadTrend();
+}
+
+async function loadTrend() {
+  const cls = document.getElementById("trendClass").value;
+  const subj = document.getElementById("trendSubject").value;
+  const q = new URLSearchParams();
+  if (cls) q.set("class", cls);
+  if (subj) q.set("subject", subj);
+  trendData = await OG.jget("/api/v1/trends" + (q.toString() ? "?" + q.toString() : ""));
+  const sel = document.getElementById("trendClass"), cur = sel.value;
+  sel.innerHTML = `<option value="">全部班级</option>` +
+    (trendData.classes || []).map(c => `<option ${c === cur ? "selected" : ""}>${c}</option>`).join("");
+  renderTrend();
+}
+
+function renderTrend() {
+  const box = document.getElementById("trendBody");
+  const t = trendData;
+  if (!(t.exams || []).length) { box.innerHTML = `<div class="panel hint">没有符合条件的考试</div>`; return; }
+  const labels = t.exams.map(e => e.date.slice(5) + (t.subject ? "" : "·" + (e.subject || "无")));
+  const hasClass = !!t.class;
+  let html = `<div class="panel"><b>${hasClass ? t.class + " · " : ""}均分走势</b><br>
+    <canvas id="classTrendCv" width="860" height="240"></canvas></div>`;
+  html += `<div class="panel"><b>考试序列</b>
+    <table><tr><th>#</th><th>日期</th><th>学科</th><th>实考</th><th>满分</th><th>全体均分</th>${hasClass ? "<th>本班均分</th><th>本班人数</th>" : ""}</tr>`;
+  t.exams.forEach((e, i) => {
+    html += `<tr><td>${i + 1}</td><td>${e.date}</td><td>${e.subject || "-"}</td><td>${e.students}</td>
+      <td>${f1(e.total)}</td><td>${f1(e.mean)}</td>
+      ${hasClass ? `<td><b>${f1(e.classMean)}</b></td><td>${e.classCount}</td>` : ""}</tr>`;
+  });
+  html += `</table></div>`;
+
+  // 学生跨考对齐表:最近得分/名次与进退步;点击行画个人曲线
+  html += `<div class="panel"><b>学生名次进退</b>
+    <table><tr><th>考号</th><th>姓名</th><th>班级</th><th>场数</th><th>最近得分</th><th>最近名次</th><th>名次进退</th><th></th></tr>`;
+  for (const s of t.students) {
+    const pts = s.points.filter(p => !p.absent);
+    const last = pts[pts.length - 1], prev = pts[pts.length - 2];
+    let delta = "-";
+    if (last && prev && last.rank && prev.rank) {
+      const d = prev.rank - last.rank;
+      delta = d === 0 ? "—" : d > 0 ? `<b style="color:var(--brand)">↑${d}</b>` : `<b style="color:var(--bad)">↓${-d}</b>`;
+    }
+    html += `<tr><td>${s.reg}</td><td>${s.name || "-"}</td><td>${s.class || "-"}</td><td>${pts.length}</td>
+      <td>${last ? f1(last.score) : "-"}</td><td>${last && last.rank ? last.rank : "-"}</td><td>${delta}</td>
+      <td><a href="#" onclick="drawStudentTrend('${s.reg}');return false">曲线</a></td></tr>`;
+  }
+  html += `</table><canvas id="studentTrendCv" width="860" height="240" style="margin-top:12px"></canvas>
+    <p class="hint" id="studentTrendTip">点「曲线」查看个人历次得分率与班级对照。</p></div>`;
+  box.innerHTML = html;
+
+  const series = [];
+  if (hasClass) {
+    series.push({ name: "本班均分", color: "#0b6e4f", values: t.exams.map(e => e.classMean) });
+    series.push({ name: "全体均分", color: "#9aa7b6", values: t.exams.map(e => e.mean) });
+  } else {
+    series.push({ name: "均分", color: "#0b6e4f", values: t.exams.map(e => e.mean) });
+  }
+  OG.chartLine(document.getElementById("classTrendCv"), labels, series, v => f1(v));
+}
+
+function drawStudentTrend(reg) {
+  const t = trendData;
+  const s = (t.students || []).find(x => x.reg === reg);
+  if (!s) return;
+  const labels = t.exams.map(e => e.date.slice(5) + (t.subject ? "" : "·" + (e.subject || "无")));
+  const byId = {};
+  for (const p of s.points) byId[p.examId] = p;
+  const mine = t.exams.map(e => { const p = byId[e.id]; return p && !p.absent ? Math.round(p.rate * 1000) / 10 : null; });
+  const clsRate = t.exams.map(e => e.total > 0 ? Math.round(e.classMean / e.total * 1000) / 10 : null);
+  const cv = document.getElementById("studentTrendCv");
+  OG.chartLine(cv, labels, [
+    { name: `${s.name || s.reg} 得分率%`, color: "#0b6e4f", values: mine },
+    { name: "班级均分率%", color: "#9aa7b6", values: clsRate },
+  ], v => v.toFixed(0) + "%");
+  document.getElementById("studentTrendTip").textContent =
+    `${s.name || s.reg}:共 ${s.points.filter(p => !p.absent).length} 场有效成绩` +
+    (s.points.some(p => p.absent) ? ",含缺考场次(图中断点)" : "");
+  cv.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 /* —— 账号设置 —— */
@@ -168,6 +711,8 @@ async function changePwd() {
   } catch (e) { document.getElementById("pwdMsg").textContent = e.message; }
 }
 
+/* 让重新渲染后 openExam 仍可用(避免重复 pitch) */
+window.loadReports = loadReports;
 main();
 </script>
 </body>

@@ -94,3 +94,41 @@ func TestUserStoreLifecycle(t *testing.T) {
 		}
 	}
 }
+
+func TestImportUpsert(t *testing.T) {
+	s, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.ImportUpsert(&User{Username: "s1", DisplayName: "李雷", Role: RoleStudent, Reg: "00000001", Class: "三年二班"}, "pass123")
+	if err != nil || !created {
+		t.Fatalf("首次导入应创建: created=%v err=%v", created, err)
+	}
+	// 重复导入:仅更新行内给出的非空字段,不抹掉既有信息、不动口令
+	created, err = s.ImportUpsert(&User{Username: "s1", Class: "三年三班"}, "")
+	if err != nil || created {
+		t.Fatalf("重复导入应为更新: created=%v err=%v", created, err)
+	}
+	u := s.Users["s1"]
+	if u.Class != "三年三班" || u.DisplayName != "李雷" || u.Reg != "00000001" {
+		t.Fatalf("更新语义错误: %+v", u)
+	}
+	if !u.CheckPassword("pass123") {
+		t.Fatal("未提供密码时不应重置口令")
+	}
+	// 显式密码 → 重置
+	if _, err := s.ImportUpsert(&User{Username: "s1"}, "newpass1"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.Users["s1"].CheckPassword("newpass1") {
+		t.Fatal("显式密码应重置口令")
+	}
+	// 新账号无密码 → 报错
+	if _, err := s.ImportUpsert(&User{Username: "s2", Role: RoleStudent}, ""); err == nil {
+		t.Fatal("新账号缺密码应报错")
+	}
+	// 角色不合法 → 报错
+	if _, err := s.ImportUpsert(&User{Username: "s3", Role: Role("boss")}, "pass123"); err == nil {
+		t.Fatal("角色不合法应报错")
+	}
+}

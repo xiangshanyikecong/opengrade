@@ -34,7 +34,7 @@ func handleAssign(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
-	if err := store.SetAssignment(req.ExamID, req.Student, req.Reg); err != nil {
+	if err := store.SetAssignment(req.ExamID, req.Student, req.Reg, u.Username); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -111,6 +111,9 @@ func questionLabel(ex *Exam, st score.QuestionStat) string {
 		k := ex.Layout.Questions[st.Index-1].Kind
 		return fmt.Sprintf("%d(%s)", st.Index, kindShort(k))
 	}
+	if st.Elective != "" {
+		return fmt.Sprintf("%d(%s·选做)", st.Index, kindShort("subjective"))
+	}
 	return fmt.Sprintf("%d(%s)", st.Index, kindShort("subjective"))
 }
 
@@ -141,7 +144,7 @@ func handleExportXlsx(w http.ResponseWriter, r *http.Request, store *Store, u *a
 	for i, q := range rep.PerQuestion {
 		labels[i] = questionLabel(ex, q)
 	}
-	data, err := export.ScoresXlsxZip(rep, labels)
+	data, err := export.ScoresXlsxZip(rep, labels, knowledgeStatsOf(ex))
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err)
 		return
@@ -276,8 +279,11 @@ func handleReviewPPTX(w http.ResponseWriter, r *http.Request, store *Store, u *a
 			letters := card.OptionLetters(spec.Kind, spec.Options)
 			dist := map[string]int{}
 			for _, res := range ex.Results {
-				if qi < len(res.Answers) && res.Answers[qi] != "" {
-					dist[res.Answers[qi]]++
+				if res == nil || res.Absent || qi >= len(res.Answers) {
+					continue
+				}
+				if ans := res.Answers[qi]; ans != "" {
+					dist[ans]++
 				}
 			}
 			rs.Lines = append(rs.Lines,
@@ -326,6 +332,7 @@ func handleReviewPPTX(w http.ResponseWriter, r *http.Request, store *Store, u *a
 }
 
 // pickTypicalSlices 选出某主观题的最高分与最低分已阅学生(讲评典型样本)。
+// 拆分小问的题目按小问之和计(全部小问已阅才进入样本)。
 func pickTypicalSlices(ex *Exam, question int) (best, worst struct {
 	student int
 	label   string
@@ -336,8 +343,8 @@ func pickTypicalSlices(ex *Exam, question int) (best, worst struct {
 	}
 	var graded []sg
 	for si := range ex.Results {
-		if g, ok := ex.Grades[score.GradeKey(si+1, question)]; ok && g.Graded {
-			graded = append(graded, sg{si + 1, g.Score})
+		if s, done, _ := score.SubjectiveScore(ex.Layout.Subjectives[question-1], ex.Grades, si+1, question); done {
+			graded = append(graded, sg{si + 1, s})
 		}
 	}
 	if len(graded) == 0 {

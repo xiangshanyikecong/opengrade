@@ -24,6 +24,7 @@
   button.secondary { padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#eef2f6; color:var(--ink); font-size:13px; cursor:pointer; }
   .spec { display:grid; grid-template-columns:1.1fr 0.9fr 0.9fr 0.9fr auto; gap:6px; align-items:center; margin-bottom:6px; }
   .spec input, .spec select { padding:6px; }
+  .spec .know { grid-column:1/-1; }
   .del { border:0; background:none; color:#c2410c; cursor:pointer; font-size:15px; }
   .group-title { font-size:13px; font-weight:600; color:#374151; margin-top:4px; }
   .preview { flex:1; min-height:70vh; overflow:auto; display:grid; place-items:start center; }
@@ -62,6 +63,8 @@
     <div class="group-title">主观题(留白作答区,切片后人工阅卷)</div>
     <div id="subSpecs"></div>
     <button class="secondary" onclick="addSub()">+ 加一道主观题</button>
+    <button class="secondary" id="bankPickBtn" onclick="pickBank()">⇩ 从题库选题</button>
+    <div id="bankPick" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px;max-height:300px;overflow:auto"></div>
     <button class="primary" id="gen">生成 / 刷新预览</button>
     <button class="secondary" id="download" disabled>下载 SVG(可打印)</button>
     <div class="err" id="designMsg"></div>
@@ -78,6 +81,8 @@
     <label>客观题参考答案(JSON 数组,如 ["A","T","AC",...];判断题用 T/F,多选题如 "AC")
       <textarea id="examKey" rows="3" placeholder='["A","B","T",...]'></textarea>
     </label>
+    <button class="secondary" onclick="bankKey()">⇩ 从题库带出客观题答案</button>
+    <span class="hint">按版式题序生成;未从题库插入的题为 ?,请手工补齐后使用(会覆盖上面文本框)</span>
     <label>学科(教师按学科过滤考试,如 数学/语文/英语)
       <input id="examSubject" placeholder="数学">
     </label>
@@ -113,7 +118,7 @@ document.querySelectorAll("nav.tabs button").forEach(b => b.onclick = () => {
 });
 
 // —— 设计器 ——
-function addObj(count = 20, kind = "choice", options = 4, score = 2) {
+function addObj(count = 20, kind = "choice", options = 4, score = 2, knowledge = "") {
   const div = document.createElement("div");
   div.className = "spec";
   div.innerHTML = `
@@ -123,13 +128,16 @@ function addObj(count = 20, kind = "choice", options = 4, score = 2) {
     </select>
     <input type="number" class="o" value="${options}" min="2" max="6" title="选项数">
     <input type="number" class="s" value="${score}" min="0.5" step="0.5" title="每题分值">
-    <button class="del" onclick="this.parentNode.remove()">×</button>`;
+    <button class="del" onclick="this.parentNode.remove()">×</button>
+    <input type="text" class="kn know" placeholder="知识点标签(可空,多个用 , 或 、 分隔,如 函数、导数)" title="用于学情掌握度分析">`;
   div.querySelector(".k").value = kind;
+  if (knowledge) div.querySelector(".kn").value = knowledge;
   div.querySelector(".o").style.visibility = kind === "judge" ? "hidden" : "visible";
   div.querySelector(".k").onchange = e => e.target.parentNode.querySelector(".o").style.visibility = e.target.value === "judge" ? "hidden" : "visible";
   $("objSpecs").appendChild(div);
+  return div;
 }
-function addSub(kind = "fillblank", label = "", score = 5, height = 16) {
+function addSub(kind = "fillblank", label = "", score = 5, height = 16, parts = "", elective = "", knowledge = "") {
   const div = document.createElement("div");
   div.className = "spec";
   div.innerHTML = `
@@ -137,9 +145,14 @@ function addSub(kind = "fillblank", label = "", score = 5, height = 16) {
     <input type="text" class="l" value="${label}" placeholder="题干(可空)" style="grid-column:span 2">
     <input type="number" class="s" value="${score}" title="满分">
     <button class="del" onclick="this.parentNode.remove()">×</button>
-    <input type="number" class="h" value="${height}" min="4" max="120" title="作答区高度 mm" style="grid-column:span 4">`;
+    <input type="number" class="h" value="${height}" min="4" max="120" title="作答区高度 mm" style="grid-column:span 3">
+    <input type="text" class="p" value="${parts}" placeholder="拆小问分值,如 6,5,6(留空=整题一问)" style="grid-column:span 2">
+    <input type="text" class="e" value="${elective}" placeholder="选做组(如 A;同组题互为多选一,2~4 道)" title="选做题:卡面印题号区,判分只取学生涂选的题" style="grid-column:span 3">
+    <input type="text" class="kn know" placeholder="知识点标签(可空,多个用 , 或 、 分隔)" title="用于学情掌握度分析">`;
   div.querySelector(".k").value = kind;
+  if (knowledge) div.querySelector(".kn").value = knowledge;
   $("subSpecs").appendChild(div);
+  return div;
 }
 addObj(); addObj(5, "judge", 2, 2); addObj(5, "multiple", 4, 2);
 addSub("fillblank", "", 5, 16); addSub("subjective", "", 10, 42);
@@ -149,13 +162,69 @@ function buildLayout() {
   [...$("objSpecs").children].forEach(d => {
     const kind = d.querySelector(".k").value;
     const count = +d.querySelector(".c").value, options = +d.querySelector(".o").value, score = +d.querySelector(".s").value;
-    for (let i = 0; i < count; i++) questions.push({ kind, options, score });
+    const knowledge = d.querySelector(".kn").value.trim();
+    for (let i = 0; i < count; i++) questions.push({ kind, options, score, knowledge });
   });
-  const subjectives = [...$("subSpecs").children].map(d => ({
-    kind: d.querySelector(".k").value, label: d.querySelector(".l").value,
-    score: +d.querySelector(".s").value, heightMM: +d.querySelector(".h").value,
-  }));
+  const subjectives = [...$("subSpecs").children].map(d => {
+    const subj = {
+      kind: d.querySelector(".k").value, label: d.querySelector(".l").value,
+      score: +d.querySelector(".s").value, heightMM: +d.querySelector(".h").value,
+      knowledge: d.querySelector(".kn").value.trim(),
+    };
+    const parts = d.querySelector(".p").value.split(/[,，\s]+/).map(x => parseFloat(x)).filter(x => x > 0);
+    if (parts.length) subj.parts = parts.map(s => ({ score: s })); // 版式 v3:一道大题拆多问分别给分
+    const elective = d.querySelector(".e").value.trim();
+    if (elective) subj.elective = elective; // 版式 v3:同组选做题,判分只取学生所涂题号
+    return subj;
+  });
   return { version: 2, title: $("title").value, regDigits: +$("reg").value, columns: +$("columns").value, questions, subjectives };
+}
+
+// —— 校本题库选题:插入版式(题型/选项/分值/知识点随题带出),客观题答案随题记录 ——
+let bankCache = [];
+async function pickBank() {
+  const box = $("bankPick");
+  if (!box.hidden) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = `<p class="hint">题库加载中…(先到「教师工作台 → 题库」录入)</p>`;
+  try { bankCache = await (await fetch("/api/v1/bank")).json(); } catch (e) { bankCache = []; }
+  if (!bankCache.length) { box.innerHTML = `<p class="hint">题库为空。到「教师工作台 → 题库」录入后即可在此选题。</p>`; return; }
+  const kn = { choice: "单选", judge: "判断", multiple: "多选", fillblank: "填空", subjective: "解答" };
+  box.innerHTML = bankCache.map(it => `<label style="display:block;font-size:13px;padding:3px 0">
+      <input type="checkbox" data-id="${it.id}">
+      [${kn[it.kind] || it.kind}${it.options ? " " + it.options + "选" : ""} ${it.score || "?"} 分] ${it.stem || "(无题干)"}
+      <span class="hint">答:${it.answer || "-"} · ${it.knowledge || ""}${it.difficulty ? " · " + it.difficulty : ""}</span>
+    </label>`).join("") + `<button class="primary" onclick="insertBank()">插入所选</button> <span class="hint" id="pickMsg"></span>`;
+}
+function insertBank() {
+  const boxes = [...document.querySelectorAll("#bankPick input[type=checkbox]:checked")];
+  let n = 0;
+  for (const cb of boxes) {
+    const it = bankCache.find(x => x.id === cb.dataset.id);
+    if (!it) continue;
+    if (it.kind === "fillblank" || it.kind === "subjective") {
+      const div = addSub(it.kind, it.stem, it.score || (it.kind === "fillblank" ? 5 : 10),
+        it.kind === "fillblank" ? 16 : 42, "", "", it.knowledge);
+      div.dataset.answer = it.answer || "";
+    } else {
+      const div = addObj(1, it.kind, it.options || 4, it.score || 2, it.knowledge);
+      div.dataset.answer = it.answer || "";
+    }
+    n++;
+  }
+  $("pickMsg").textContent = `已插入 ${n} 题。客观题答案在「建考与阅卷」页用「从题库带出客观题答案」一键生成。`;
+}
+
+// 按当前版式客观题题序从题库带出参考答案(dataset.answer 随题库插入记录;缺答案的题为 ?)
+function bankKey() {
+  const key = [];
+  [...$("objSpecs").children].forEach(d => {
+    const count = +d.querySelector(".c").value;
+    for (let i = 0; i < count; i++) key.push(d.dataset.answer || "?");
+  });
+  $("examKey").value = JSON.stringify(key);
+  $("examMsg").className = "ok";
+  $("examMsg").textContent = `已按题库带出 ${key.length} 道客观题答案(?处请手工补齐)。`;
 }
 
 let currentSVG = null;
