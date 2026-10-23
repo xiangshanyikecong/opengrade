@@ -38,6 +38,17 @@
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
   @media (max-width:820px){ .grid2 { grid-template-columns:1fr; } }
   .keyinput { width:52px; text-align:center; }
+  .room { border:1px solid var(--line); border-radius:8px; padding:10px; margin:10px 0; }
+  .room-head { display:flex; gap:10px; align-items:center; margin-bottom:8px; }
+  .seats { display:grid; grid-template-columns:repeat(auto-fill, minmax(92px,1fr)); gap:6px; }
+  .seat { border:1px solid var(--line); border-radius:6px; padding:4px; font-size:12px; cursor:pointer; min-height:56px; }
+  .seat.empty { opacity:.45; }
+  .seat.sel { outline:2px solid var(--brand); }
+  @media print {
+    header, nav.tabs, .no-print { display:none !important; }
+    .seat { break-inside:avoid; }
+    .room { break-inside:avoid; }
+  }
 </style>
 </head>
 <body>
@@ -54,6 +65,7 @@
   <div id="tab-tasks" hidden></div>
   <div id="tab-reports" hidden></div>
   <div id="tab-trends" hidden></div>
+  <div id="tab-rooms" hidden></div>
   <div id="tab-me" hidden></div>
 </main>
 <input type="file" id="scanFiles" multiple accept="image/*" hidden>
@@ -64,7 +76,7 @@ let exams = [];
 async function main() {
   if (!await OG.init()) return;
   if (OG.is("admin")) document.getElementById("adminLink").hidden = false;
-  const tabs = [["exams", "考试"], ["bank", "题库"], ["reports", "学情分析"], ["trends", "纵向趋势"], ["me", "账号设置"]];
+  const tabs = [["exams", "考试"], ["bank", "题库"], ["reports", "学情分析"], ["trends", "纵向趋势"], ["rooms", "考场编排"], ["me", "账号设置"]];
   if (OG.is("admin", "leader")) tabs.splice(2, 0, ["tasks", "任务分配"]);
   document.getElementById("tabs").innerHTML = tabs.map(([id, name], i) =>
     `<button class="${i === 0 ? 'active' : ''}" data-t="${id}" onclick="showTab('${id}')">${name}</button>`).join("");
@@ -73,15 +85,113 @@ async function main() {
 
 function showTab(id) {
   document.querySelectorAll("nav.tabs button").forEach(b => b.classList.toggle("active", b.dataset.t === id));
-  ["exams", "bank", "tasks", "reports", "trends", "me"].forEach(t => document.getElementById(tab_(t)).hidden = t !== id);
+  ["exams", "bank", "tasks", "reports", "trends", "rooms", "me"].forEach(t => document.getElementById(tab_(t)).hidden = t !== id);
   if (id === "exams") loadExams();
   if (id === "bank") loadBank();
   if (id === "tasks") loadTasks();
   if (id === "reports") loadReports();
   if (id === "trends") loadTrendInit();
+  if (id === "rooms") loadRooms();
   if (id === "me") renderMe();
 }
 function tab_(t) { return "tab-" + t; }
+
+/* —— 考场编排(走班排考):生成 → 座位对调/监考指派 → 打印 —— */
+let roomsExam = "", roomsPlan = null, swapSel = null, roomsStaff = [];
+
+async function loadRooms() {
+  exams = (await OG.jget("/api/v1/exams")) || [];
+  const box = document.getElementById("tab-rooms");
+  box.innerHTML = `<div class="panel">
+    <div class="group-title">考场编排(按名册分场,生成后可微调并打印)</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center" class="no-print">
+      <label>考试 <select id="roomsExamSel" onchange="roomsPick()">
+        <option value="">选择考试…</option>
+        ${exams.map(e => `<option value="${e.id}" ${roomsExam === e.id ? 'selected' : ''}>${e.id}(${e.createdAt}${e.subject ? '·' + e.subject : ''})</option>`).join("")}
+      </select></label>
+      <label>每场人数 <input id="roomsSize" type="number" value="30" min="5" max="200" style="width:64px"></label>
+      <label>编排 <select id="roomsGroup"><option value="class">同班聚齐(按主班)</option><option value="reg">纯考号序</option></select></label>
+      <button class="primary" onclick="genRooms()">生成分场</button>
+      <button class="secondary" onclick="window.print()">打印座位表</button>
+    </div>
+    <p class="hint no-print">同班聚齐按名册主班排序装场(走班名册把教学班放 Classes 首位即可按教学班聚齐);生成后点击两个座位可对调,每场可下拉指派监考。</p>
+    <div id="roomsArea"><p class="hint">选择考试后生成,或查看已保存的编排。</p></div>
+  </div>`;
+  if (roomsExam) fetchRooms();
+}
+
+async function roomsPick() {
+  roomsExam = document.getElementById("roomsExamSel").value;
+  swapSel = null;
+  if (roomsExam) fetchRooms();
+  else roomsPlan = null;
+}
+
+async function fetchRooms() {
+  try {
+    const [plan, detail] = await Promise.all([
+      OG.jget(`/api/v1/exams/${roomsExam}/rooms`),
+      OG.jget(`/api/v1/exams/${roomsExam}`),
+    ]);
+    roomsStaff = (detail.staff || []);
+    roomsPlan = plan && plan.rooms ? plan : null;
+  } catch (e) { roomsPlan = null; }
+  renderRooms();
+}
+
+async function genRooms() {
+  if (!roomsExam) { alert("先选择考试"); return; }
+  const size = +document.getElementById("roomsSize").value || 30;
+  const group = document.getElementById("roomsGroup").value;
+  try {
+    roomsPlan = await OG.jpost(`/api/v1/exams/${roomsExam}/rooms`, { size, group });
+    swapSel = null;
+    renderRooms();
+  } catch (e) { alert(e.message); }
+}
+
+function renderRooms() {
+  const area = document.getElementById("roomsArea");
+  if (!area) return;
+  if (!roomsPlan || !roomsPlan.rooms) { area.innerHTML = `<p class="hint">尚未生成编排。</p>`; return; }
+  let html = "";
+  for (const room of roomsPlan.rooms) {
+    const seats = room.seats.map(s => {
+      const selMark = swapSel && swapSel.room === room.name && swapSel.idx === s.idx;
+      const body = s.reg
+        ? `<div>${s.name}</div><div class="hint">${s.reg}</div><div class="hint">${s.class || ""}</div>`
+        : `<div class="hint">空座</div>`;
+      return `<div class="seat ${s.reg ? '' : 'empty'} ${selMark ? 'sel' : ''}" onclick="seatClick('${room.name}',${s.idx})"><b>${s.idx}</b>${body}</div>`;
+    }).join("");
+    const proctors = `<select class="no-print" onchange="setProctor('${room.name}', this.value)">
+        <option value="">监考…</option>
+        ${roomsStaff.map(t => `<option value="${t.username}" ${room.proctor === t.username ? 'selected' : ''}>${t.displayName || t.username}</option>`).join("")}
+      </select>`;
+    html += `<div class="room">
+      <div class="room-head"><b>${room.name}</b><span class="hint">${room.seats.filter(s => s.reg).length} 人 · 监考:${room.proctor || "未指派"}</span>${proctors}</div>
+      <div class="seats">${seats}</div></div>`;
+  }
+  area.innerHTML = html;
+}
+
+async function seatClick(room, idx) {
+  if (!roomsPlan) return;
+  if (!swapSel) { swapSel = { room, idx }; renderRooms(); return; }
+  const a = swapSel;
+  swapSel = null;
+  if (a.room === room && a.idx === idx) { renderRooms(); return; }
+  try {
+    roomsPlan = await OG.jpost(`/api/v1/exams/${roomsExam}/rooms`, { swap: { a, b: { room, idx } } }, "PATCH");
+  } catch (e) { alert(e.message); }
+  renderRooms();
+}
+
+async function setProctor(room, teacher) {
+  try {
+    roomsPlan = await OG.jpost(`/api/v1/exams/${roomsExam}/rooms`, { proctor: { room, teacher } }, "PATCH");
+    renderRooms();
+  } catch (e) { alert(e.message); }
+}
 
 /* —— 考试列表 —— */
 async function loadExams() {
@@ -185,12 +295,12 @@ async function renderBank() {
   const items = await OG.jget("/api/v1/bank" + (q.toString() ? "?" + q.toString() : ""));
   const box = document.getElementById("bankList");
   if (!items.length) { box.innerHTML = `<p class="hint">题库为空(或无符合条件的题)。用上方表单录入第一道题。</p>`; return; }
-  let html = `<table><tr><th>学科</th><th>题型</th><th>分值</th><th>题干</th><th>答案</th><th>知识点</th><th>难度</th><th>录入人</th><th></th></tr>`;
+  let html = `<table><tr><th>学科</th><th>题型</th><th>分值</th><th>题干</th><th>答案</th><th>知识点</th><th>难度</th><th>已用于</th><th>录入人</th><th></th></tr>`;
   for (const it of items) {
     const mine = it.createdBy === OG.me.username;
     html += `<tr><td>${it.subject || "-"}</td><td>${bankKinds[it.kind] || it.kind}${it.options ? "(" + it.options + "选)" : ""}</td>
       <td>${it.score || "-"}</td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${it.stem || ""}">${it.stem || "-"}</td>
-      <td>${it.answer || "-"}</td><td>${it.knowledge || "-"}</td><td>${it.difficulty || "-"}</td><td>${it.createdBy || "-"}</td>
+      <td>${it.answer || "-"}</td><td>${it.knowledge || "-"}</td><td>${it.difficulty || "-"}</td><td>${(it.usedIn || []).length ? (it.usedIn.length + " 场") : "-"}</td><td>${it.createdBy || "-"}</td>
       <td>${mine || OG.is("admin", "leader") ? `<a href="#" class="danger" onclick="delBankQuestion('${it.id}');return false">删除</a>` : ""}</td></tr>`;
   }
   box.innerHTML = html + "</table>";

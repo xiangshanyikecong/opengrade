@@ -118,6 +118,28 @@ func AdaptiveBinarize(g *image.Gray, win int, frac float64) *bitmap {
 	return b
 }
 
+// inkPercentile 返回使最暗 frac 比例像素落入墨迹区的阈值(直方图前缀和)。
+// 用于 Otsu 在墨迹极稀少的版面上失衡时的定位兜底:定位方块+涂卡恒占最暗部分,
+// 按 2% 切分既保住它们又不至于把纸面噪声整体划为墨迹。
+func inkPercentile(g *image.Gray, frac float64) uint8 {
+	var hist [256]int
+	for _, p := range g.Pix {
+		hist[p]++
+	}
+	limit := int(float64(len(g.Pix)) * frac)
+	if limit < 1 {
+		limit = 1
+	}
+	acc := 0
+	for v, n := range hist {
+		acc += n
+		if acc >= limit {
+			return uint8(v)
+		}
+	}
+	return 255
+}
+
 // SampleBilinear 双线性采样;越界处返回 255(白),模拟纸外背景。
 func SampleBilinear(g *image.Gray, x, y float64) float64 {
 	w, h := g.Rect.Dx(), g.Rect.Dy()

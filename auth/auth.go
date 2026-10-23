@@ -43,10 +43,25 @@ type User struct {
 	Salt        string   `json:"salt"` // hex
 	Hash        string   `json:"hash"` // hex, PBKDF2-HMAC-SHA256
 	Reg         string   `json:"reg,omitempty"`
-	Class       string   `json:"class,omitempty"`    // 学生所属班级(教师为任教班级)
+	Class       string   `json:"class,omitempty"`    // 学生所属班级(教师为任教班级);走班场景为行政班/主班
+	Classes     []string `json:"classes,omitempty"` // 全部班级(走班:学生双归属/教师多班任教);Classes[0]=Class
 	Subjects    []string `json:"subjects,omitempty"` // 教师任教学科(如 数学/语文)
 	Grades      []string `json:"grades,omitempty"`   // 年级组长管辖年级
 	Children    []string `json:"children,omitempty"` // 家长绑定的子女考号(家长角色)
+}
+
+// AllClasses 返回该账号的全部班级;只有 class 的老数据归一为单班。
+func (u *User) AllClasses() []string {
+	if u == nil {
+		return nil
+	}
+	if len(u.Classes) > 0 {
+		return u.Classes
+	}
+	if u.Class != "" {
+		return []string{u.Class}
+	}
+	return nil
 }
 
 // IsStaff 报告是否为教职员(非学生)。
@@ -249,6 +264,13 @@ func (s *Store) CreateUser(u *User, password string) error {
 	if err := u.SetPassword(password); err != nil {
 		return err
 	}
+	// 走班归一:Classes[0] 恒为 Class(行政班/主班)
+	if len(u.Classes) == 0 && u.Class != "" {
+		u.Classes = []string{u.Class}
+	}
+	if u.Class == "" && len(u.Classes) > 0 {
+		u.Class = u.Classes[0]
+	}
 	s.Users[u.Username] = u
 	return s.saveLocked()
 }
@@ -295,6 +317,12 @@ func (s *Store) ImportUpsert(u *User, password string) (created bool, err error)
 	if u.Class != "" {
 		existing.Class = u.Class
 	}
+	if len(u.Classes) > 0 {
+		existing.Classes = u.Classes
+		if existing.Class == "" {
+			existing.Class = u.Classes[0]
+		}
+	}
 	if len(u.Subjects) > 0 {
 		existing.Subjects = u.Subjects
 	}
@@ -333,6 +361,12 @@ func (s *Store) UpdateUser(username string, patch *User) error {
 	}
 	u.DisplayName = patch.DisplayName
 	u.Reg, u.Class = patch.Reg, patch.Class
+	if patch.Classes != nil {
+		u.Classes = patch.Classes
+		if len(u.Classes) > 0 && u.Class == "" {
+			u.Class = u.Classes[0]
+		}
+	}
 	if patch.Subjects != nil {
 		u.Subjects = patch.Subjects
 	}
@@ -406,6 +440,7 @@ type PublicUser struct {
 	Role        Role     `json:"role"`
 	Reg         string   `json:"reg,omitempty"`
 	Class       string   `json:"class,omitempty"`
+	Classes     []string `json:"classes,omitempty"`
 	Subjects    []string `json:"subjects,omitempty"`
 	Grades      []string `json:"grades,omitempty"`
 	Children    []string `json:"children,omitempty"`
@@ -419,7 +454,7 @@ func (s *Store) List() []*PublicUser {
 	for _, u := range s.Users {
 		out = append(out, &PublicUser{
 			Username: u.Username, DisplayName: u.DisplayName, Role: u.Role,
-			Reg: u.Reg, Class: u.Class, Subjects: u.Subjects, Grades: u.Grades, Children: u.Children,
+			Reg: u.Reg, Class: u.Class, Classes: u.AllClasses(), Subjects: u.Subjects, Grades: u.Grades, Children: u.Children,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

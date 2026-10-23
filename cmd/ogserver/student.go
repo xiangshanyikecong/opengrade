@@ -76,11 +76,13 @@ type ClassStat struct {
 }
 
 // computeClassStats 依据名册班级与最终考号聚合班级统计。
+// 走班双归属:学生计入其所属的每一个班(行政班+教学班)——按教学班看走班课的
+// 均分,按行政班看整班对比,同一份成绩两种口径。
 func computeClassStats(ex *Exam, rep *score.Report) []ClassStat {
-	clsOf := map[string]string{} // 最终考号 → 班级
+	clsOf := map[string][]string{} // 最终考号 → 全部班级
 	for _, st := range ex.Roster {
-		if st.Class != "" {
-			clsOf[st.Reg] = st.Class
+		if cs := st.AllClasses(); len(cs) > 0 {
+			clsOf[st.Reg] = cs
 		}
 	}
 	type acc struct {
@@ -89,14 +91,7 @@ func computeClassStats(ex *Exam, rep *score.Report) []ClassStat {
 		rateSum float64
 	}
 	byClass := map[string]*acc{}
-	for _, line := range rep.Students {
-		if line.Absent {
-			continue // 缺考不进班级统计
-		}
-		cls := "未匹配"
-		if c, ok := clsOf[line.RegNumber]; ok {
-			cls = c
-		}
+	add := func(cls string, line *score.StudentLine) {
 		a := byClass[cls]
 		if a == nil {
 			a = &acc{}
@@ -107,6 +102,19 @@ func computeClassStats(ex *Exam, rep *score.Report) []ClassStat {
 		if line.Total > 0 {
 			a.rateSum += line.Score / line.Total
 		}
+	}
+	for i := range rep.Students {
+		line := &rep.Students[i]
+		if line.Absent {
+			continue // 缺考不进班级统计
+		}
+		if cs, ok := clsOf[line.RegNumber]; ok {
+			for _, c := range cs {
+				add(c, line)
+			}
+			continue
+		}
+		add("未匹配", line)
 	}
 	var out []ClassStat
 	for cls, a := range byClass {

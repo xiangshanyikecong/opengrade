@@ -74,6 +74,7 @@ func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"added": 0, "failed": failed})
 		return
 	}
+	markDuplicateRegs(ex.Results, results) // 与存量/批内重复考号 → 告警(疑似重答)
 	total, err := store.AppendScans(ex.ID, u.Username, results, slices, pages)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err)

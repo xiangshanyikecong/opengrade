@@ -57,6 +57,15 @@
       <label>考号位数 <input id="reg" type="number" value="8" min="0" max="12"></label>
       <label>客观题分栏 <input id="columns" type="number" value="2" min="1" max="4"></label>
     </div>
+    <label>考号通道(条码/二维码印在卷头右侧;双通道可用码修复涂卡漏涂,建议高速扫描选双通道)
+      <select id="regMode">
+        <option value="fill">填涂(默认)</option>
+        <option value="fill+barcode">填涂 + 条码(双通道,推荐)</option>
+        <option value="fill+qr">填涂 + 二维码(双通道)</option>
+        <option value="barcode">仅条码</option>
+        <option value="qr">仅二维码</option>
+      </select>
+    </label>
     <div class="group-title">客观题(按顺序编号,可混排题型)</div>
     <div id="objSpecs"></div>
     <button class="secondary" onclick="addObj()">+ 加一段客观题</button>
@@ -163,7 +172,8 @@ function buildLayout() {
     const kind = d.querySelector(".k").value;
     const count = +d.querySelector(".c").value, options = +d.querySelector(".o").value, score = +d.querySelector(".s").value;
     const knowledge = d.querySelector(".kn").value.trim();
-    for (let i = 0; i < count; i++) questions.push({ kind, options, score, knowledge });
+    const bankId = d.dataset.bankId || "";
+    for (let i = 0; i < count; i++) questions.push({ kind, options, score, knowledge, bankId });
   });
   const subjectives = [...$("subSpecs").children].map(d => {
     const subj = {
@@ -175,9 +185,11 @@ function buildLayout() {
     if (parts.length) subj.parts = parts.map(s => ({ score: s })); // 版式 v3:一道大题拆多问分别给分
     const elective = d.querySelector(".e").value.trim();
     if (elective) subj.elective = elective; // 版式 v3:同组选做题,判分只取学生所涂题号
+    if (d.dataset.bankId) subj.bankId = d.dataset.bankId; // 题库选题:建考后回记使用史
     return subj;
   });
-  return { version: 2, title: $("title").value, regDigits: +$("reg").value, columns: +$("columns").value, questions, subjectives };
+  const regMode = $("regMode").value;
+  return { version: 2, title: $("title").value, regDigits: +$("reg").value, regMode, columns: +$("columns").value, questions, subjectives };
 }
 
 // —— 校本题库选题:插入版式(题型/选项/分值/知识点随题带出),客观题答案随题记录 ——
@@ -206,9 +218,11 @@ function insertBank() {
       const div = addSub(it.kind, it.stem, it.score || (it.kind === "fillblank" ? 5 : 10),
         it.kind === "fillblank" ? 16 : 42, "", "", it.knowledge);
       div.dataset.answer = it.answer || "";
+      div.dataset.bankId = it.id; // 建考后自动回记「被本场考试使用」
     } else {
       const div = addObj(1, it.kind, it.options || 4, it.score || 2, it.knowledge);
       div.dataset.answer = it.answer || "";
+      div.dataset.bankId = it.id;
     }
     n++;
   }

@@ -64,7 +64,7 @@ func handleLogout(w http.ResponseWriter, r *http.Request, authStore *auth.Store,
 func handleMe(w http.ResponseWriter, r *http.Request, authStore *auth.Store, u *auth.User) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"username": u.Username, "displayName": u.DisplayName, "role": u.Role,
-		"reg": u.Reg, "class": u.Class, "children": u.Children,
+		"reg": u.Reg, "class": u.Class, "classes": u.AllClasses(), "children": u.Children,
 	})
 }
 

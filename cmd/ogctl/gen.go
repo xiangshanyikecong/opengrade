@@ -19,6 +19,7 @@ type layoutFlags struct {
 	options    int
 	columns    int
 	reg        int
+	regMode    string
 	students   int
 	seed       int64
 	layoutFile string
@@ -35,6 +36,7 @@ func addLayoutFlags(fs *flag.FlagSet, lf *layoutFlags) {
 	fs.IntVar(&lf.options, "options", 4, "每题选项数(v1 模式)")
 	fs.IntVar(&lf.columns, "columns", 2, "客观题分栏数")
 	fs.IntVar(&lf.reg, "reg", 8, "考号位数(0=不设考号区)")
+	fs.StringVar(&lf.regMode, "reg-mode", "fill", "考号通道:fill|barcode|qr|fill+barcode|fill+qr(条码/二维码印在卷头右侧)")
 	fs.IntVar(&lf.students, "students", 0, "模拟涂卡学生份数(0=只出空白卡)")
 	fs.Int64Var(&lf.seed, "seed", 1, "随机种子(复现实验)")
 	fs.StringVar(&lf.layoutFile, "layout-file", "", "版式 JSON 文件(v1/v2 均可;指定后忽略 -questions/-options/-title)")
@@ -56,6 +58,7 @@ func resolveLayout(lf layoutFlags) (card.Layout, error) {
 		Version:     1,
 		Title:       lf.title,
 		RegDigits:   lf.reg,
+		RegMode:     lf.regMode,
 		ChoiceCount: lf.questions,
 		Options:     lf.options,
 		Columns:     lf.columns,
@@ -96,7 +99,9 @@ func generate(lf layoutFlags) (*genResult, error) {
 			f.Reg = append(f.Reg, int(ch-'0'))
 		}
 		if lf.corruptStudent == i+1 && len(f.Reg) > 2 {
-			f.Reg[len(f.Reg)/2] = -1 // 模拟漏涂一位
+			// 模拟填涂漏一位:码制通道(条码/二维码)仍印真实考号,演示"码修复漏涂"
+			f.RegUnfilled = make([]bool, len(f.Reg))
+			f.RegUnfilled[len(f.Reg)/2] = true
 		}
 		gr.fillings = append(gr.fillings, f)
 		gr.regNums = append(gr.regNums, regNum)

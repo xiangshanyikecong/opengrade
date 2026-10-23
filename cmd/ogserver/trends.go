@@ -65,6 +65,7 @@ func lineByReg(rep *score.Report, reg string) (score.StudentLine, bool) {
 }
 
 // classOfReg 从考试名册取考号对应班级;名册未覆盖返回空串。
+// classOfReg 返回该考号在本场考试名册中的行政班。
 func classOfReg(ex *Exam, reg string) string {
 	for _, st := range ex.Roster {
 		if st.Reg == reg {
@@ -72,6 +73,24 @@ func classOfReg(ex *Exam, reg string) string {
 		}
 	}
 	return ""
+}
+
+// inClassOfReg 报告该考号在本场名册中是否属于指定班级(走班:教学班也算)。
+func inClassOfReg(ex *Exam, reg, class string) bool {
+	if class == "" {
+		return true
+	}
+	for _, st := range ex.Roster {
+		if st.Reg == reg {
+			for _, c := range st.AllClasses() {
+				if c == class {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
 }
 
 // nameOfReg 从考试名册取考号对应姓名。
@@ -112,7 +131,7 @@ func classMeanOf(ex *Exam, rep *score.Report, class string) (mean float64, n int
 		if l.Absent {
 			continue
 		}
-		if class != "" && classOfReg(ex, l.RegNumber) != class {
+		if !inClassOfReg(ex, l.RegNumber, class) {
 			continue
 		}
 		sum += l.Score
@@ -168,8 +187,8 @@ func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *
 	}
 	sort.Strings(classes)
 
-	// 关心哪些考号:指定班级 → 名册中该班的考号;未指定 → 全部出现过的考号
-	regClass := map[string]string{} // reg → 班级(任一名册为准)
+	// 关心哪些考号:指定班级 → 名册中该班的考号(走班含教学班归属);未指定 → 全部
+	regClass := map[string]string{} // reg → 行政班(以最近一场考试的名册为准,学生换班跟随最新)
 	regName := map[string]string{}
 	for _, ex := range exams {
 		for _, st := range ex.Roster {
@@ -177,7 +196,7 @@ func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *
 				continue
 			}
 			if st.Class != "" {
-				regClass[st.Reg] = st.Class
+				regClass[st.Reg] = st.Class // exams 升序遍历,后写覆盖=最近考试
 			}
 			if st.Name != "" {
 				regName[st.Reg] = st.Name
@@ -187,8 +206,18 @@ func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *
 	interested := map[string]bool{}
 	for _, ex := range exams {
 		for _, st := range ex.Roster {
-			if st.Reg != "" && (class == "" || st.Class == class) {
+			if st.Reg == "" {
+				continue
+			}
+			if class == "" {
 				interested[st.Reg] = true
+				continue
+			}
+			for _, c := range st.AllClasses() {
+				if c == class {
+					interested[st.Reg] = true
+					break
+				}
 			}
 		}
 		if class != "" {

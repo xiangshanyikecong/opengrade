@@ -36,6 +36,7 @@ type BankQuestion struct {
 	Answer     string    `json:"answer,omitempty"`     // 参考答案:客观题为选项字母(如 "A"/"AC"),主观题为答案要点
 	Knowledge  string    `json:"knowledge,omitempty"`  // 知识点标签(多个用 , 、 分隔)
 	Difficulty string    `json:"difficulty,omitempty"` // 难度先验:容易 | 中等 | 较难 | 难(可空,统计难度仍以实考得分率准)
+	UsedIn     []string  `json:"usedIn,omitempty"`      // 使用史:用过该题的考试 ID(建考自动回记,去重)
 	CreatedBy  string    `json:"createdBy,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
 }
@@ -145,6 +146,28 @@ func (s *BankStore) Update(id string, patch BankQuestion) error {
 }
 
 // Delete 删除一道题(仅创建者/管理员/年级组长可删,校验在处理器)。
+// MarkUsed 回记题目被某场考试使用(去重);题不存在时静默忽略。
+func (s *BankStore) MarkUsed(id, examID string) error {
+	if id == "" || examID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items {
+		if s.items[i].ID != id {
+			continue
+		}
+		for _, e := range s.items[i].UsedIn {
+			if e == examID {
+				return nil
+			}
+		}
+		s.items[i].UsedIn = append(s.items[i].UsedIn, examID)
+		return s.save()
+	}
+	return nil
+}
+
 func (s *BankStore) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -34,20 +34,27 @@ func RenderSVG(s *Sheet, f *Filling) []byte {
 		}
 	}
 
-	// 考号涂卡圆
-	for ci, col := range g.reg {
-		for d, p := range col {
-			if f != nil && ci < len(f.Reg) && f.Reg[ci] == d {
-				fmt.Fprintf(&b, "<circle cx=\"%.2f\" cy=\"%.2f\" r=\"%.2f\" fill=\"black\"/>\n", p.x, p.y, regRMM)
-			} else {
-				fmt.Fprintf(&b, "<circle cx=\"%.2f\" cy=\"%.2f\" r=\"%.2f\" fill=\"none\" stroke=\"black\" stroke-width=\"%.2f\"/>\n", p.x, p.y, regRMM, strokeMM)
+	// 考号涂卡圆(纯码制通道不印)
+	if n.RegHasFill() {
+		for ci, col := range g.reg {
+			for d, p := range col {
+				if f.regFilledAt(ci, d) {
+					fmt.Fprintf(&b, "<circle cx=\"%.2f\" cy=\"%.2f\" r=\"%.2f\" fill=\"black\"/>\n", p.x, p.y, regRMM)
+				} else {
+					fmt.Fprintf(&b, "<circle cx=\"%.2f\" cy=\"%.2f\" r=\"%.2f\" fill=\"none\" stroke=\"black\" stroke-width=\"%.2f\"/>\n", p.x, p.y, regRMM, strokeMM)
+				}
 			}
 		}
 	}
 
+	// 考号码区(条码/二维码通道):学生卡印实际码,母版只印区框与提示
+	if cg := g.code; cg != nil {
+		renderCodeSVG(&b, cg, n, f)
+	}
+
 	// 文本标签
 	text(&b, g.title.x, g.title.y, 6, xmlEscape(n.Title))
-	if len(g.reg) > 0 {
+	if n.RegHasFill() && len(g.reg) > 0 {
 		text(&b, g.regLabel.x, g.regLabel.y, 3.5, "REG NO")
 		for d, p := range g.regRowLbl {
 			text(&b, p.x, p.y, 3, digitName(d))

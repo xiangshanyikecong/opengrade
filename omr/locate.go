@@ -39,12 +39,15 @@ func findLocators(bin *bitmap, sheet *card.Sheet) ([4]image.Point, error) {
 	var have [4]bool
 	for _, bl := range blobs {
 		w, h := bl.w(), bl.h()
-		if float64(w) < expSide*0.5 || float64(w) > expSide*2.0 ||
-			float64(h) < expSide*0.5 || float64(h) > expSide*2.0 {
+		if float64(w) < expSide*0.72 || float64(w) > expSide*2.0 ||
+			float64(h) < expSide*0.72 || float64(h) > expSide*2.0 {
 			continue
 		}
+		// 实心度与尺寸双闸门区分定位方块与涂卡圆:涂卡圆直径仅约 0.68×边长,
+		// 先被上面的两维尺寸闸门拦住;方块在 JPEG/畸变啃角下实心度可跌到 ~0.84,
+		// 阈值取 0.80(仍高于实心涂卡圆的 π/4≈0.785)。
 		fill := float64(bl.area) / float64(w*h)
-		if fill < 0.85 { // 实心方块≈1.0;实心涂卡圆≈π/4≈0.785,以此区分
+		if fill < 0.80 {
 			continue
 		}
 		aspect := float64(w) / float64(h)

@@ -90,7 +90,9 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	mux.HandleFunc("POST /api/v1/cards", staff(handleCards))
 	mux.HandleFunc("POST /api/v1/omr", staff(handleOMR))
 	mux.HandleFunc("POST /api/v1/score", staff(handleScore))
-	mux.HandleFunc("POST /api/v1/exams", staff(withStore(handleCreateExam)))
+	mux.HandleFunc("POST /api/v1/exams", staff(withStore(func(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
+		handleCreateExam(w, r, store, bank, u) // 建考后向校本题库回记「题目被本场使用」
+	})))
 	mux.HandleFunc("GET /api/v1/exams", staff(withStore(handleListExams)))
 	mux.HandleFunc("GET /api/v1/exams/{id}", staff(func(w http.ResponseWriter, r *http.Request, u *auth.User) {
 		handleExamDetail(w, r, store, u, authStore)
@@ -132,6 +134,9 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	manage := guard(authStore, auth.RoleAdmin, auth.RoleLeader)
 	mux.HandleFunc("DELETE /api/v1/exams/{id}", manage(withStore(handleDeleteExam)))
 	mux.HandleFunc("POST /api/v1/exams/{id}/tasks", manage(withStore(handleTaskSet)))
+	mux.HandleFunc("GET /api/v1/exams/{id}/rooms", staff(withStore(handleRoomsGet)))
+	mux.HandleFunc("POST /api/v1/exams/{id}/rooms", staff(withStore(handleRoomsGenerate)))
+	mux.HandleFunc("PATCH /api/v1/exams/{id}/rooms", staff(withStore(handleRoomsPatch)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/audit", manage(withStore(handleAudit)))
 	// 参考答案修正与成绩发布:管理员/组长/建卷教师(处理器内再校验建卷人)
 	mux.HandleFunc("POST /api/v1/exams/{id}/key", staff(withStore(handleSetKey)))
@@ -327,7 +332,7 @@ func formLayout(r *http.Request) (*card.Sheet, omr.Options, error) {
 // handleCreateExam 创建考试会话:multipart 字段 layout(版式 JSON)、key(客观题答案 JSON 数组)、
 // roster(可选名册)、threshold(可选 otsu|adaptive)、images(多张整卷扫描件)。
 // 服务端逐卷 OMR 判读 + 主观题切片 + 整卷回溯图,返回会话 ID。
-func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
+func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank *BankStore, u *auth.User) {
 	if err := r.ParseMultipartForm(256 << 20); err != nil {
 		httpError(w, http.StatusBadRequest, fmt.Errorf("解析 multipart 失败: %w", err))
 		return
@@ -386,6 +391,7 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		pages = append(pages, dbg.Rectified)
 	}
 
+	markDuplicateRegs(nil, results) // 批内重答检测(同考号二次上传 → 告警进异常清单)
 	ex, err := store.Create(NewExam{
 		Layout: sheet.Layout, Key: key, Results: results, Slices: slicesByStudent,
 		Pages: pages, Threshold: opt.Threshold, CreatedBy: u.Username, Subject: r.FormValue("subject"), Roster: st,
@@ -393,6 +399,19 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, u *a
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err)
 		return
+	}
+	// 校本题库回记:版式里来自题库的题标记「被本场考试使用」
+	if bank != nil {
+		for _, q := range ex.Layout.Questions {
+			if q.BankID != "" {
+				_ = bank.MarkUsed(q.BankID, ex.ID)
+			}
+		}
+		for _, sub := range ex.Layout.Subjectives {
+			if sub.BankID != "" {
+				_ = bank.MarkUsed(sub.BankID, ex.ID)
+			}
+		}
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":              ex.ID,
@@ -402,6 +421,30 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		"threshold":       opt.Threshold,
 		"roster":          len(st),
 	})
+}
+
+// markDuplicateRegs 重答检测:同一考号再次出现(批内或与存量)不阻塞流程,
+// 但给后到的卷打「疑似重答」告警,进考试详情的异常清单由人工裁决。
+func markDuplicateRegs(existing []*omr.Result, batch []*omr.Result) {
+	seen := map[string]int{} // 考号 → 首次出现的卷号(1-based)
+	for i, r := range existing {
+		if r != nil && r.RegValid && r.RegNumber != "" {
+			if _, dup := seen[r.RegNumber]; !dup {
+				seen[r.RegNumber] = i + 1
+			}
+		}
+	}
+	base := len(existing)
+	for i, r := range batch {
+		if r == nil || !r.RegValid || r.RegNumber == "" {
+			continue
+		}
+		if first, dup := seen[r.RegNumber]; dup {
+			r.Warnings = append(r.Warnings, fmt.Sprintf("考号 %s 与卷 %d 重复,疑似重答", r.RegNumber, first))
+		} else {
+			seen[r.RegNumber] = base + i + 1
+		}
+	}
 }
 
 func handleListExams(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
@@ -416,7 +459,7 @@ func handleListExams(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		Published  bool   `json:"published"`
 		Mine       bool   `json:"mine"` // 是否为当前账号创建的
 	}
-	var out []summary
+	out := []summary{} // 空列表也返回 [],避免 null 使前端 .map/.forOf 崩溃
 	for _, ex := range store.List() {
 		if !canOpenExam(u, ex) {
 			continue // 学科教师只看任教班级+学科的考试
@@ -452,6 +495,14 @@ type examDetail struct {
 	Staff      []staffInfo           `json:"staff"`      // 可分配的阅卷教师(任务分配下拉)
 	Absent     []absentInfo          `json:"absent"`     // 缺考名单(卷号+考号)
 	Manual     int                   `json:"manual"`     // 手工补录卷数
+	Warnings   []sheetWarning        `json:"warnings"`   // 异常卷告警汇总(重答/空白卡/漏涂等)
+}
+
+// sheetWarning 是一张卷的告警汇总(考试详情异常清单)。
+type sheetWarning struct {
+	Student int      `json:"student"` // 卷号(1-based)
+	Reg     string   `json:"reg,omitempty"`
+	Texts   []string `json:"texts"`
 }
 
 type absentInfo struct {
@@ -520,6 +571,9 @@ func handleExamDetail(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		}
 		if res.Absent {
 			d.Absent = append(d.Absent, absentInfo{Student: si + 1, Reg: ex.AssignedReg(si + 1)})
+		}
+		if len(res.Warnings) > 0 {
+			d.Warnings = append(d.Warnings, sheetWarning{Student: si + 1, Reg: ex.AssignedReg(si + 1), Texts: res.Warnings})
 		}
 	}
 	writeJSON(w, http.StatusOK, d)

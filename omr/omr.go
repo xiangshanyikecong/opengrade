@@ -37,7 +37,8 @@ func binarizeFor(gray *image.Gray, opt Options) *bitmap {
 // Result 是一张答题卡的识别结果(开放数据格式的一部分,JSON 可长期留存)。
 type Result struct {
 	RegNumber string   `json:"regNumber,omitempty"` // 判读成功的考号
-	RegValid  bool     `json:"regValid"`            // 考号是否每一位都唯一判读成功;无考号区时恒为 true
+	RegValid  bool     `json:"regValid"`            // 考号是否每一位都唯一判读成功;无考号区时恒 true
+	RegSource string   `json:"regSource,omitempty"` // 考号来源:fill(填涂)/barcode(条码)/qr(二维码)
 	RegMarks  [][]int  `json:"regMarks,omitempty"`  // 考号每位判涂数字明细(漏涂为空、多涂多值),供名册模糊匹配
 	Answers   []string `json:"answers"`             // 每题:"A".."F"/"T"/"F";""=未涂;"AB"=多涂
 	// Electives 是选做题号区的判涂明细(版式 v3):键 = 题号区所在主观题号(1-based),
@@ -67,6 +68,20 @@ func Read(sheet *card.Sheet, src image.Image, opt Options) (*Result, *Debug, err
 
 	locs, err := findLocators(bin, sheet)
 	if err != nil {
+		// 定位失败的三级兜底(不改变调用方选择的判读二值化方式):
+		// 1) 局部自适应(强阴影/光照渐变);2) 墨迹百分位阈值(版面墨迹稀少时
+		// Otsu 两类极不均衡会整体失衡,按"最暗 2% 为墨迹"切分可保定位块完整)。
+		for _, alt := range []*bitmap{
+			AdaptiveBinarize(gray, 0, 0.15),
+			Binarize(gray, inkPercentile(gray, 0.02)),
+		} {
+			if l2, err2 := findLocators(alt, sheet); err2 == nil {
+				locs, err = l2, nil
+				break
+			}
+		}
+	}
+	if err != nil {
 		return nil, nil, err
 	}
 	// 拟合 标准版面→扫描图 的单应,再把扫描图重采样回标准版面网格
@@ -78,9 +93,42 @@ func Read(sheet *card.Sheet, src image.Image, opt Options) (*Result, *Debug, err
 	rbin := binarizeFor(rect, opt)
 
 	res, dbg := readMarks(rbin, sheet, opt)
+	if sheet.RegCodeKind != "" {
+		// 码制通道:在矫正后的标准网格上解码,与填涂结果融合(以码为准)
+		codeVal, codeOK := decodeRegCode(rect, rbin, sheet)
+		if codeOK && len(codeVal) == sheet.Layout.RegDigits && allDigitsStr(codeVal) {
+			mergeRegCode(res, sheet, codeVal, true)
+		} else {
+			mergeRegCode(res, sheet, "", false)
+		}
+	} else if res.RegValid {
+		res.RegSource = "fill"
+	}
+	// 空白卡检测:考号有效但客观题全未作答(且无选做)→ 告警人工复核
+	if res.RegValid && len(res.Answers) > 0 && len(res.Electives) == 0 {
+		answered := false
+		for _, a := range res.Answers {
+			if a != "" {
+				answered = true
+				break
+			}
+		}
+		if !answered {
+			res.Warnings = append(res.Warnings, "全卷客观题未作答,疑似空白卡")
+		}
+	}
 	dbg.Rectified = rect
 	dbg.Locators = locs
 	return res, dbg, nil
+}
+
+func allDigitsStr(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 func rectify(gray *image.Gray, h Homography, w, hh int) *image.Gray {
@@ -131,7 +179,8 @@ func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 		}
 	}
 
-	if len(sheet.Reg) == 0 {
+	if len(sheet.Reg) == 0 || !sheet.Layout.RegHasFill() {
+		// 无考号区,或纯码制通道(卡面未印填涂区,不做涂卡判读)
 		readElectives(bin, sheet, opt, res, dbg)
 		return res, dbg
 	}

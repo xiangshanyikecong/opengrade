@@ -174,23 +174,24 @@ func buildKnowledgeSheet(knowledge []score.KnowledgeStat) string {
 func buildScoresSheet(rep *score.Report) string {
 	var rows []string
 	rows = append(rows, rowXML(0,
-		cell(0, 0, "卷号"), cell(1, 0, "考号"), cell(2, 0, "姓名"),
-		cell(3, 0, "考号有效"), cell(4, 0, "客观"), cell(5, 0, "主观"),
-		cell(6, 0, "总分"), cell(7, 0, "满分"), cell(8, 0, "排名"),
-		cell(9, 0, "待复核"), cell(10, 0, "缺考")))
+		cell(0, 0, "卷号"), cell(1, 0, "考号"), cell(2, 0, "姓名"), cell(3, 0, "班级"),
+		cell(4, 0, "考号有效"), cell(5, 0, "客观"), cell(6, 0, "主观"),
+		cell(7, 0, "总分"), cell(8, 0, "满分"), cell(9, 0, "排名"),
+		cell(10, 0, "待复核"), cell(11, 0, "缺考")))
 	for i, s := range rep.Students {
 		rows = append(rows, rowXML(i+1,
 			cell(0, i+1, s.Index),
 			cell(1, i+1, s.RegNumber),
-			cell(2, i+1, ""), // 姓名由调用方按名册填充时可通过 Report 扩展;此处预留
-			cell(3, i+1, fmt.Sprintf("%v", s.RegValid)),
-			cell(4, i+1, s.Objective),
-			cell(5, i+1, s.Subjective),
-			cell(6, i+1, s.Score),
-			cell(7, i+1, s.Total),
-			cell(8, i+1, s.Rank),
-			cell(9, i+1, boolMark(s.Flagged)),
-			cell(10, i+1, absentMark(s.Absent))))
+			cell(2, i+1, s.Name),
+			cell(3, i+1, s.ClassInfo),
+			cell(4, i+1, fmt.Sprintf("%v", s.RegValid)),
+			cell(5, i+1, s.Objective),
+			cell(6, i+1, s.Subjective),
+			cell(7, i+1, s.Score),
+			cell(8, i+1, s.Total),
+			cell(9, i+1, s.Rank),
+			cell(10, i+1, boolMark(s.Flagged)),
+			cell(11, i+1, absentMark(s.Absent))))
 	}
 	return sheetHeader + strings.Join(rows, "") + sheetFooter
 }
@@ -285,7 +286,7 @@ func optionsText(opts map[string]int) string {
 func ScoresCSV(rep *score.Report) []byte {
 	var b strings.Builder
 	b.WriteString("\xEF\xBB\xBF") // BOM
-	b.WriteString("卷号,考号,考号有效,客观,主观,总分,满分,排名,待复核,缺考\r\n")
+	b.WriteString("卷号,考号,姓名,班级,考号有效,客观,主观,总分,满分,排名,待复核,缺考\r\n")
 	for _, s := range rep.Students {
 		mark := ""
 		if s.Flagged {
@@ -295,8 +296,8 @@ func ScoresCSV(rep *score.Report) []byte {
 		if s.Absent {
 			absent = "缺考"
 		}
-		fmt.Fprintf(&b, "%d,%s,%v,%.2f,%.2f,%.2f,%.2f,%d,%s,%s\r\n",
-			s.Index, s.RegNumber, s.RegValid, s.Objective, s.Subjective, s.Score, s.Total, s.Rank, mark, absent)
+		fmt.Fprintf(&b, "%d,%s,%s,%s,%v,%.2f,%.2f,%.2f,%.2f,%d,%s,%s\r\n",
+			s.Index, s.RegNumber, s.Name, s.ClassInfo, s.RegValid, s.Objective, s.Subjective, s.Score, s.Total, s.Rank, mark, absent)
 	}
 	return []byte(b.String())
 }

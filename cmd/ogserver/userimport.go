@@ -75,9 +75,13 @@ func handleUserImport(w http.ResponseWriter, r *http.Request, authStore *auth.St
 			Role:        roleAlias(cell(2)),
 			Reg:         cell(4),
 			Class:       cell(5),
+			Classes:     split(5), // 班级列支持"行政班|教学班"(走班双归属);单值即 [Class]
 			Subjects:    split(6),
 			Grades:      split(7),
 			Children:    split(8),
+		}
+		if len(row.Classes) == 0 && row.Class != "" {
+			row.Classes = []string{row.Class}
 		}
 		password := cell(3)
 		if password == "" {

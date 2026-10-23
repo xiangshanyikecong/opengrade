@@ -46,7 +46,7 @@
       </select>
       <input id="nu_password" placeholder="初始密码(至少 5 位)" type="text">
       <input id="nu_reg" placeholder="考号(学生必填)">
-      <input id="nu_class" placeholder="班级(如 三年二班)">
+      <input id="nu_class" placeholder="班级(如 三年二班,走班多班用 | 分隔)">
       <input id="nu_subjects" placeholder="任教学科(教师,逗号分隔)">
       <input id="nu_grades" placeholder="管辖年级(组长,逗号分隔)">
       <input id="nu_children" placeholder="子女考号(家长,逗号分隔)">
@@ -101,6 +101,7 @@ async function createUser() {
   const body = {
     username: g("nu_username"), displayName: g("nu_display"),
     role: g("nu_role"), reg: g("nu_reg"), class: g("nu_class"),
+    classes: g("nu_class") ? g("nu_class").split("|").map(x => x.trim()).filter(Boolean) : [],
     subjects: g("nu_subjects") ? g("nu_subjects").split(",").map(s => s.trim()).filter(Boolean) : [],
     grades: g("nu_grades") ? g("nu_grades").split(",").map(s => s.trim()).filter(Boolean) : [],
     children: g("nu_children") ? g("nu_children").split(",").map(s => s.trim()).filter(Boolean) : [],

@@ -50,6 +50,8 @@ type PartStat struct {
 type StudentLine struct {
 	Index      int     `json:"index"` // 1-based 卷号
 	RegNumber  string  `json:"regNumber"`
+	Name       string  `json:"name,omitempty"`      // 姓名(handler 按名册注入,导出用)
+	ClassInfo  string  `json:"classInfo,omitempty"` // 班级(handler 按名册注入,走班多班用 | 连接)
 	RegValid   bool    `json:"regValid"`
 	Objective  float64 `json:"objective"`           // 客观题得分
 	Subjective float64 `json:"subjective"`          // 主观题得分(未阅部分计 0)

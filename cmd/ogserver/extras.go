@@ -133,6 +133,21 @@ func kindShort(k string) string {
 }
 
 // handleExportXlsx 成绩册导出:GET /api/v1/exams/{id}/export.xlsx
+// injectRosterInfo 把名册的姓名/班级(走班多班用 | 连接)注入成绩行,导出成绩册用。
+func injectRosterInfo(ex *Exam, rep *score.Report) {
+	byReg := map[string]roster.Student{}
+	for _, st := range ex.Roster {
+		byReg[st.Reg] = st
+	}
+	for i := range rep.Students {
+		l := &rep.Students[i]
+		if st, ok := byReg[l.RegNumber]; ok {
+			l.Name = st.Name
+			l.ClassInfo = strings.Join(st.AllClasses(), "|")
+		}
+	}
+}
+
 func handleExportXlsx(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, ok := store.openExamFor(r, u, false) // 导出按任教班级过滤
 	if !ok {
@@ -140,6 +155,7 @@ func handleExportXlsx(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		return
 	}
 	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades)
+	injectRosterInfo(ex, rep)
 	labels := make([]string, len(rep.PerQuestion))
 	for i, q := range rep.PerQuestion {
 		labels[i] = questionLabel(ex, q)
@@ -162,6 +178,7 @@ func handleExportCSV(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		return
 	}
 	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades)
+	injectRosterInfo(ex, rep)
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=opengrade-%s.csv", ex.ID))
 	_, _ = w.Write(export.ScoresCSV(rep))

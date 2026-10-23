@@ -39,7 +39,30 @@ type Exam struct {
 	ClassTasks   map[string]string      `json:"classTasks,omitempty"`  // 按班分配:"{班级}" → 教师账号(班主任改本班)
 	Published    bool                   `json:"published,omitempty"`   // 成绩发布开关(教师确认后学生/家长可查)
 	PublishedAt  *time.Time             `json:"publishedAt,omitempty"` // 发布时间
+	Rooms        *RoomPlan              `json:"rooms,omitempty"`       // 考场编排方案(生成后落盘,可微调)
 	Audit        []AuditEntry           `json:"audit,omitempty"`       // 关键操作留痕(改答案/改分/发布/指派)
+}
+
+// RoomPlan 是考场编排方案:按名册生成、落盘持久化,支持座位对调与监考指派。
+type RoomPlan struct {
+	Size  int    `json:"size"`  // 每场目标人数(生成参数,留档)
+	Group string `json:"group"` // 编排方式:class=同班聚齐(按主班)|reg=纯考号序
+	Rooms []Room `json:"rooms"`
+}
+
+// Room 是一个考场:名称、监考与座位表。
+type Room struct {
+	Name    string `json:"name"`              // 考场名(R01、R02…)
+	Proctor string `json:"proctor,omitempty"` // 监考教师账号
+	Seats   []Seat `json:"seats"`
+}
+
+// Seat 是一个座位;Reg 为空表示空座(可通过对调把学生移过来)。
+type Seat struct {
+	Idx   int    `json:"idx"`             // 座位号(场内 1-based)
+	Reg   string `json:"reg,omitempty"`
+	Name  string `json:"name,omitempty"`
+	Class string `json:"class,omitempty"` // 主班(打印座位表用)
 }
 
 // AuditEntry 是一条操作审计记录:谁、何时、对考试做了什么,用于合规追溯。
@@ -389,6 +412,38 @@ func (s *Store) SetClassTask(id, class, teacher, by string) error {
 	}
 	ex.TaskMode = "class"
 	ex.log(by, "setClassTask", fmt.Sprintf("%s班级 %s 的主观题阅卷任务 → %s", verb, class, teacher))
+	return s.save(ex)
+}
+
+// SetRooms 保存考场编排方案(生成或整体重排)。
+func (s *Store) SetRooms(id string, plan *RoomPlan, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return fmt.Errorf("考试 %s 不存在", id)
+	}
+	ex.Rooms = plan
+	ex.log(by, "setRooms", fmt.Sprintf("考场编排:%d 个考场,每场 %d 人,%s", len(plan.Rooms), plan.Size, plan.Group))
+	return s.save(ex)
+}
+
+// MutateRooms 在锁内微调考场方案(座位对调/监考指派),fn 返回操作描述用于审计。
+func (s *Store) MutateRooms(id string, by string, fn func(*RoomPlan) (string, error)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return fmt.Errorf("考试 %s 不存在", id)
+	}
+	if ex.Rooms == nil {
+		return fmt.Errorf("尚未生成考场编排")
+	}
+	detail, err := fn(ex.Rooms)
+	if err != nil {
+		return err
+	}
+	ex.log(by, "mutateRooms", detail)
 	return s.save(ex)
 }
 

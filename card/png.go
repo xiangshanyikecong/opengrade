@@ -10,9 +10,18 @@ import (
 // Filling 描述一张"已涂卡"的答题卡:考号各位数字与各题所涂选项。
 // 用于模拟学生卷;nil 字段表示留空。
 type Filling struct {
-	Reg       []int       // 每位考号数字(0~9),长度 = RegDigits
-	Answers   []string    // 每题如 "A" / "AB" / "T";"" 表示未涂
-	Electives map[int]int // 选做题号区(版式 v3):主观题号(1-based,题号区所在题)→ 涂的第几个选项(0-based);缺省未涂
+	Reg         []int       // 每位考号数字(0~9),长度 = RegDigits;码制通道(条码/二维码)也按它印码
+	RegUnfilled []bool      // 考号某位"漏涂"(填涂区不印实心圆,但条码/二维码仍印真实考号;模拟漏涂场景)
+	Answers     []string    // 每题如 "A" / "AB" / "T";"" 表示未涂
+	Electives   map[int]int // 选做题号区(版式 v3):主观题号(1-based,题号区所在题)→ 涂的第几个选项(0-based);缺省未涂
+}
+
+// regFilledAt 报告考号第 ci 位是否应涂实心(漏涂位除外)。
+func (f *Filling) regFilledAt(ci, d int) bool {
+	if f == nil || ci >= len(f.Reg) || f.Reg[ci] != d {
+		return false
+	}
+	return ci >= len(f.RegUnfilled) || !f.RegUnfilled[ci]
 }
 
 // RenderPNG 把版式渲染为 300 DPI 灰度位图(可直接打印或送入 OMR)。
@@ -43,20 +52,28 @@ func RenderPNG(s *Sheet, f *Filling) *raster.Canvas {
 		}
 	}
 
-	// 考号涂卡圆
-	for ci, col := range s.Reg {
-		for d, p := range col {
-			r := float64(s.RegR)
-			if f != nil && ci < len(f.Reg) && f.Reg[ci] == d {
-				c.FillCircle(float64(p.X), float64(p.Y), r-1, black)
-			} else {
-				c.Ring(float64(p.X), float64(p.Y), r, r-stroke, black)
+	// 考号涂卡圆(纯码制通道不印)
+	if s.Layout.RegHasFill() {
+		for ci, col := range s.Reg {
+			for d, p := range col {
+				r := float64(s.RegR)
+				if f.regFilledAt(ci, d) {
+					c.FillCircle(float64(p.X), float64(p.Y), r-1, black)
+				} else {
+					c.Ring(float64(p.X), float64(p.Y), r, r-stroke, black)
+				}
 			}
 		}
 	}
 
 	// 卷头与标签文字
 	g := mustGeometry(s.Layout)
+
+	// 考号码区(条码/二维码):学生卡印实际码,母版只印区框与提示
+	if g.code != nil {
+		drawCodePNG(c, g.code, s.Layout, f, tf)
+	}
+
 	drawLabel := func(cx, cyMM float64, text string, mmSize float64) {
 		px := mmToPx(mmSize)
 		if tf != nil {
@@ -66,7 +83,7 @@ func RenderPNG(s *Sheet, f *Filling) *raster.Canvas {
 		c.TextCenter(mmToPx(cx), mmToPx(cyMM), asciiOrQ(text), max(1, px*5/33), black)
 	}
 	drawLabel(g.title.x, g.title.y, s.Layout.Title, 6)
-	if len(s.Reg) > 0 {
+	if s.Layout.RegHasFill() && len(s.Reg) > 0 {
 		drawLabel(g.regLabel.x, g.regLabel.y, "考号 REG NO", 3.5)
 		for d, p := range g.regRowLbl {
 			drawLabel(p.x, p.y, digitName(d), 3)

@@ -85,6 +85,7 @@ type QuestionSpec struct {
 	Options   int     `json:"options,omitempty"`   // choice/multiple: 2~6;judge 恒为 2
 	Score     float64 `json:"score,omitempty"`     // 分值,缺省 1
 	Knowledge string  `json:"knowledge,omitempty"` // 知识点标签(建考可录入,多个用 , / 、 分隔)
+	BankID    string  `json:"bankId,omitempty"`    // 来源题库题号(设计器选题带入,建考后回记使用史)
 }
 
 // SubjectivePart 是主观题下的小问(版式 v3):独立给分,阅卷端逐问评分后自动汇总到大题总分。
@@ -106,7 +107,17 @@ type SubjectiveSpec struct {
 	Knowledge string           `json:"knowledge,omitempty"` // 知识点标签(建考可录入,多个用 , / 、 分隔)
 	Parts     []SubjectivePart `json:"parts,omitempty"`     // 小问拆分(版式 v3):如一道 17 分解答题拆 6+5+6
 	Elective  string           `json:"elective,omitempty"`  // 选做组标签(版式 v3):同组互斥,判分只取所涂题号
+	BankID    string           `json:"bankId,omitempty"`    // 来源题库题号(设计器选题带入,建考后回记使用史)
 }
+
+// 考号通道模式(版式 v3 增量,向后兼容:缺省 "fill")。
+const (
+	RegFill        = "fill"        // 填涂(默认)
+	RegBarcode     = "barcode"     // Code128 条码
+	RegQR          = "qr"          // 二维码
+	RegFillBarcode = "fill+barcode" // 填涂 + 条码双通道(条码修复涂卡异常)
+	RegFillQR      = "fill+qr"     // 填涂 + 二维码双通道
+)
 
 // Layout 是开放数据格式的版式定义:JSON 序列化即 .layout.json 文件内容,
 // 可由社区自由读写、长期迁移,是"数据不属于厂商"承诺的载体之一。
@@ -114,6 +125,7 @@ type Layout struct {
 	Version   int    `json:"version"`
 	Title     string `json:"title"`
 	RegDigits int    `json:"regDigits"`         // 考号位数,0 表示无考号区
+	RegMode   string `json:"regMode,omitempty"` // 考号通道:fill(默认)/barcode/qr/fill+barcode/fill+qr
 	Columns   int    `json:"columns,omitempty"` // 客观题分栏数 1~4,缺省 2
 
 	// v1 专用字段(Version==1 时生效,读取时规范化为 v2)
@@ -123,6 +135,23 @@ type Layout struct {
 	// v2 字段
 	Questions   []QuestionSpec   `json:"questions,omitempty"`
 	Subjectives []SubjectiveSpec `json:"subjectives,omitempty"`
+}
+
+// RegCodeKind 返回码制("barcode"/"qr"),纯填涂返回 ""。
+func (l Layout) RegCodeKind() string {
+	switch l.RegMode {
+	case RegBarcode, RegFillBarcode:
+		return "barcode"
+	case RegQR, RegFillQR:
+		return "qr"
+	default:
+		return ""
+	}
+}
+
+// RegHasFill 报告是否印有考号填涂区。
+func (l Layout) RegHasFill() bool {
+	return l.RegMode == "" || l.RegMode == RegFill || l.RegMode == RegFillBarcode || l.RegMode == RegFillQR
 }
 
 // DefaultLayout 返回 v2 示例版式:20 单选 + 5 判断 + 5 多选 + 2 填空 + 1 解答。
@@ -179,6 +208,7 @@ func (l Layout) normalize() (Layout, error) {
 			Version:   2,
 			Title:     l.Title,
 			RegDigits: l.RegDigits,
+			RegMode:   normalizeRegMode(l.RegMode),
 			Columns:   firstNonZero(l.Columns, 2),
 			Questions: repQuestion(l.ChoiceCount, QuestionSpec{Kind: KindChoice, Options: opts, Score: 1}),
 		}
@@ -186,6 +216,7 @@ func (l Layout) normalize() (Layout, error) {
 	case 2:
 		out := l
 		out.Columns = firstNonZero(l.Columns, 2)
+		out.RegMode = normalizeRegMode(out.RegMode)
 		if len(l.Questions) == 0 && len(l.Subjectives) == 0 {
 			return Layout{}, fmt.Errorf("版式为空:至少需要一道客观题或主观题")
 		}
@@ -272,6 +303,14 @@ func (l Layout) Validate() error {
 	if n.RegDigits < 0 || n.RegDigits > 12 {
 		return fmt.Errorf("考号位数必须在 0~12 之间,当前 %d", n.RegDigits)
 	}
+	switch n.RegMode {
+	case RegFill, RegBarcode, RegQR, RegFillBarcode, RegFillQR:
+	default:
+		return fmt.Errorf("考号通道 %q 不合法(fill/barcode/qr/fill+barcode/fill+qr)", n.RegMode)
+	}
+	if n.RegCodeKind() != "" && n.RegDigits == 0 {
+		return fmt.Errorf("考号通道 %s 需要考号位数 > 0", n.RegMode)
+	}
 	for i, q := range n.Questions {
 		if q.Options < 2 || q.Options > 6 {
 			return fmt.Errorf("第 %d 题选项数必须在 2~6 之间,当前 %d", i+1, q.Options)
@@ -335,6 +374,15 @@ type subGeom struct {
 	elective *electiveGeom    // 非 nil = 本题为某选做组的第一道(题号区印在本题标签行)
 }
 
+// codeGeom 是卷头右侧考号码区(mm):条码条带或二维码本体 + 明文数字 + 标签。
+type codeGeom struct {
+	kind  string    // barcode | qr
+	label mmPt      // 顶部标签("考号条码"/"考号二维码")
+	frame boxRectMM // 整个码区装饰框
+	body  boxRectMM // 条码条带 / 二维码本体(二维码含四周 2 模块静区)
+	text  mmPt      // 明文考号数字中心(人工兜底录入用)
+}
+
 // geom 是以 mm 为单位的版面几何(SVG 直接使用,转 px 后供 OMR/切片使用)。
 type geom struct {
 	locators                               [4]mmPt // 中心点,顺序 TL TR BL BR
@@ -344,7 +392,8 @@ type geom struct {
 	nameBoxX, nameBoxY, nameBoxW, nameBoxH float64
 	regRowLbl                              []mmPt
 	reg                                    [][]mmPt
-	choice                                 [][]mmPt // [题][选项] 圆心
+	code                                   *codeGeom // 考号码区(纯填涂为 nil)
+	choice                                 [][]mmPt  // [题][选项] 圆心
 	qNumLbl                                []mmPt
 	optLbls                                [][]mmPt // [题][选项] 字母中心
 	subjectives                            []subGeom
@@ -379,6 +428,22 @@ func (l Layout) geometry() (geom, error) {
 	} else {
 		g.nameLabel = mmPt{26, 18.5}
 		g.nameBoxX, g.nameBoxY, g.nameBoxW, g.nameBoxH = 26, 21, 62, 13
+	}
+
+	// 考号码区(卷头右侧,条码/二维码通道):姓名框右侧到右边距之间的空闲带
+	if kind := n.RegCodeKind(); kind != "" {
+		cg := &codeGeom{kind: kind}
+		cg.frame = boxRectMM{x: 150, y: 16.5, w: PageWMM - marginX - 150, h: 46}
+		if kind == "barcode" {
+			cg.label = mmPt{cg.frame.x + cg.frame.w/2, 30}
+			cg.body = boxRectMM{x: 152, y: 33, w: 42, h: 13}
+			cg.text = mmPt{cg.frame.x + cg.frame.w/2, 52.5}
+		} else {
+			cg.label = mmPt{cg.frame.x + cg.frame.w/2, 19.5}
+			cg.body = boxRectMM{x: 155, y: 22, w: 36, h: 36}
+			cg.text = mmPt{cg.frame.x + cg.frame.w/2, 60.5}
+		}
+		g.code = cg
 	}
 
 	objRows := int(math.Ceil(float64(len(n.Questions)) / float64(n.Columns)))
@@ -476,8 +541,10 @@ type Sheet struct {
 	Choice          [][]image.Point // [题][选项] 涂卡圆心(px)
 	ChoiceKinds     []string        // 每客观题题型(判读多选合法性用)
 	ChoiceR         int
-	Reg             [][]image.Point // [位][数字 0~9] 涂卡圆心(px);无考号区时为空
+	Reg             [][]image.Point // [位][数字 0~9] 涂卡圆心(px);无考号区时为空(纯码制不印涂卡,由 RegHasFill 区分)
 	RegR            int
+	RegCode         image.Rectangle // 考号码区(px):条码条带/二维码本体(含内部静区);纯填涂为零值
+	RegCodeKind     string          // "barcode" | "qr" | ""
 	SubjectiveBoxes []image.Rectangle // 每道主观题作答区(px),切片器据此裁剪
 	Electives       []ElectiveRow     // 选做题号区(版式 v3);无选做题时为空
 }
@@ -520,6 +587,12 @@ func (l Layout) Build() (*Sheet, error) {
 			col[d] = image.Point{mmToPx(p.x), mmToPx(p.y)}
 		}
 		s.Reg = append(s.Reg, col)
+	}
+	if g.code != nil {
+		s.RegCodeKind = g.code.kind
+		s.RegCode = image.Rect(
+			mmToPx(g.code.body.x), mmToPx(g.code.body.y),
+			mmToPx(g.code.body.x+g.code.body.w), mmToPx(g.code.body.y+g.code.body.h))
 	}
 	for _, sg := range g.subjectives {
 		x0, y0 := mmToPx(marginX), mmToPx(sg.boxTop)
@@ -576,6 +649,16 @@ func firstNonZero(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// normalizeRegMode 规范化考号通道;空值与其他历史写法归一到 "fill"。
+func normalizeRegMode(m string) string {
+	switch m {
+	case RegBarcode, RegQR, RegFillBarcode, RegFillQR:
+		return m
+	default:
+		return RegFill
+	}
 }
 
 func firstNonZeroF(a, b float64) float64 {

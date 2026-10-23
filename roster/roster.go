@@ -12,10 +12,41 @@ import (
 )
 
 // Student 是名册中的一名学生。Reg 为纯数字考号(与答题卡位数一致)。
+// 走班排考(新高考)下学生双归属:Class 为行政班(首班),Classes 为全部班级
+// (Classes[0] 恒等于 Class;老数据只有 class 时 AllClasses 自动归一)。
 type Student struct {
-	Reg   string `json:"reg"`
-	Name  string `json:"name"`
-	Class string `json:"class,omitempty"`
+	Reg     string   `json:"reg"`
+	Name    string   `json:"name"`
+	Class   string   `json:"class,omitempty"`
+	Classes []string `json:"classes,omitempty"`
+}
+
+// AllClasses 返回该生的全部班级(行政班+教学班);只有 class 的老数据归一为单班。
+func (s Student) AllClasses() []string {
+	if len(s.Classes) > 0 {
+		return s.Classes
+	}
+	if s.Class != "" {
+		return []string{s.Class}
+	}
+	return nil
+}
+
+// splitClasses 把"行政班|教学班1|教学班2"形式的串拆成班级列表;
+// 首个非空作为行政班,其余去重保序。
+func splitClasses(s string) (string, []string) {
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range strings.Split(s, "|") {
+		if p = strings.TrimSpace(p); p != "" && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return "", nil
+	}
+	return out[0], out
 }
 
 // Load 解析名册:支持 JSON 数组或 CSV(每行 reg,name[,class],首行表头自动跳过)。
@@ -46,7 +77,8 @@ func Load(data []byte) ([]Student, error) {
 		}
 		s := Student{Reg: strings.TrimSpace(parts[0]), Name: strings.TrimSpace(parts[1])}
 		if len(parts) > 2 {
-			s.Class = strings.TrimSpace(parts[2])
+			// 第 3 列支持"行政班|教学班1|教学班2"(走班双归属);单值等同旧格式
+			s.Class, s.Classes = splitClasses(parts[2])
 		}
 		out = append(out, s)
 	}
@@ -58,7 +90,8 @@ func Load(data []byte) ([]Student, error) {
 
 func validate(students []Student) error {
 	seen := map[string]bool{}
-	for _, s := range students {
+	for i := range students {
+		s := &students[i]
 		if !isDigits(s.Reg) || s.Reg == "" {
 			return fmt.Errorf("名册中考号 %q 必须为纯数字", s.Reg)
 		}
@@ -69,6 +102,13 @@ func validate(students []Student) error {
 			return fmt.Errorf("名册中考号 %s 重复", s.Reg)
 		}
 		seen[s.Reg] = true
+		// 走班归一:Classes[0] 恒为行政班;老数据只有 class 时补单班列表
+		if len(s.Classes) == 0 && s.Class != "" {
+			s.Classes = []string{s.Class}
+		}
+		if s.Class == "" && len(s.Classes) > 0 {
+			s.Class = s.Classes[0]
+		}
 	}
 	return nil
 }
