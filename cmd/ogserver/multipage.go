@@ -58,11 +58,14 @@ func mergePageScans(pages []pageScan) *omr.Result {
 		}
 	}
 	merged := &omr.Result{
-		RegNumber: primary.res.RegNumber,
-		RegValid:  primary.res.RegValid,
-		RegSource: primary.res.RegSource,
-		RegMarks:  primary.res.RegMarks,
-		Answers:   []string{},
+		RegNumber:   primary.res.RegNumber,
+		RegValid:    primary.res.RegValid,
+		RegSource:   primary.res.RegSource,
+		RegMarks:    primary.res.RegMarks,
+		Answers:     []string{},
+		Variant:     primary.res.Variant,     // 卷种点判读(全卡一致,取首判成功页)
+		CodeShort:   primary.res.CodeShort,   // AB 复合码携带的考试短号
+		CodeVariant: primary.res.CodeVariant, // 复合码卷种位
 	}
 	for _, p := range pages {
 		merged.Answers = append(merged.Answers, p.res.Answers...)

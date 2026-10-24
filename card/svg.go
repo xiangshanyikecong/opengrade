@@ -54,9 +54,36 @@ func RenderSVG(s *Sheet, f *Filling) []byte {
 
 	// 文本标签(每页右上角标页码,多页卡逐页可归属)
 	text(&b, g.title.x, g.title.y, 6, xmlEscape(n.Title))
+	// 卷种点(AB 卷):A 卷第 1 点实心、B 卷第 2 点实心,旁印 A/B 卷标签供人眼分堆
+	if len(g.variantDots) > 0 {
+		const halfDot = pageDotSide / 2
+		solidIdx := -1
+		if n.Variant == "A" {
+			solidIdx = 0
+		} else if n.Variant == "B" {
+			solidIdx = 1
+		}
+		for i, p := range g.variantDots {
+			if i == solidIdx {
+				fmt.Fprintf(&b, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" fill=\"black\"/>\n", p.x-halfDot, p.y-halfDot, pageDotSide, pageDotSide)
+			} else {
+				fmt.Fprintf(&b, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" fill=\"none\" stroke=\"black\" stroke-width=\"%.2f\"/>\n", p.x-halfDot, p.y-halfDot, pageDotSide, pageDotSide, strokeMM)
+			}
+		}
+		textEnd(&b, g.variantDots[0].x-pageDotPitch*0.9, g.variantDots[0].y, 3.5, n.Variant+"卷")
+	}
 	if s.PageCount > 1 {
 		// 右端留在 190mm:紧贴定位块会被连成连通域,破坏角标定位
 		textEnd(&b, PageWMM-marginX-6, g.title.y, 3.5, fmt.Sprintf("第 %d/%d 页", s.PageNo, s.PageCount))
+		// 页点:第 k 点实心 = 第 k 页(OMR 机器判读页号,按页归组/缺页告警用)
+		const halfDot = pageDotSide / 2
+		for i, p := range g.pageDots {
+			if i == s.PageNo-1 {
+				fmt.Fprintf(&b, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" fill=\"black\"/>\n", p.x-halfDot, p.y-halfDot, pageDotSide, pageDotSide)
+			} else {
+				fmt.Fprintf(&b, "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" fill=\"none\" stroke=\"black\" stroke-width=\"%.2f\"/>\n", p.x-halfDot, p.y-halfDot, pageDotSide, pageDotSide, strokeMM)
+			}
+		}
 	}
 	if n.RegHasFill() && len(g.reg) > 0 {
 		text(&b, g.regLabel.x, g.regLabel.y, 3.5, "REG NO")

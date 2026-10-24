@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,8 +40,41 @@ type Exam struct {
 	ClassTasks   map[string]string      `json:"classTasks,omitempty"`  // 按班分配:"{班级}" → 教师账号(班主任改本班)
 	Published    bool                   `json:"published,omitempty"`   // 成绩发布开关(教师确认后学生/家长可查)
 	PublishedAt  *time.Time             `json:"publishedAt,omitempty"` // 发布时间
-	Rooms        *RoomPlan              `json:"rooms,omitempty"`       // 考场编排方案(生成后落盘,可微调)
-	Audit        []AuditEntry           `json:"audit,omitempty"`       // 关键操作留痕(改答案/改分/发布/指派)
+
+	// 考试元数据(教务口径:考试日期/学期/类型/同场分组)。
+	// ExamDate 为 "2006-01-02";趋势轴、列表排序、年级总表都以它优先(CreatedAt 兜底)。
+	ExamDate  string `json:"examDate,omitempty"`
+	Term      string `json:"term,omitempty"`      // 学期,如 2025-2026上
+	ExamType  string `json:"examType,omitempty"`  // 类型:月考/期中/期末/单元/周测/其他
+	ExamGroup string `json:"examGroup,omitempty"` // 同场分组:同一次考试的多科共用一个标签(如 "2025期中"),聚合出年级总分工表
+	Session   string `json:"session,omitempty"`   // 场次(全校场次表 school.json.sessions 之一,如 第1节):同日同场次跨考试的监考冲突检测依据
+
+	Anonymous bool              `json:"anonymous,omitempty"` // 匿名阅卷:阅卷工作台不显示考号
+	TaskDue   map[string]string `json:"taskDue,omitempty"`   // 任务截止时间:"q{题号}" 或 "{班级}" → "2006-01-02"
+
+	ManualFull float64      `json:"manualFull,omitempty"` // >0 = 手工成绩考试(免版式建考):单科直录分数,满分即此值
+	Appeals    []Appeal     `json:"appeals,omitempty"`    // 学生/家长成绩复核申请(发布后)
+	Rooms      *RoomPlan    `json:"rooms,omitempty"`      // 考场编排方案(生成后落盘,可微调)
+	Audit      []AuditEntry `json:"audit,omitempty"`      // 关键操作留痕(改答案/改分/发布/指派)
+
+	// AB 卷(版式 v3):A 卷即 Layout;B 卷客观题序可打乱,主观题区两版强制一致(建考校验)。
+	// 作答入库时按 OrderB 归一为规范题号,统分/导出/趋势与单卷考试完全同口径。
+	ShortID       string            `json:"shortId,omitempty"`       // 考试短号(4 位数字):复合码(短号+卷种位+考号)前缀,扫描时核对归属
+	LayoutB       *card.Layout      `json:"layoutB,omitempty"`       // B 卷版式(Variant=B);无则非 AB 考试
+	KeyB          []string          `json:"keyB,omitempty"`          // B 卷客观题参考答案(已归一为规范题号序)
+	OrderB        []int             `json:"orderB,omitempty"`        // B 卷题序对照:卡面第 i 题对应规范题号 OrderB[i-1]
+	AssignVariant map[string]string `json:"assignVariant,omitempty"` // 人工指派卷种:"s{卷号}" → "A"/"B"(卷种判不出时裁决)
+}
+
+// Appeal 是一条成绩复核申请:学生/家长在成绩发布后发起,教师裁决(回复/改分)。
+type Appeal struct {
+	Time       time.Time  `json:"time"`
+	By         string     `json:"by"` // 发起人考号
+	Reason     string     `json:"reason"`
+	Status     string     `json:"status"`          // open | resolved
+	Reply      string     `json:"reply,omitempty"` // 教师回复
+	ResolvedBy string     `json:"resolvedBy,omitempty"`
+	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
 }
 
 // RoomPlan 是考场编排方案:按名册生成、落盘持久化,支持座位对调与监考指派。
@@ -85,6 +119,18 @@ type NewExam struct {
 	CreatedBy  string
 	Subject    string
 	Roster     []roster.Student
+
+	ExamDate   string  // 考试日期 YYYY-MM-DD
+	Term       string  // 学期
+	ExamType   string  // 类型
+	ExamGroup  string  // 同场分组
+	Session    string  // 场次(全校场次表之一)
+	ManualFull float64 // 手工成绩考试满分(>0 = 手工成绩考试)
+
+	ShortID string       // 考试短号(AB 卷复合码)
+	LayoutB *card.Layout // B 卷版式
+	KeyB    []string     // B 卷答案(规范序)
+	OrderB  []int        // B 卷题序对照
 }
 
 // AssignedReg 返回某学生的最终考号:人工指派优先,否则用 OMR 判读值。
@@ -104,10 +150,11 @@ func (ex *Exam) AssignedReg(student int) string {
 
 // Store 是考试会话的文件存储(目录 + JSON,零外部依赖;SQLite 迁移在路线图 M1 末)。
 type Store struct {
-	mu     sync.Mutex
-	dir    string
-	exams  map[string]*Exam
-	School *School // 组织架构(年级↔班级),newServer 装配;nil=未配置(权限判定按全看兜底)
+	mu       sync.Mutex
+	dir      string
+	exams    map[string]*Exam
+	shortSeq int // 考试短号发号器(1000 起,重启后按存量去重续发)
+	School   *School // 组织架构(年级↔班级),newServer 装配;nil=未配置(权限判定按全看兜底)
 }
 
 func NewStore(dir string) (*Store, error) {
@@ -161,6 +208,16 @@ func (s *Store) Create(ne NewExam) (*Exam, error) {
 		Assignments:  map[string]string{},
 		CreatedBy:    ne.CreatedBy,
 		Subject:      ne.Subject,
+		ExamDate:     ne.ExamDate,
+		Term:         ne.Term,
+		ExamType:     ne.ExamType,
+		ExamGroup:    ne.ExamGroup,
+		Session:      ne.Session,
+		ManualFull:   ne.ManualFull,
+		ShortID:      s.genShortIDLocked(),
+		LayoutB:      ne.LayoutB,
+		KeyB:         ne.KeyB,
+		OrderB:       ne.OrderB,
 	}
 	for si := range ne.Slices {
 		for _, sl := range ne.Slices[si] {
@@ -223,9 +280,29 @@ func (s *Store) List() []*Exam {
 	return out
 }
 
+// ConflictError 报告乐观锁冲突:请求携带的版本号与服务器当前不一致。
+// 处理器将其映射为 409,响应携带服务器当前评分,前端提示刷新。
+type ConflictError struct {
+	Current score.Grade
+	Msg     string
+}
+
+func (e *ConflictError) Error() string { return e.Msg }
+
+// maxScoreOf 返回评分目标的满分上限:小问取小问满分,整题取大题满分(未拆分缺省 10)。
+func (ex *Exam) maxScoreOf(question, part int) float64 {
+	spec := ex.Layout.Subjectives[question-1]
+	if part > 0 && part <= len(spec.Parts) {
+		return spec.Parts[part-1].Score
+	}
+	return score.SubjectiveMax(spec)
+}
+
 // SetGrade 写入一条主观题整题评分并落盘。by 为操作者账号(审计留痕)。
 // 拆分了小问的题目(版式 v3)必须走 SetGradePart 逐问评分。
-func (s *Store) SetGrade(id string, student, question int, g score.Grade, by string) error {
+// ver > 0 时启用乐观锁:与当前版本不一致返回 *ConflictError(防双开互踩)。
+// 分数越界(负分或超过满分)直接拒绝 —— 评分颗粒度修复的服务端兜底。
+func (s *Store) SetGrade(id string, student, question int, g score.Grade, by string, ver int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ex, ok := s.exams[id]
@@ -241,22 +318,34 @@ func (s *Store) SetGrade(id string, student, question int, g score.Grade, by str
 	if parts := len(ex.Layout.Subjectives[question-1].Parts); parts > 0 {
 		return fmt.Errorf("第 %d 题已拆分为 %d 个小问,请逐小问评分(part 参数)", question, parts)
 	}
+	max := ex.maxScoreOf(question, 0)
+	if g.Score < -0.001 || g.Score > max+0.001 {
+		return fmt.Errorf("分数 %.1f 超出范围(0 ~ 满分 %g)", g.Score, max)
+	}
 	key := score.GradeKey(student, question)
 	verb := "评分"
 	if old, exists := ex.Grades[key]; exists && old.Graded {
+		if ver > 0 && old.Ver != ver {
+			return &ConflictError{Current: old, Msg: fmt.Sprintf("该卷刚被他人改过(当前 %g 分),请刷新后重试", old.Score)}
+		}
 		if old.Score != g.Score {
 			verb = fmt.Sprintf("改分(%.1f → %.1f)", old.Score, g.Score)
 		} else if !g.Graded {
 			verb = "撤销评分"
 		}
+		g.Ver = old.Ver + 1
+	} else {
+		g.Ver = 1
 	}
+	g.By = by
 	ex.Grades[key] = g
 	ex.log(by, "setGrade", fmt.Sprintf("第 %d 卷 主观题 %d:%s %.1f 分", student, question, verb, g.Score))
 	return s.save(ex)
 }
 
 // SetGradePart 写入一条小问评分(版式 v3 拆分题):大题总分由统分层自动求和。
-func (s *Store) SetGradePart(id string, student, question, part int, g score.Grade, by string) error {
+// ver > 0 时启用乐观锁;分数越界拒绝。
+func (s *Store) SetGradePart(id string, student, question, part int, g score.Grade, by string, ver int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ex, ok := s.exams[id]
@@ -276,15 +365,26 @@ func (s *Store) SetGradePart(id string, student, question, part int, g score.Gra
 	if part < 1 || part > parts {
 		return fmt.Errorf("小问序号 %d 越界(共 %d 问)", part, parts)
 	}
+	max := ex.maxScoreOf(question, part)
+	if g.Score < -0.001 || g.Score > max+0.001 {
+		return fmt.Errorf("分数 %.1f 超出范围(0 ~ 小问满分 %g)", g.Score, max)
+	}
 	key := score.GradePartKey(student, question, part)
 	verb := "评分"
 	if old, exists := ex.Grades[key]; exists && old.Graded {
+		if ver > 0 && old.Ver != ver {
+			return &ConflictError{Current: old, Msg: fmt.Sprintf("该小问刚被他人改过(当前 %g 分),请刷新后重试", old.Score)}
+		}
 		if old.Score != g.Score {
 			verb = fmt.Sprintf("改分(%.1f → %.1f)", old.Score, g.Score)
 		} else if !g.Graded {
 			verb = "撤销评分"
 		}
+		g.Ver = old.Ver + 1
+	} else {
+		g.Ver = 1
 	}
+	g.By = by
 	ex.Grades[key] = g
 	label := ex.Layout.Subjectives[question-1].Parts[part-1].Label
 	ex.log(by, "setGrade", fmt.Sprintf("第 %d 卷 主观题 %d 小问%s:%s %.1f 分", student, question, label, verb, g.Score))
@@ -581,6 +681,268 @@ func (s *Store) SetAbsent(id string, student int, absent bool, by string) error 
 	}
 	ex.log(by, "setAbsent", fmt.Sprintf("第 %d 卷(考号 %s)%s", student, ex.AssignedReg(student), verb))
 	return s.save(ex)
+}
+
+// SetVoid 作废/恢复某张卷(卷生命周期:重扫替换后弃用旧卷、重复卷裁决保留其一)。
+// 作废卷不进报告/统计/阅卷队列,卷位与评分键保留 —— 恢复即原样回归。
+func (s *Store) SetVoid(id string, student int, voided bool, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return fmt.Errorf("考试 %s 不存在", id)
+	}
+	if student < 1 || student > len(ex.Results) {
+		return fmt.Errorf("学生序号 %d 越界(共 %d 卷)", student, len(ex.Results))
+	}
+	res := ex.Results[student-1]
+	if res == nil {
+		return fmt.Errorf("学生序号 %d 不可用", student)
+	}
+	if res.Voided == voided {
+		return fmt.Errorf("第 %d 卷作废状态无变化", student)
+	}
+	res.Voided = voided
+	verb := "作废"
+	if !voided {
+		verb = "恢复"
+	}
+	ex.log(by, "setVoid", fmt.Sprintf("第 %d 卷(考号 %s)%s", student, ex.AssignedReg(student), verb))
+	return s.save(ex)
+}
+
+// genShortIDLocked 生成全库唯一的 4 位数字考试短号(AB 卷复合码前缀;调用方须持锁)。
+func (s *Store) genShortIDLocked() string {
+	if s.shortSeq == 0 {
+		s.shortSeq = 1000
+	}
+	for s.shortSeq < 10000 {
+		cand := fmt.Sprintf("%04d", s.shortSeq)
+		s.shortSeq++
+		taken := false
+		for _, ex := range s.exams {
+			if ex.ShortID == cand {
+				taken = true
+				break
+			}
+		}
+		if !taken {
+			return cand
+		}
+	}
+	return "" // 9000 场已满:极端情况,由建考层报错(复合码前缀生成失败)
+}
+
+// AssignVariant 人工指派卷种(AB 卷):按所指派卷种从已存矫正图重读客观题作答并归一为规范序,
+// 清除暂扣标记;主观题区两版一致,切片与评分不受影响。
+func (s *Store) AssignVariant(id string, student int, variant, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return fmt.Errorf("考试 %s 不存在", id)
+	}
+	if ex.LayoutB == nil {
+		return fmt.Errorf("本场考试未配置 B 卷版式,不是 AB 卷考试")
+	}
+	if student < 1 || student > len(ex.Results) {
+		return fmt.Errorf("学生序号 %d 越界(共 %d 卷)", student, len(ex.Results))
+	}
+	res := ex.Results[student-1]
+	if res == nil {
+		return fmt.Errorf("学生序号 %d 不可用", student)
+	}
+	base := &ex.Layout
+	if variant == "B" {
+		base = ex.LayoutB
+	}
+	book, err := base.BuildBook()
+	if err != nil {
+		return fmt.Errorf("卷版式编译失败: %w", err)
+	}
+	pages := s.loadPageGroups(id, student) // 已存矫正图(pages/sNN.jpg、sNN_pKK.jpg)
+	if len(pages) > 0 {
+		opt := omr.Options{Threshold: ex.Threshold}
+		var scans []pageScan
+		for k, rect := range pages {
+			if rect == nil {
+				continue
+			}
+			if k >= len(book) {
+				break
+			}
+			r, _, err := omr.ReadRectified(book[k], rect, opt)
+			if err != nil {
+				return fmt.Errorf("按 %s 卷重读第 %d 页失败: %w", variant, k+1, err)
+			}
+			scans = append(scans, pageScan{res: r, dbg: &omr.Debug{Rectified: rect}, sheet: book[k], subOffset: subjectiveOffset(book, k)})
+		}
+		if len(scans) == 0 {
+			return fmt.Errorf("第 %d 卷没有可重读的矫正图", student)
+		}
+		merged := mergePageScans(scans)
+		answers := merged.Answers
+		if variant == "B" {
+			answers = reorderAnswers(answers, ex.OrderB)
+		}
+		res.Answers = answers
+		res.Electives = merged.Electives
+	}
+	res.Variant = variant
+	res.PendingVariant = false
+	// 清掉"卷种无法识别"暂扣告警(其余告警如重答/空白卡保留)
+	kept := res.Warnings[:0]
+	for _, w := range res.Warnings {
+		if !strings.Contains(w, "卷种无法识别") {
+			kept = append(kept, w)
+		}
+	}
+	res.Warnings = kept
+	if ex.AssignVariant == nil {
+		ex.AssignVariant = map[string]string{}
+	}
+	ex.AssignVariant[fmt.Sprintf("s%d", student)] = variant
+	ex.log(by, "assignVariant", fmt.Sprintf("第 %d 卷(考号 %s)指派为 %s 卷并重读客观题", student, ex.AssignedReg(student), variant))
+	return s.save(ex)
+}
+
+// SetMeta 更新考试元数据(考试日期/学期/类型/同场分组/匿名阅卷)。
+// 指针字段 nil = 不变更;空串 = 清空该字段。
+func (s *Store) SetMeta(id string, examDate, term, examType, examGroup, session *string, anonymous *bool, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return fmt.Errorf("考试 %s 不存在", id)
+	}
+	if examDate != nil {
+		if *examDate != "" {
+			if _, err := time.Parse("2006-01-02", *examDate); err != nil {
+				return fmt.Errorf("考试日期须为 YYYY-MM-DD:%q", *examDate)
+			}
+		}
+		ex.ExamDate = *examDate
+	}
+	if term != nil {
+		ex.Term = *term
+	}
+	if examType != nil {
+		ex.ExamType = *examType
+	}
+	if examGroup != nil {
+		ex.ExamGroup = *examGroup
+	}
+	if session != nil {
+		ex.Session = *session
+	}
+	if anonymous != nil && ex.Anonymous != *anonymous {
+		ex.Anonymous = *anonymous
+		ex.log(by, "setMeta", fmt.Sprintf("匿名阅卷:%v", *anonymous))
+	}
+	ex.log(by, "setMeta", fmt.Sprintf("更新考试元数据:日期=%s 学期=%s 类型=%s 分组=%s 场次=%s", ex.ExamDate, ex.Term, ex.ExamType, ex.ExamGroup, ex.Session))
+	return s.save(ex)
+}
+
+// SetTaskDue 设置任务截止时间:key 为 "q{题号}"(按题)或 "{班级}"(按班);due 空串清除。
+func (s *Store) SetTaskDue(id, key, due, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return fmt.Errorf("考试 %s 不存在", id)
+	}
+	if key == "" {
+		return fmt.Errorf("任务 key 不能为空")
+	}
+	if due != "" {
+		if _, err := time.Parse("2006-01-02", due); err != nil {
+			return fmt.Errorf("截止日期须为 YYYY-MM-DD:%q", due)
+		}
+	}
+	if ex.TaskDue == nil {
+		ex.TaskDue = map[string]string{}
+	}
+	if due == "" {
+		delete(ex.TaskDue, key)
+	} else {
+		ex.TaskDue[key] = due
+	}
+	ex.log(by, "setTaskDue", fmt.Sprintf("任务 %s 截止时间 → %s", key, nonEmptyStr(due, "(清除)")))
+	return s.save(ex)
+}
+
+// AddAppeal 学生/家长发起成绩复核申请(仅已发布考试)。返回申请序号(1-based)。
+func (s *Store) AddAppeal(id, reg, reason string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return 0, fmt.Errorf("考试 %s 不存在", id)
+	}
+	if !ex.Published {
+		return 0, fmt.Errorf("成绩尚未发布,无需复核申请")
+	}
+	if reg == "" {
+		return 0, fmt.Errorf("账号未绑定考号")
+	}
+	if idx := findIndex(ex, reg); idx == 0 {
+		return 0, fmt.Errorf("本次考试未找到与考号 %s 关联的答卷", reg)
+	}
+	if strings.TrimSpace(reason) == "" {
+		return 0, fmt.Errorf("请填写复核理由")
+	}
+	ex.Appeals = append(ex.Appeals, Appeal{Time: time.Now(), By: reg, Reason: strings.TrimSpace(reason), Status: "open"})
+	ex.log("student:"+reg, "appeal", fmt.Sprintf("发起成绩复核申请:%s", strings.TrimSpace(reason)))
+	return len(ex.Appeals), s.save(ex)
+}
+
+// ResolveAppeal 教师裁决复核申请:回复处理结论(改分请走阅卷工作台,留痕更完整)。
+func (s *Store) ResolveAppeal(id string, n int, reply, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return fmt.Errorf("考试 %s 不存在", id)
+	}
+	if n < 1 || n > len(ex.Appeals) {
+		return fmt.Errorf("申请序号不合法")
+	}
+	a := &ex.Appeals[n-1]
+	if a.Status == "resolved" {
+		return fmt.Errorf("该申请已处理")
+	}
+	now := time.Now()
+	a.Status, a.Reply, a.ResolvedBy, a.ResolvedAt = "resolved", reply, by, &now
+	ex.log(by, "resolveAppeal", fmt.Sprintf("裁决考号 %s 的复核申请(第 %d 条):%s", a.By, n, nonEmptyStr(reply, "(无回复)")))
+	return s.save(ex)
+}
+
+// DupGroups 找出同考号的多份卷(重扫/重复上传后的人工裁决入口):
+// 返回每个考号对应的卷号列表(1-based),仅含 ≥2 份的组;作废卷不参与。
+func (ex *Exam) DupGroups() [][]int {
+	byReg := map[string][]int{}
+	var regs []string
+	for i := range ex.Results {
+		res := ex.Results[i]
+		if res == nil || res.Voided {
+			continue
+		}
+		reg := ex.AssignedReg(i + 1)
+		if reg == "" {
+			continue
+		}
+		if _, seen := byReg[reg]; !seen {
+			regs = append(regs, reg)
+		}
+		byReg[reg] = append(byReg[reg], i+1)
+	}
+	var out [][]int
+	for _, reg := range regs {
+		if len(byReg[reg]) > 1 {
+			out = append(out, byReg[reg])
+		}
+	}
+	return out
 }
 
 // Dir 返回考试数据目录(全量打包导出用)。

@@ -39,7 +39,7 @@ type stageView struct {
 }
 
 // sheetResolved 判定一张异常卷是否已被人工裁决:
-// 考号人工指派过(采纳推荐/手工确认)或已标缺考,视为处理完成,不再计入"异常待处理"。
+// 考号人工指派过(采纳推荐/手工确认)、已标缺考或 AB 卷种已人工指派,视为处理完成,不再计入"异常待处理"。
 func sheetResolved(ex *Exam, student int) bool {
 	if ex.Results[student-1].Absent {
 		return true
@@ -47,23 +47,41 @@ func sheetResolved(ex *Exam, student int) bool {
 	if ex.Assignments != nil && ex.Assignments[fmt.Sprintf("s%d", student)] != "" {
 		return true
 	}
+	if ex.AssignVariant != nil && ex.AssignVariant[fmt.Sprintf("s%d", student)] != "" {
+		return true // AB 卷:卷种已人工指派(客观题按该卷种重读,暂扣解除)
+	}
 	return false
+}
+
+// activeResults 返回未作废的结果数(作废卷不计入已扫/应扫/进度口径)。
+func activeCount(ex *Exam) int {
+	n := 0
+	for _, res := range ex.Results {
+		if res != nil && !res.Voided {
+			n++
+		}
+	}
+	return n
 }
 
 // examStage 派生一场考试当前所处阶段与看板数字。
 func examStage(ex *Exam) stageView {
-	v := stageView{Students: len(ex.Results), Expected: len(ex.Roster)}
+	v := stageView{Students: activeCount(ex), Expected: len(ex.Roster)}
 	gradedTotal := 0
 	for qi := range ex.Layout.Subjectives {
-		v.Total += len(ex.Results)
+		v.Total += activeCount(ex)
 		for si := range ex.Results {
+			res := ex.Results[si]
+			if res == nil || res.Voided {
+				continue
+			}
 			if subjectiveGraded(ex, si+1, qi+1) {
 				gradedTotal++
 			}
 		}
 	}
 	for si, res := range ex.Results {
-		if res == nil {
+		if res == nil || res.Voided {
 			continue
 		}
 		if res.Absent {
@@ -126,6 +144,9 @@ func flaggedQueue(ex *Exam) []flaggedView {
 		var s, q int
 		if _, err := fmt.Sscanf(key, "s%d-q%d", &s, &q); err != nil {
 			continue // 小问键 s1-q2p3 不进队(以大题复核入口处理)
+		}
+		if s >= 1 && s <= len(ex.Results) && ex.Results[s-1] != nil && ex.Results[s-1].Voided {
+			continue // 作废卷不进复核队列
 		}
 		out = append(out, flaggedView{Student: s, Question: q, Reg: ex.AssignedReg(s), Score: g.Score})
 	}

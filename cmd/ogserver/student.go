@@ -30,11 +30,16 @@ func myRegs(u *auth.User) []string {
 }
 
 // findIndex 在考试中定位某个考号的卷位:人工指派优先,其次 OMR 判读考号。
+// 作废卷跳过(对外语义:这份卷不存在)。
 func findIndex(ex *Exam, reg string) int {
 	if reg == "" {
 		return 0
 	}
 	for i := range ex.Results {
+		res := ex.Results[i]
+		if res == nil || res.Voided {
+			continue
+		}
 		if ex.AssignedReg(i+1) == reg {
 			return i + 1
 		}
@@ -340,6 +345,18 @@ func handleStudentExam(w http.ResponseWriter, r *http.Request, store *Store, u *
 	}
 	out["slices"] = slices
 	out["knowledge"] = studentKnowledgeOf(ex, idx, res)
+	// 我的复核申请(发布后可发起,教师裁决后在此看到回复)
+	myAppeals := []map[string]any{}
+	for _, a := range ex.Appeals {
+		if a.By != reg {
+			continue
+		}
+		myAppeals = append(myAppeals, map[string]any{
+			"time": a.Time.Format("2006-01-02 15:04"), "reason": a.Reason,
+			"status": a.Status, "reply": a.Reply,
+		})
+	}
+	out["appeals"] = myAppeals
 	if fileExists(filepath.Join(store.PageDir(ex.ID), fmt.Sprintf("s%02d.jpg", idx))) {
 		out["pageURL"] = fmt.Sprintf("/api/v1/student/exams/%s/page%s", ex.ID, childQ)
 	}

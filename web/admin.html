@@ -109,13 +109,15 @@ async function refresh() {
   document.getElementById("userList").innerHTML = html + "</table>";
 }
 
-/* —— 组织架构:年级→班级归属(admin 维护,组长权限/名册分组的地基) —— */
+/* —— 组织架构:年级→班级归属 + 全校场次表(admin 维护;组长权限/名册分组/监考冲突检测的地基) —— */
 let schoolGrades = []; // [{name, classes[]}]
+let schoolSessions = []; // [{name, start, end}] 场次表(如 第1节 08:00-09:30)
 let knownClasses = [];
 async function loadSchool() {
   try {
     const [sch, students] = await Promise.all([OG.jget("/api/v1/school"), OG.jget("/api/v1/students").catch(() => [])]);
     schoolGrades = (sch.grades || []).map(g => ({ name: g.name, classes: [...(g.classes || [])] }));
+    schoolSessions = (sch.sessions || []).map(s => ({ name: s.name, start: s.start, end: s.end }));
     const cs = new Set(schoolGrades.flatMap(g => g.classes));
     for (const s of students) for (const c of (s.classes || [])) cs.add(c);
     knownClasses = [...cs].sort();
@@ -124,12 +126,12 @@ async function loadSchool() {
 }
 function renderSchool() {
   const box = document.getElementById("schoolBox");
+  let html;
   if (!schoolGrades.length) {
-    box.innerHTML = `<span class="hint">尚未配置年级。已知班级(来自学生账号):${knownClasses.map(c => `<code>${c}</code>`).join(" ") || "无"}</span><br>
+    html = `<span class="hint">尚未配置年级。已知班级(来自学生账号):${knownClasses.map(c => `<code>${c}</code>`).join(" ") || "无"}</span><br>
       <button class="primary" style="margin-top:8px" onclick="addGradeRow()">+ 添加年级</button>`;
-    return;
-  }
-  box.innerHTML = schoolGrades.map((g, i) => `
+  } else {
+    html = schoolGrades.map((g, i) => `
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
       <input value="${g.name}" placeholder="年级名(如 三年级)" style="width:130px" onchange="schoolGrades[${i}].name=this.value">
       <input value="${g.classes.join(", ")}" placeholder="该年级班级(逗号分隔)" style="flex:1;min-width:260px" onchange="schoolGrades[${i}].classes=this.value.split(/[,，、]/).map(x=>x.trim()).filter(Boolean)">
@@ -140,12 +142,34 @@ function renderSchool() {
       <a href="#" onclick="addGradeRow();return false">+ 添加年级</a>
       <span class="hint">未归属班级(不进任何年级):${knownClasses.filter(c => !schoolGrades.some(g => g.classes.includes(c))).map(c => `<code>${c}</code>`).join(" ") || "无"}</span>
     </div>`;
+  }
+  // 全校场次表(教务时间颗粒):考试挂场次后,同日同场次的不同考试指派同一监考会被标冲突
+  html += `<div style="margin-top:18px"><b>全校场次表</b> <span class="hint">(考试挂场次后用于监考冲突检测;为空 = 不启用)</span></div>` +
+    (schoolSessions.length ? schoolSessions.map((s, i) => `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+      <input value="${s.name}" placeholder="场次名(如 第1节)" style="width:130px" onchange="schoolSessions[${i}].name=this.value">
+      <input value="${s.start}" type="time" style="width:100px" onchange="schoolSessions[${i}].start=this.value">
+      ~ <input value="${s.end}" type="time" style="width:100px" onchange="schoolSessions[${i}].end=this.value">
+      <a href="#" class="danger" onclick="schoolSessions.splice(${i},1);renderSchool();return false">移除</a>
+    </div>`).join("") : `<p class="hint">暂无场次。</p>`) +
+    `<div style="display:flex;gap:10px;align-items:center;margin-top:4px;flex-wrap:wrap">
+      <button class="primary" onclick="saveSessions()">保存场次表</button>
+      <a href="#" onclick="schoolSessions.push({name:'',start:'08:00',end:'09:30'});renderSchool();return false">+ 添加场次</a>
+    </div>`;
+  box.innerHTML = html;
 }
 function addGradeRow() { schoolGrades.push({ name: "", classes: [] }); renderSchool(); }
 async function saveSchool() {
   const msg = document.getElementById("schoolMsg");
   try {
     await OG.jpost("/api/v1/school", { grades: schoolGrades }, "PUT");
+    msg.textContent = ""; await loadSchool();
+  } catch (e) { msg.textContent = e.message; }
+}
+async function saveSessions() {
+  const msg = document.getElementById("schoolMsg");
+  try {
+    await OG.jpost("/api/v1/school/sessions", { sessions: schoolSessions }, "PUT");
     msg.textContent = ""; await loadSchool();
   } catch (e) { msg.textContent = e.message; }
 }

@@ -26,8 +26,12 @@
   .panel .row { padding:12px 16px; border-bottom:1px solid var(--line); }
   .panel select, .panel input { width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font-size:14px; }
   .scorebtns { display:grid; grid-template-columns:repeat(6,1fr); gap:6px; }
-  .scorebtns button, .markbtns button, .tools button { padding:9px 0; border:1px solid var(--line); border-radius:8px; background:#f8fafc; font-size:14px; cursor:pointer; }
+  .scorebtns button, .markbtns button, .tools button, .scoreinput button { padding:9px 0; border:1px solid var(--line); border-radius:8px; background:#f8fafc; font-size:14px; cursor:pointer; }
   .scorebtns button.active { background:var(--brand); color:#fff; border-color:var(--brand); }
+  .scoreinput { display:grid; grid-template-columns:48px 1fr 48px 60px; gap:6px; margin-top:6px; }
+  .scoreinput input { padding:8px 6px; border:1px solid var(--line); border-radius:6px; font-size:15px; text-align:center; }
+  .scoreinput button { font-size:12px; padding:6px 0; }
+  .scorebuf { margin-bottom:6px; padding:6px 10px; background:#fff7ed; border:1px solid #fdba74; border-radius:8px; font-size:13px; font-weight:600; color:#9a3412; }
   .markbtns { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:8px; }
   .markbtns button.active { background:#fff3cd; border-color:var(--warn); }
   .tools { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-top:8px; }
@@ -56,6 +60,22 @@
   #report { max-height:38vh; overflow:auto; font-size:12px; }
   #report table { width:100%; border-collapse:collapse; }
   #report td, #report th { border-bottom:1px solid var(--line); padding:4px 6px; text-align:left; }
+  /* 触屏快捷行(R 同上分 / F 下一份未评 / G 待复核——键盘专属动作的手机出口) */
+  .quickbtns { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+  .quickbtns button { padding:11px 0; border:1px solid var(--line); border-radius:8px; background:#f8fafc; font-size:13px; cursor:pointer; }
+  /* —— 手机/触屏(≤860px,与 common.css 断点对齐):上图下操作区,全部动作可点 —— */
+  @media (max-width:860px) {
+    body { height:auto; min-height:100vh; }
+    main { flex-direction:column; }
+    .stage { height:46vh; flex:none; }
+    .stage img { max-width:96vw; max-height:42vh; }
+    .stage.zoom img { width:240vw; }
+    .panel { width:auto; border-left:0; border-top:1px solid var(--line); }
+    #toast { right:12px !important; } /* 覆盖内联 right:360px(写死假设右侧面板) */
+    .scorebtns { grid-template-columns:repeat(5,1fr); }
+    .scorebtns button, .markbtns button, .tools button, .quickbtns button, .nav button { padding:13px 0; font-size:15px; }
+    .kbdhelp { display:none; } /* 无键盘,键位提示隐藏 */
+  }
 </style>
 </head>
 <body>
@@ -82,7 +102,14 @@
       <div class="status" id="studentInfo"></div>
       <div id="assignBox" hidden></div>
       <div id="partBox" class="parts" hidden></div>
+      <div id="scoreBuf" class="scorebuf" hidden></div>
       <div class="scorebtns" id="scoreBtns"></div>
+      <div class="scoreinput">
+        <button id="minusHalf" title="在当前分上减 0.5">−0.5</button>
+        <input id="scoreInput" type="number" step="0.5" min="0" placeholder="键入分数">
+        <button id="plusHalf" title="在当前分上加 0.5">+0.5</button>
+        <button id="scoreInputOk" title="确认提交(触屏无回车键)">确认</button>
+      </div>
       <div class="markbtns">
         <button data-mark="check" title="正确">✓ (V)</button>
         <button data-mark="cross" title="错误">✗ (B)</button>
@@ -104,6 +131,11 @@
       <button class="ghost" id="prevBtn">← 上一卷</button>
       <button id="nextBtn">下一卷 →</button>
     </div>
+    <div class="row quickbtns">
+      <button onclick="quickSameLast()" title="与上一份同分(键盘 R)">⤵ 同上分</button>
+      <button onclick="quickNextUngraded()" title="下一份未评(键盘 F)">⏭ 下份未评</button>
+      <button onclick="jumpNextFlagged()" title="下一份待复核(键盘 G)">⚑ 复核</button>
+    </div>
     <div class="row" style="display:flex;align-items:center;gap:8px">
       <label style="font-size:13px;display:flex;align-items:center;gap:6px;margin:0">
         <input type="checkbox" id="autoAdv" checked style="width:auto"> 打分后自动跳下一份未评
@@ -111,9 +143,10 @@
     </div>
     <div id="toast" style="position:fixed;top:64px;right:360px;background:var(--ink);color:#fff;padding:10px 18px;border-radius:8px;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,.25);opacity:0;transition:opacity .25s;pointer-events:none;z-index:50"></div>
     <div class="row status" id="questionStatus"></div>
-    <div class="row hint">
-      <kbd>0</kbd>~<kbd>9</kbd> 打分 · <kbd>Space</kbd> 满分 · <kbd>Z</kbd> 零分 · <kbd>R</kbd> 同上分<br>
-      <kbd>V</kbd> 对 · <kbd>B</kbd> 错 · <kbd>X</kbd> 待复核 · <kbd>P</kbd> 画笔<br>
+    <div class="row hint kbdhelp">
+      <kbd>0</kbd>~<kbd>9</kbd> 打分(满分 ≤10 直接给分;更大满分:十位+个位两键,如 <kbd>1</kbd><kbd>2</kbd>=12 分)<br>
+      <kbd>.</kbd> 小数点 + <kbd>Enter</kbd> 提交(如 4.5)· <kbd>Space</kbd> 满分 · <kbd>Z</kbd> 零分 · <kbd>R</kbd> 同上分<br>
+      <kbd>V</kbd> 对 · <kbd>B</kbd> 错 · <kbd>X</kbd> 待复核 · <kbd>P</kbd> 画笔 · <kbd>Esc</kbd> 清除键入<br>
       <kbd>F</kbd> 下一份未评 · <kbd>G</kbd> 下一份待复核 · <kbd>←</kbd> 上一卷(打分即保存,自动跳下一份未评卷)
     </div>
     <div class="row" id="report" hidden></div>
@@ -172,7 +205,18 @@ async function init() {
   const saved = localStorage.getItem(AUTO_KEY);
   if (saved !== null) $("autoAdv").checked = saved === "1";
   $("autoAdv").onchange = e => localStorage.setItem(AUTO_KEY, e.target.checked ? "1" : "0");
-  $("penBtn").onclick = () => { penOn = !penOn; $("penBtn").classList.toggle("active", penOn); };
+  $("penBtn").onclick = togglePen;
+  $("minusHalf").onclick = () => nudgeScore(-0.5);
+  $("plusHalf").onclick = () => nudgeScore(0.5);
+  // 分数输入条:回车与「确认」按钮同路(触屏没有回车键)
+  const commitScoreInput = () => {
+    const v = parseFloat($("scoreInput").value);
+    if (isNaN(v)) { toast("请输入分数"); return; }
+    $("scoreInput").value = "";
+    setScore(v);
+  };
+  $("scoreInput").addEventListener("keydown", e => { if (e.key === "Enter") commitScoreInput(); });
+  $("scoreInputOk").onclick = commitScoreInput;
   $("clearBtn").onclick = async () => { slices[cur].ink = []; syncCanvas(); await saveGrade(); };
   $("enhance").onchange = e => $("sliceImg").style.filter = e.target.value;
   $("zoomBtn").onclick = () => { $("stage").classList.toggle("zoom"); $("zoomBtn").classList.toggle("active"); syncCanvas(); };
@@ -227,13 +271,80 @@ function buildScoreBtns() {
   const box = $("scoreBtns");
   box.innerHTML = "";
   const cap = curPartMax();
-  const n = Math.min(10, Math.round(cap));
-  for (let s = 0; s <= n; s++) {
+  const mk = (label, v, onclick) => {
     const b = document.createElement("button");
-    b.textContent = s;
-    b.onclick = () => setScore(s);
+    b.textContent = label;
+    b.dataset.v = v;
+    b.onclick = onclick;
     box.appendChild(b);
+  };
+  if (cap <= 10) {
+    // 常规小题:0..满分 一键给分(整数);小数与 ±0.5 走下方输入条
+    for (let s = 0; s <= Math.floor(cap + 1e-9); s++) mk(String(s), s, () => setScore(s));
+  } else {
+    // 大题(两位数满分):十位先行,个位补全;个位单独点 = 直接给个位分
+    const tens = Math.floor(cap / 10);
+    for (let t = 0; t <= tens; t++) mk(String(t * 10), t * 10, () => {
+      if (t === 0) { setScore(0); return; }
+      if (t * 10 === cap) { setScore(cap); return; }
+      scoreBuf = String(t);
+      showBuf(`已选十位 ${t}_,点个位补全(满 ${cap} 分)`);
+    });
+    for (let d = 0; d <= 9; d++) mk(String(d), d, () => {
+      const v = scoreBuf === "" ? d : parseInt(scoreBuf, 10) * 10 + d;
+      clearBuf();
+      if (v > cap) { toast(`${v} 超过满分 ${cap},未保存`); return; }
+      setScore(v);
+    });
   }
+  highlightScoreBtns();
+}
+
+// highlightScoreBtns 按当前生效分点亮对应快捷按钮(含 .5 的向下取整键)。
+function highlightScoreBtns() {
+  const s = slices[cur];
+  if (!s) return;
+  const activeScore = specParts.length ? partStateOf(s)[partSel].score : s.score;
+  const showActive = specParts.length || s.graded;
+  [...$("scoreBtns").children].forEach(b => {
+    const v = parseFloat(b.dataset.v);
+    b.classList.toggle("active", showActive && Math.abs(activeScore - v) < 0.01);
+  });
+}
+
+/* —— 评分颗粒度(P0):键盘缓冲 + 直输入条 ——
+   cap≤10:数字键即打即存(原快路径);
+   cap>10:两键十位+个位(如 1→2 = 12 分),0 开头即个位分(0→7 = 7 分);
+   小数:. 键进入小数缓冲,Enter 提交;或右侧输入条直接键入回车。 */
+let scoreBuf = ""; // 键盘输入缓冲(十位待补 / 小数串)
+
+function showBuf(text) {
+  const el = $("scoreBuf");
+  el.hidden = false;
+  el.textContent = text;
+}
+function clearBuf() {
+  scoreBuf = "";
+  $("scoreBuf").hidden = true;
+}
+function commitBuf() {
+  const v = parseFloat(scoreBuf);
+  const cap = curPartMax();
+  clearBuf();
+  if (isNaN(v)) { toast("没有可提交的分数"); return; }
+  if (v < 0 || v > cap + 1e-9) { toast(`${v} 超出范围(0 ~ ${cap})`); return; }
+  setScore(Math.round(v * 2) / 2); // 半分对齐
+}
+
+// nudgeScore 在当前生效分上 ±0.5(理科步骤分/作文折算的半分修正)。
+function nudgeScore(delta) {
+  const s = slices[cur];
+  if (!s) return;
+  const cap = curPartMax();
+  const base = specParts.length ? (partStateOf(s)[partSel].graded ? partStateOf(s)[partSel].score : 0)
+    : (s.graded ? (s.score || 0) : 0);
+  const v = Math.min(cap, Math.max(0, base + delta));
+  setScore(Math.round(v * 2) / 2);
 }
 
 // curPartMax 返回当前打分目标的满分:小问模式取当前小问,整题模式取大题满分。
@@ -271,11 +382,10 @@ function render() {
     elecNote = ` · 选做 ${s.elective.labels.join("/")}:${marksTxt},${chosenTxt}`;
   }
   $("studentInfo").innerHTML =
-    `学生 ${s.student}/${slices.length} · 考号 <b>${s.reg || "?"}</b>${s.regValid ? "" : ' <span style="color:#c0392b">⚠ 无效,请指派</span>'} · 第 ${meta.objective.length + qIndex} 题(满分 ${qMax})${elecNote}`;
+    `学生 ${s.student}/${slices.length} · 考号 <b>${meta.anonymous ? "已匿名" : (s.reg || "?")}</b>${s.regValid || meta.anonymous ? "" : ' <span style="color:#c0392b">⚠ 无效,请指派</span>'} · 第 ${meta.objective.length + qIndex} 题(满分 ${qMax})${elecNote}`;
   renderParts();
-  const activeScore = specParts.length ? partStateOf(s)[partSel].score : s.score;
-  const showActive = specParts.length || s.graded;
-  [...$("scoreBtns").children].forEach((b, i) => b.classList.toggle("active", showActive && Math.abs(activeScore - i) < 0.01));
+  clearBuf();
+  highlightScoreBtns();
   document.querySelectorAll(".markbtns button").forEach(b => b.classList.toggle("active", s.mark === b.dataset.mark));
   const graded = slices.filter(x => x.graded).length;
   $("progressBar").style.width = (100 * graded / slices.length) + "%";
@@ -298,20 +408,23 @@ async function loadAssign(student) {
       html += `<span class="chip" onclick="assignReg('${c.reg}')">${c.reg} ${c.name}</span>`;
     }
     if (!(sug.suggestions || []).length) html += " 无(可搜索名册)";
-    html += `<input placeholder="输入姓名/考号搜索名册后回车" id="rosterSearch">`;
+    html += `<div style="display:flex;gap:6px;margin-top:6px">
+      <input placeholder="输入姓名/考号搜索" id="rosterSearch" style="flex:1;width:auto">
+      <button id="rosterSearchBtn" style="padding:6px 14px;white-space:nowrap">搜索</button></div>`;
     box.innerHTML = html;
-    $("rosterSearch").onkeydown = async e => {
-      if (e.key !== "Enter") return;
-      const list = await jget(`/api/v1/exams/${examId}/roster?q=${encodeURIComponent(e.target.value)}`);
+    const doSearch = async () => {
+      const list = await jget(`/api/v1/exams/${examId}/roster?q=${encodeURIComponent($("rosterSearch").value)}`);
       box.querySelectorAll(".chip").forEach(x => x.remove());
       for (const c of list) {
         const sp = document.createElement("span");
         sp.className = "chip";
         sp.textContent = `${c.reg} ${c.name}`;
         sp.onclick = () => assignReg(c.reg);
-        box.insertBefore(sp, $("rosterSearch"));
+        box.insertBefore(sp, $("rosterSearch").parentElement);
       }
     };
+    $("rosterSearch").onkeydown = e => { if (e.key === "Enter") doSearch(); };
+    $("rosterSearchBtn").onclick = doSearch;
   } catch (err) { box.textContent = "推荐加载失败:" + err.message; }
 }
 async function assignReg(reg) {
@@ -322,6 +435,13 @@ async function assignReg(reg) {
 }
 
 /* —— 画布同步与手写批注 —— */
+// togglePen 画笔开关:触屏下开启时必须禁用画布的浏览器手势(touch-action:none),
+// 否则画一笔页面就跟着滚动;关闭时恢复,切片图可双指缩放浏览。
+function togglePen() {
+  penOn = !penOn;
+  $("penBtn").classList.toggle("active", penOn);
+  $("inkCanvas").style.touchAction = penOn ? "none" : "auto";
+}
 function syncCanvas() {
   const img = $("sliceImg"), cv = $("inkCanvas");
   if (!img.complete || !img.naturalWidth) return;
@@ -331,7 +451,8 @@ function syncCanvas() {
 function redrawInk() {
   const cv = $("inkCanvas"), ctx = cv.getContext("2d");
   ctx.clearRect(0, 0, cv.width, cv.height);
-  ctx.lineWidth = 3; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.lineWidth = Math.max(3, Math.round(cv.width / 300)); // 大画布加粗;笔迹归一化存储,跨端重放一致
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
   for (const st of (slices[cur]?.ink || [])) drawStroke(ctx, st);
   if (curStroke) drawStroke(ctx, curStroke);
 }
@@ -364,10 +485,21 @@ cv.addEventListener("pointerup", async () => {
   redrawInk();
   await saveGrade();
 });
+// 触屏滚动劫持会触发 pointercancel 而非 pointerup:丢弃未完成笔迹,避免悬挂
+cv.addEventListener("pointercancel", () => { curStroke = null; redrawInk(); });
+
+/* —— 触屏快捷出口(R/F/G 三个键盘专属动作的手机按钮封装) —— */
+function quickSameLast() {
+  if (lastScore == null) { toast("还没有上一份的分数"); return; }
+  setScore(lastScore);
+}
+function quickNextUngraded() {
+  if (!jumpNextUngraded()) toast("本题已全部阅完(打分会自动跨题)");
+}
 
 /* —— 小问拆分(版式 v3):逐问打分,大题总分由服务端自动求和 —— */
 function partStateOf(s) {
-  if (!s.parts) s.parts = specParts.map(() => ({ part: 0, score: 0, graded: false }));
+  if (!s.parts) s.parts = specParts.map(() => ({ part: 0, score: 0, graded: false, ver: 0 }));
   return s.parts;
 }
 function renderParts() {
@@ -385,40 +517,64 @@ function renderParts() {
   buildScoreBtns(); // 当前小问变了,快捷分值按钮随之刷新
 }
 
+// gradeVer 返回当前打分目标的乐观锁版本号(小问模式取当前小问,整题取题级 ver)。
+function gradeVer() {
+  const s = slices[cur];
+  if (specParts.length) return (partStateOf(s)[partSel] || {}).ver || 0;
+  return s.ver || 0;
+}
+
 async function setScore(score) {
   const s = slices[cur];
-  if (specParts.length) {
-    await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, part: partSel + 1, score, mark: s.mark || "", graded: true, ink: s.ink || [] });
-    lastScore = score;
-    const st = partStateOf(s);
-    st[partSel].score = score;
-    st[partSel].graded = true;
-    const allPartsDone = st.every(x => x.graded);
-    if (partSel < specParts.length - 1) {
-      partSel++; // 同卷内自动跳下一小问
+  const cap = curPartMax();
+  if (score < 0 || score > cap + 1e-9) { toast(`分数 ${score} 超出满分 ${cap},未保存`); return; }
+  score = Math.round(score * 100) / 100;
+  const payload = { examId, student: s.student, question: qIndex, score, mark: s.mark || "", graded: true, ink: s.ink || [] };
+  const ver = gradeVer();
+  if (ver > 0) payload.ver = ver; // 乐观锁:他人先改则 409
+  try {
+    if (specParts.length) {
+      payload.part = partSel + 1;
+      await jpost("/api/v1/grades", payload);
+      lastScore = score;
+      const st = partStateOf(s);
+      st[partSel].score = score;
+      st[partSel].graded = true;
+      st[partSel].ver = ver + 1;
+      const allPartsDone = st.every(x => x.graded);
+      if (partSel < specParts.length - 1) {
+        partSel++; // 同卷内自动跳下一小问
+        render();
+        return;
+      }
+      // 已是最后一问:全部小问评完 → 自动跳下一份未评卷 / 跨题
+      if (autoAdvOn()) {
+        if (allPartsDone) {
+          if (!jumpNextUngraded()) await crossQuestionAdvance();
+          return;
+        }
+        partSel = 0; buildScoreBtns(); render();
+        return;
+      }
       render();
       return;
     }
-    // 已是最后一问:全部小问评完 → 自动跳下一份未评卷 / 跨题
+    await jpost("/api/v1/grades", payload);
+    lastScore = score;
+    Object.assign(s, { graded: true, score, ver: ver + 1 });
     if (autoAdvOn()) {
-      if (allPartsDone) {
-        if (!jumpNextUngraded()) await crossQuestionAdvance();
-        return;
-      }
-      partSel = 0; buildScoreBtns(); render();
+      if (!jumpNextUngraded()) await crossQuestionAdvance();
       return;
     }
     render();
-    return;
+  } catch (e) {
+    if (String(e.message).includes("刚被他人改过")) {
+      toast("⚠ " + e.message, 4200);
+      await loadQuestion(qIndex); // 拉回服务器最新评分状态
+    } else {
+      toast("保存失败:" + e.message, 4200);
+    }
   }
-  await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score, mark: s.mark || "", graded: true, ink: s.ink || [] });
-  lastScore = score;
-  Object.assign(s, { graded: true, score });
-  if (autoAdvOn()) {
-    if (!jumpNextUngraded()) await crossQuestionAdvance();
-    return;
-  }
-  render();
 }
 async function saveGrade() {
   const s = slices[cur];
@@ -454,9 +610,12 @@ async function showReport() {
   const rep = await jget(`/api/v1/exams/${examId}/report`);
   const box = $("report");
   box.hidden = false;
-  let html = "<table><tr><th>卷号</th><th>考号</th><th>客观</th><th>主观</th><th>总分</th><th>复核</th></tr>";
+  // 匿名阅卷:报告表同样不露考号(评完再对分;打开报告不再等于破匿名)
+  const anon = meta.anonymous;
+  let html = `<div style="margin-bottom:6px"><button class="ghost" style="padding:6px 14px" onclick="document.getElementById('report').hidden=true">✕ 关闭(Esc)</button></div>
+  <table><tr><th>卷号</th>${anon ? "" : "<th>考号</th>"}<th>客观</th><th>主观</th><th>总分</th><th>复核</th></tr>`;
   for (const s of rep.students) {
-    html += `<tr><td>${s.index}</td><td>${s.regNumber || "?"}</td><td>${s.objective}</td><td>${s.subjective}</td><td><b>${s.score}</b>/${rep.total}</td><td>${s.flagged ? "⚑" : ""}</td></tr>`;
+    html += `<tr><td>${s.index}</td>${anon ? "" : `<td>${s.regNumber || "?"}</td>`}<td>${s.objective}</td><td>${s.subjective}</td><td><b>${s.score}</b>/${rep.total}</td><td>${s.flagged ? "⚑" : ""}</td></tr>`;
   }
   html += `</table>
   <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
@@ -477,21 +636,56 @@ window.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   if (!slices.length) return;
   const k = e.key;
-  if (k >= "0" && k <= "9" && curPartMax() <= 10) { setScore(+k); e.preventDefault(); }
-  else if (k === " ") { setScore(curPartMax()); e.preventDefault(); }
-  else if (k === "z" || k === "Z") setScore(0);
+  const cap = curPartMax();
+  // 评分键入缓冲:cap≤10 数字即打即存;cap>10 两键(十位+个位);"." 起小数缓冲,Enter 提交
+  if (k >= "0" && k <= "9") {
+    e.preventDefault();
+    if (scoreBuf.includes(".")) { scoreBuf += k; showBuf("输入:" + scoreBuf + " ⏎"); return; }
+    if (cap <= 10) { clearBuf(); setScore(+k); return; }
+    if (scoreBuf === "") {
+      if (k === "0") { setScore(0); return; }
+      scoreBuf = k;
+      showBuf(`已选十位 ${k}_,点个位补全(满 ${cap} 分;Esc 取消)`);
+      return;
+    }
+    const v = parseInt(scoreBuf, 10) * 10 + (+k);
+    clearBuf();
+    if (v > cap) { toast(`${v} 超过满分 ${cap},未保存`); return; }
+    setScore(v);
+    return;
+  }
+  if (k === ".") {
+    e.preventDefault();
+    if (!scoreBuf.includes(".")) {
+      scoreBuf = (scoreBuf === "" || scoreBuf.includes("_") ? "" : scoreBuf) + ".";
+      showBuf("输入:" + scoreBuf + " ⏎(小数,Enter 提交)");
+    }
+    return;
+  }
+  if (k === "Enter") {
+    if (scoreBuf !== "") { commitBuf(); e.preventDefault(); return; }
+    next(); e.preventDefault();
+    return;
+  }
+  if (k === "Escape") { clearBuf(); e.preventDefault(); return; }
+  if (k === "Backspace") {
+    if (scoreBuf !== "") { scoreBuf = scoreBuf.slice(0, -1); scoreBuf ? showBuf("输入:" + scoreBuf + " ⏎") : clearBuf(); e.preventDefault(); return; }
+    prev(); e.preventDefault();
+    return;
+  }
+  if (k === " ") { clearBuf(); setScore(curPartMax()); e.preventDefault(); }
+  else if (k === "z" || k === "Z") { clearBuf(); setScore(0); }
   else if (k === "v" || k === "V") setMark("check");
   else if (k === "b" || k === "B") setMark("cross");
   else if (k === "x" || k === "X") setMark("flag");
-  else if (k === "p" || k === "P") { penOn = !penOn; $("penBtn").classList.toggle("active", penOn); }
+  else if (k === "p" || k === "P") togglePen();
   else if (k === "r" || k === "R") { if (lastScore != null) setScore(lastScore); }
   else if (k === "f" || k === "F") { // 跳到本题下一份未评;全评完提示
     if (!jumpNextUngraded()) toast("本题已全部阅完(打分会自动跨题)");
     e.preventDefault();
   }
   else if (k === "g" || k === "G") { jumpNextFlagged(); e.preventDefault(); } // 待复核队列:⚑ 卷逐份复核
-  else if (k === "Enter" || k === "ArrowRight") { next(); e.preventDefault(); }
-  else if (k === "Backspace") { prev(); e.preventDefault(); } // 回看上一卷(改分/复查)
+  else if (k === "ArrowRight") { next(); e.preventDefault(); }
   else if (k === "ArrowLeft") { prev(); e.preventDefault(); }
 });
 

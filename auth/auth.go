@@ -37,19 +37,20 @@ const (
 
 // User 是一个账号。
 type User struct {
-	Username    string   `json:"username"`
-	DisplayName string   `json:"displayName"`
-	Role        Role     `json:"role"`
-	Salt        string   `json:"salt"` // hex
-	Hash        string   `json:"hash"` // hex, PBKDF2-HMAC-SHA256
-	Reg         string   `json:"reg,omitempty"`
-	Class       string   `json:"class,omitempty"`       // 学生所属班级(教师为任教班级);走班场景为行政班/主班
-	Classes     []string `json:"classes,omitempty"`     // 全部班级(走班:学生双归属/教师多班任教);Classes[0]=Class
-	Subjects    []string `json:"subjects,omitempty"`    // 教师任教学科(如 数学/语文)
-	HeadClasses []string `json:"headClasses,omitempty"` // 班主任所带班级(本班全学科可见;常规流程"班主任看本班全科")
-	SubjectLead []string `json:"subjectLead,omitempty"` // 学科组长牵头学科(本学科跨班可见;常规流程"学科组协作")
-	Grades      []string `json:"grades,omitempty"`      // 年级组长管辖年级(配合组织架构 data/school.json 收敛可见考试)
-	Children    []string `json:"children,omitempty"`    // 家长绑定的子女考号(家长角色)
+	Username           string   `json:"username"`
+	DisplayName        string   `json:"displayName"`
+	Role               Role     `json:"role"`
+	Salt               string   `json:"salt"` // hex
+	Hash               string   `json:"hash"` // hex, PBKDF2-HMAC-SHA256
+	Reg                string   `json:"reg,omitempty"`
+	Class              string   `json:"class,omitempty"`              // 学生所属班级(教师为任教班级);走班场景为行政班/主班
+	Classes            []string `json:"classes,omitempty"`            // 全部班级(走班:学生双归属/教师多班任教);Classes[0]=Class
+	Subjects           []string `json:"subjects,omitempty"`           // 教师任教学科(如 数学/语文)
+	HeadClasses        []string `json:"headClasses,omitempty"`        // 班主任所带班级(本班全学科可见;常规流程"班主任看本班全科")
+	SubjectLead        []string `json:"subjectLead,omitempty"`        // 学科组长牵头学科(本学科跨班可见;常规流程"学科组协作")
+	Grades             []string `json:"grades,omitempty"`             // 年级组长管辖年级(配合组织架构 data/school.json 收敛可见考试)
+	Children           []string `json:"children,omitempty"`           // 家长绑定的子女考号(家长角色)
+	MustChangePassword bool     `json:"mustChangePassword,omitempty"` // 首登强制改密(默认管理员账号/批量导入初始密码置位)
 }
 
 // AllClasses 返回该账号的全部班级;只有 class 的老数据归一为单班。
@@ -198,7 +199,7 @@ func (s *Store) Bootstrap() (first bool, err error) {
 			return false, nil
 		}
 	}
-	admin := &User{Username: "admin", DisplayName: "系统管理员", Role: RoleAdmin}
+	admin := &User{Username: "admin", DisplayName: "系统管理员", Role: RoleAdmin, MustChangePassword: true}
 	if err := admin.SetPassword("admin123"); err != nil {
 		return false, err
 	}
@@ -302,6 +303,7 @@ func (s *Store) ImportUpsert(u *User, password string) (created bool, err error)
 		if err := u.SetPassword(password); err != nil {
 			return false, err
 		}
+		u.MustChangePassword = true // 批量开号的初始密码:首登须改(已存在账号的重导不反复置位)
 		s.Users[u.Username] = u
 		return true, s.saveLocked()
 	}
@@ -403,7 +405,8 @@ func (s *Store) UpdateUser(username string, patch *User) error {
 	return s.saveLocked()
 }
 
-// SetPassword 重置口令(管理员重置或本人修改)。
+// SetPassword 重置口令(管理员重置):重置出的是临时口令,置强制改密标记,
+// 下次使用前须本人改掉(guard 中间件拦截)。
 func (s *Store) SetPassword(username, password string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -414,6 +417,22 @@ func (s *Store) SetPassword(username, password string) error {
 	if err := u.SetPassword(password); err != nil {
 		return err
 	}
+	u.MustChangePassword = true
+	return s.saveLocked()
+}
+
+// SetPasswordSelf 本人修改口令(需已通过原密码校验):成功后清除强制改密标记。
+func (s *Store) SetPasswordSelf(username, password string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.Users[username]
+	if !ok {
+		return fmt.Errorf("用户 %s 不存在", username)
+	}
+	if err := u.SetPassword(password); err != nil {
+		return err
+	}
+	u.MustChangePassword = false
 	return s.saveLocked()
 }
 
@@ -443,17 +462,18 @@ func (s *Store) DeleteUser(username string) error {
 
 // PublicUser 是对外可见的账号视图(绝不包含口令散列字段)。
 type PublicUser struct {
-	Username    string   `json:"username"`
-	DisplayName string   `json:"displayName"`
-	Role        Role     `json:"role"`
-	Reg         string   `json:"reg,omitempty"`
-	Class       string   `json:"class,omitempty"`
-	Classes     []string `json:"classes,omitempty"`
-	Subjects    []string `json:"subjects,omitempty"`
-	HeadClasses []string `json:"headClasses,omitempty"`
-	SubjectLead []string `json:"subjectLead,omitempty"`
-	Grades      []string `json:"grades,omitempty"`
-	Children    []string `json:"children,omitempty"`
+	Username           string   `json:"username"`
+	DisplayName        string   `json:"displayName"`
+	Role               Role     `json:"role"`
+	Reg                string   `json:"reg,omitempty"`
+	Class              string   `json:"class,omitempty"`
+	Classes            []string `json:"classes,omitempty"`
+	Subjects           []string `json:"subjects,omitempty"`
+	HeadClasses        []string `json:"headClasses,omitempty"`
+	SubjectLead        []string `json:"subjectLead,omitempty"`
+	Grades             []string `json:"grades,omitempty"`
+	Children           []string `json:"children,omitempty"`
+	MustChangePassword bool     `json:"mustChangePassword,omitempty"`
 }
 
 // List 返回全部账号视图(按角色与用户名排序)。
@@ -466,6 +486,7 @@ func (s *Store) List() []*PublicUser {
 			Username: u.Username, DisplayName: u.DisplayName, Role: u.Role,
 			Reg: u.Reg, Class: u.Class, Classes: u.AllClasses(), Subjects: u.Subjects,
 			HeadClasses: u.HeadClasses, SubjectLead: u.SubjectLead, Grades: u.Grades, Children: u.Children,
+			MustChangePassword: u.MustChangePassword,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

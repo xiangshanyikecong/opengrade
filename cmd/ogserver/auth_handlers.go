@@ -41,13 +41,12 @@ func handleLogin(w http.ResponseWriter, r *http.Request, authStore *auth.Store) 
 	switch u.Role {
 	case auth.RoleStudent, auth.RoleParent:
 		redirect = "/student.html"
-	case auth.RoleAdmin:
-		redirect = "/teacher.html"
 	default:
 		redirect = "/teacher.html"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"username": u.Username, "displayName": u.DisplayName, "role": u.Role, "redirect": redirect,
+		"mustChangePassword": u.MustChangePassword, // 首登强制改密(前端落地到改密页)
 	})
 }
 
@@ -65,6 +64,7 @@ func handleMe(w http.ResponseWriter, r *http.Request, authStore *auth.Store, u *
 	writeJSON(w, http.StatusOK, map[string]any{
 		"username": u.Username, "displayName": u.DisplayName, "role": u.Role,
 		"reg": u.Reg, "class": u.Class, "classes": u.AllClasses(), "children": u.Children,
+		"mustChangePassword": u.MustChangePassword,
 	})
 }
 
@@ -80,7 +80,7 @@ func handlePasswordChange(w http.ResponseWriter, r *http.Request, authStore *aut
 		httpError(w, http.StatusForbidden, fmt.Errorf("原密码不正确"))
 		return
 	}
-	if err := authStore.SetPassword(u.Username, req.NewPassword); err != nil {
+	if err := authStore.SetPasswordSelf(u.Username, req.NewPassword); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}

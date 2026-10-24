@@ -87,6 +87,13 @@
         <option value="qr">仅二维码</option>
       </select>
     </label>
+    <label>卷种(AB 卷防抄袭:卡面印卷种点,扫描自动分版判读;A/B 两版分别导出版式、主观题区须一致)
+      <select id="variant">
+        <option value="">单卷(默认)</option>
+        <option value="A">A 卷</option>
+        <option value="B">B 卷</option>
+      </select>
+    </label>
     <div class="group-title">客观题(一题一行:可单独删除 / 上下移动 / 改分值;批量插入一次加一段)</div>
     <div id="objSpecs"></div>
     <button class="secondary" onclick="addObj()">+ 加 1 道客观题</button>
@@ -269,7 +276,9 @@ function buildLayout() {
     return subj;
   });
   const regMode = $("regMode").value;
-  return { version: 2, title: $("title").value, regDigits: +$("reg").value, regMode, columns: +$("columns").value, questions, subjectives };
+  const layout = { version: 2, title: $("title").value, regDigits: +$("reg").value, regMode, columns: +$("columns").value, questions, subjectives };
+  if ($("variant").value) layout.variant = $("variant").value; // AB 卷:导出带卷种,母版即印卷种点(白卡也可分版)
+  return layout;
 }
 
 // —— 校本题库选题:插入版式(题型/选项/分值/知识点随题带出),客观题答案随题记录 ——

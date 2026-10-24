@@ -19,11 +19,15 @@ type Stroke struct {
 }
 
 // Grade 是一条人工/AI 阅卷记录(主观题)。Graded 区分"0 分"与"未阅"。
+// Ver 是乐观锁版本号:每次写入自增,改分请求携带旧版本号,不匹配即 409(防双开互踩)。
+// By 是评分操作人账号(工作量统计用;历史数据为空)。
 type Grade struct {
 	Score  float64  `json:"score"`
 	Mark   string   `json:"mark,omitempty"` // check | cross | flag(工作台快捷标注)
 	Graded bool     `json:"graded"`
 	Ink    []Stroke `json:"ink,omitempty"` // 手写批注笔迹
+	Ver    int      `json:"ver,omitempty"`
+	By     string   `json:"by,omitempty"`
 }
 
 // GradeKey 生成评分记录的存储键:"s{学生}-q{主观题}"。
@@ -226,7 +230,7 @@ func Merge(questions []card.QuestionSpec, objectiveKey []string, results []*omr.
 
 	r.Students = make([]StudentLine, 0, len(results))
 	for si, res := range results {
-		if res == nil {
+		if res == nil || res.Voided || res.PendingVariant { // 作废卷/卷种待指派卷与被过滤(nil)的行都不进报告
 			continue
 		}
 		if res.Absent { // 缺考:保留行供名册/趋势对齐,不进入统计与排名
@@ -282,7 +286,7 @@ func Merge(questions []card.QuestionSpec, objectiveKey []string, results []*omr.
 		}
 		dist := map[string]int{}
 		for _, res := range results {
-			if res == nil || res.Absent || qi >= len(res.Answers) {
+			if res == nil || res.Absent || res.Voided || res.PendingVariant || qi >= len(res.Answers) {
 				continue
 			}
 			ans := res.Answers[qi]
@@ -315,7 +319,7 @@ func Merge(questions []card.QuestionSpec, objectiveKey []string, results []*omr.
 		var sum float64
 		for si := range results {
 			res := results[si]
-			if res == nil || res.Absent {
+			if res == nil || res.Absent || res.Voided || res.PendingVariant {
 				continue
 			}
 			if g != nil {

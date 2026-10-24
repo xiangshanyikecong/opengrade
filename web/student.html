@@ -140,13 +140,29 @@ async function showExam(id) {
       <div><b>${d.wrongQuestions.length}</b><span>待弄懂的错题</span></div>
     </div>
     ${d.byClass.map(c => `<span class="hint">${c.class}:均分 ${c.mean.toFixed(1)}(${c.count}人)&nbsp;&nbsp;</span>`).join("")}
-    <div style="margin-top:10px;display:flex;gap:16px" class="noprint">
+    <div style="margin-top:10px;display:flex;gap:16px;flex-wrap:wrap" class="noprint">
       <a href="#" onclick="printReport();return false">🖨 打印成绩报告单</a>
       <a href="#" onclick="downloadPDF('${d.id}');return false">⬇ 下载 PDF 成绩单</a>
       <a href="#" onclick="makePractice('${d.id}');return false">✎ 错题重练卡</a>
+      <a href="#" onclick="toggleAppeal();return false">🙋 成绩复核申请</a>
       ${d.pageURL ? `<a href="${d.pageURL}" target="_blank">查看我的整卷(答卷回溯)→</a>` : ""}
     </div>
-  </div>`;
+    <div id="appealBox" class="noprint" style="margin-top:10px;background:var(--bg);border-radius:8px;padding:10px 12px" hidden>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="appealReason" placeholder="请填写复核理由(哪一题、为什么有疑问)" style="flex:1;min-width:220px;padding:6px 10px">
+        <button class="ghost" onclick="submitAppeal('${d.id}')">提交申请</button>
+        <span class="hint" id="appealMsg"></span>
+      </div>
+      <p class="hint" style="margin:6px 0 0">提交后任课教师会核对你的答卷并回复;改分以教师复核结果为准。</p>
+    </div>`;
+  // 我的复核申请记录
+  if ((d.appeals || []).length) {
+    html += `<div class="panel"><b>我的复核申请</b>
+      <table><tr><th>时间</th><th>理由</th><th>状态</th><th>教师回复</th></tr>
+      ${d.appeals.map(a => `<tr><td>${a.time}</td><td style="max-width:360px">${a.reason}</td>
+        <td>${a.status === "open" ? '<span class="hint">待处理</span>' : '<b style="color:var(--brand)">已回复</b>'}</td>
+        <td>${a.reply || "-"}</td></tr>`).join("")}</table></div>`;
+  }
   // 知识点掌握雷达(仅本人)
   if ((d.knowledge || []).length) {
     html += `<div class="panel"><b>我的知识点掌握度</b>
@@ -207,6 +223,19 @@ function drawMyKnowledge(ks) {
 // 下载服务端生成的 PDF 成绩单
 function downloadPDF(id) {
   window.open(`/api/v1/student/exams/${id}/report.pdf${qs()}`, "_blank");
+}
+
+/* —— 成绩复核申请(发布后可发起;教师裁决后在「我的复核申请」看回复) —— */
+function toggleAppeal() {
+  const box = document.getElementById("appealBox");
+  if (box) box.hidden = !box.hidden;
+}
+async function submitAppeal(id) {
+  const msg = document.getElementById("appealMsg");
+  try {
+    await OG.jpost(`/api/v1/student/exams/${id}/appeals${qs()}`, { reason: document.getElementById("appealReason").value });
+    await showExam(id); // 重开详情:下方「我的复核申请」出现新记录(状态待处理)
+  } catch (e) { if (msg) msg.textContent = e.message; }
 }
 
 // 错题重练卡:拉取错题重组概要 → 服务端直接出可打印 SVG → 新窗口打开

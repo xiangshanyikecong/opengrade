@@ -15,6 +15,7 @@ type Filling struct {
 	RegUnfilled []bool      // 考号某位"漏涂"(填涂区不印实心圆,但条码/二维码仍印真实考号;模拟漏涂场景)
 	Answers     []string    // 每题如 "A" / "AB" / "T";"" 表示未涂
 	Electives   map[int]int // 选做题号区(版式 v3):主观题号(1-based,题号区所在题)→ 涂的第几个选项(0-based);缺省未涂
+	CodePrefix  string      // 码内容前缀(AB 卷个性化印刷):考试短号(4 位数字)+卷种位(1=A/2=B),空 = 普通纯考号码
 }
 
 // regFilledAt 报告考号第 ci 位是否应涂实心(漏涂位除外)。
@@ -84,6 +85,26 @@ func RenderPNG(s *Sheet, f *Filling) *raster.Canvas {
 		c.TextCenter(mmToPx(cx), mmToPx(cyMM), asciiOrQ(text), max(1, px*5/33), black)
 	}
 	drawLabel(g.title.x, g.title.y, s.Layout.Title, 6)
+	// 卷种点(AB 卷):A 卷第 1 点实心、B 卷第 2 点实心,旁印 A/B 卷标签供人眼分堆
+	if len(g.variantDots) > 0 {
+		halfDot := mmToPx(pageDotSide / 2)
+		strokePx := float64(mmToPx(strokeMM))
+		solidIdx := -1
+		if s.Layout.Variant == "A" {
+			solidIdx = 0
+		} else if s.Layout.Variant == "B" {
+			solidIdx = 1
+		}
+		for i, p := range g.variantDots {
+			cx, cy := mmToPx(p.x), mmToPx(p.y)
+			if i == solidIdx {
+				c.FillRect(cx-halfDot, cy-halfDot, 2*halfDot, 2*halfDot, black)
+			} else {
+				c.Ring(float64(cx), float64(cy), float64(halfDot), float64(halfDot)-strokePx, black)
+			}
+		}
+		drawLabel(g.variantDots[0].x-pageDotPitch*1.6, g.variantDots[0].y, s.Layout.Variant+"卷", 3.5)
+	}
 	if s.PageCount > 1 {
 		mk := fmt.Sprintf("第 %d/%d 页", s.PageNo, s.PageCount)
 		px := mmToPx(3.5)
@@ -93,6 +114,17 @@ func RenderPNG(s *Sheet, f *Filling) *raster.Canvas {
 		} else {
 			w := raster.TextWidth(asciiOrQ(mk), max(1, px*5/33))
 			c.Text(rightPx-w, mmToPx(g.title.y), asciiOrQ(mk), max(1, px*5/33), black)
+		}
+		// 页点:第 k 点实心 = 第 k 页(OMR 机器判读页号,按页归组/缺页告警用)
+		halfDot := mmToPx(pageDotSide / 2)
+		strokePx := float64(mmToPx(strokeMM))
+		for i, p := range g.pageDots {
+			cx, cy := mmToPx(p.x), mmToPx(p.y)
+			if i == s.PageNo-1 {
+				c.FillRect(cx-halfDot, cy-halfDot, 2*halfDot, 2*halfDot, black)
+			} else {
+				c.Ring(float64(cx), float64(cy), float64(halfDot), float64(halfDot)-strokePx, black)
+			}
 		}
 	}
 	if s.Layout.RegHasFill() && len(s.Reg) > 0 {
@@ -232,7 +264,7 @@ func itoa(n int) string {
 
 // mustGeometry 供渲染器使用:Render 的入参 Sheet 一定来自 BuildBook(),不会失败。
 func mustGeometry(sh *Sheet) geom {
-	g, err := sh.Layout.geometryFor(sh.PageNo, sh.pageSubs)
+	g, err := sh.Layout.geometryFor(sh.PageNo, sh.PageCount, sh.pageSubs)
 	if err != nil {
 		panic("card: 渲染使用了未经 Build 的版式: " + err.Error())
 	}

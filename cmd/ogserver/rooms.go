@@ -54,6 +54,7 @@ func handleRoomsGenerate(w http.ResponseWriter, r *http.Request, store *Store, u
 }
 
 // handleRoomsPatch PATCH:座位对调或监考指派(微调,不重排)。
+// 响应内联编排方案 + 监考冲突清单(同日同场次其它考试已用了同一教师)。
 func handleRoomsPatch(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, ok := store.openExamFor(r, u, false)
 	if !ok {
@@ -108,10 +109,10 @@ func handleRoomsPatch(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		return
 	}
 	exNow, _ := store.Get(ex.ID)
-	writeJSON(w, http.StatusOK, exNow.Rooms)
+	writeJSON(w, http.StatusOK, roomsWithConflicts{RoomPlan: exNow.Rooms, Conflicts: computeProctorConflicts(store, exNow)})
 }
 
-// handleRoomsGet GET:读取编排方案。
+// handleRoomsGet GET:读取编排方案(响应附带监考冲突清单)。
 func handleRoomsGet(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, ok := store.openExamFor(r, u, false)
 	if !ok {
@@ -122,7 +123,53 @@ func handleRoomsGet(w http.ResponseWriter, r *http.Request, store *Store, u *aut
 		writeJSON(w, http.StatusOK, map[string]any{"rooms": nil})
 		return
 	}
-	writeJSON(w, http.StatusOK, ex.Rooms)
+	writeJSON(w, http.StatusOK, roomsWithConflicts{RoomPlan: ex.Rooms, Conflicts: computeProctorConflicts(store, ex)})
+}
+
+// roomsWithConflicts 内联 RoomPlan 字段并追加 conflicts 键(旧前端按平面字段读方案,不受影响)。
+type roomsWithConflicts struct {
+	*RoomPlan
+	Conflicts []proctorConflict `json:"conflicts"`
+}
+
+// proctorConflict 是一条监考冲突:同日同场次,同一教师已被指派到另一场考试的考场。
+type proctorConflict struct {
+	Teacher   string `json:"teacher"`
+	ExamID    string `json:"examId"`
+	Subject   string `json:"subject,omitempty"`
+	Date      string `json:"date"`
+	Session   string `json:"session"`
+	Room      string `json:"room"`      // 本考试的考场
+	OtherRoom string `json:"otherRoom"` // 冲突考试里的考场
+}
+
+// computeProctorConflicts 计算监考冲突:考试日期与场次都相同(且都非空)的不同考试之间,
+// 同一监考教师的指派两两冲突。只提示不阻断 —— 指派照常落盘,教务在前端红标里改人。
+func computeProctorConflicts(store *Store, ex *Exam) []proctorConflict {
+	out := []proctorConflict{} // 空态给 []
+	if ex.Rooms == nil || ex.ExamDate == "" || ex.Session == "" {
+		return out
+	}
+	for _, other := range store.List() {
+		if other.ID == ex.ID || other.Rooms == nil || other.Session == "" ||
+			other.ExamDate != ex.ExamDate || other.Session != ex.Session {
+			continue
+		}
+		for _, rm := range ex.Rooms.Rooms {
+			if rm.Proctor == "" {
+				continue
+			}
+			for _, orm := range other.Rooms.Rooms {
+				if orm.Proctor == rm.Proctor {
+					out = append(out, proctorConflict{
+						Teacher: rm.Proctor, ExamID: other.ID, Subject: other.Subject,
+						Date: other.ExamDate, Session: other.Session, Room: rm.Name, OtherRoom: orm.Name,
+					})
+				}
+			}
+		}
+	}
+	return out
 }
 
 // ---- 请求辅助类型与工具函数 ----

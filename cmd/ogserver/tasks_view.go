@@ -25,6 +25,7 @@ type taskItem struct {
 	Label      string `json:"label"`              // 展示名:第 N 题 / 班级名 / 建卷人入口
 	Graded     int    `json:"graded"`
 	Total      int    `json:"total"`
+	Due        string `json:"due,omitempty"` // 截止日期(YYYY-MM-DD;按题=q{n},按班=班级名)
 }
 
 // handleMyTasks GET /api/v1/my/tasks(教职员):聚合当前账号在各场考试的阅卷任务。
@@ -51,7 +52,8 @@ func handleMyTasks(w http.ResponseWriter, r *http.Request, store *Store, school 
 				it := base
 				it.Kind, it.Question = "question", qi+1
 				it.Label = fmt.Sprintf("第 %d 题(满分 %g)", objN+qi+1, ex.Layout.Subjectives[qi].Score)
-				it.Graded, it.Total = graded, len(ex.Results)
+				it.Graded, it.Total = graded, activeCount(ex)
+				it.Due = ex.TaskDue[fmt.Sprintf("q%d", qi+1)]
 				items = append(items, it)
 			}
 		}
@@ -82,6 +84,7 @@ func handleMyTasks(w http.ResponseWriter, r *http.Request, store *Store, school 
 				it.Kind = "class"
 				it.Label = c + "(按班阅卷)"
 				it.Graded, it.Total = graded, total
+				it.Due = ex.TaskDue[c]
 				items = append(items, it)
 			}
 		}

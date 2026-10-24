@@ -44,6 +44,13 @@ async function doLogin() {
   });
   const j = await r.json();
   if (!r.ok) { document.getElementById("msg").textContent = j.error || "登录失败"; return; }
+  // 首登强制改密:仍用初始密码的账号落地后第一件事就是改密
+  if (j.mustChangePassword) {
+    document.getElementById("msg").style.color = "#c2410c";
+    document.getElementById("msg").textContent = "当前账号仍在使用初始密码,即将进入改密页面…";
+    setTimeout(() => location.href = j.redirect + "?forcePwd=1", 900);
+    return;
+  }
   location.href = j.redirect;
 }
 </script>

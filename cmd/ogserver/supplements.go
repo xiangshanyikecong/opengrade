@@ -33,69 +33,41 @@ func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *
 		httpError(w, http.StatusBadRequest, fmt.Errorf("缺少 images 字段(至少一张整卷扫描件)"))
 		return
 	}
-	book, err := ex.Layout.BuildBook() // 多页版式:每生 P 页连续,逐页判读合并
+	book, err := ex.Layout.BuildBook() // A 卷(或唯一版式):逐页判读考号归组,单页每张一卷
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err)
 		return
 	}
-	pageCount := len(book)
-	opt := omr.Options{Threshold: ex.Threshold}
-	base := len(ex.Results)
-	var results []*omr.Result
-	var slices [][]omr.Slice
-	var pageGroups [][]*image.Gray
-	type failInfo struct {
-		Index int    `json:"index"` // 本批次内 1-based(张)
-		Error string `json:"error"`
+	ab, err := abOfExam(ex) // AB 卷上下文(非 AB 考试为 nil;复合码考试短号核对在此生效)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err)
+		return
 	}
-	var failed []failInfo
+	opt := omr.Options{Threshold: ex.Threshold}
+	var failed []scanFail
 	var imgs []image.Image
 	for i, fh := range files {
 		f, err := fh.Open()
 		if err != nil {
-			failed = append(failed, failInfo{i + 1, err.Error()})
+			failed = append(failed, scanFail{i + 1, err.Error()})
 			continue
 		}
 		img, _, err := image.Decode(f)
 		f.Close()
 		if err != nil {
-			failed = append(failed, failInfo{i + 1, fmt.Sprintf("图像解码失败: %v", err)})
+			failed = append(failed, scanFail{i + 1, fmt.Sprintf("图像解码失败: %v", err)})
 			continue
 		}
 		imgs = append(imgs, img)
 	}
-	if pageCount > 1 && len(imgs)%pageCount != 0 {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-			"added": 0, "failed": []map[string]string{{"index": "0", "error": fmt.Sprintf("版式共 %d 页:整卷数须为 %d 的整数倍(每生连续 %d 页)", pageCount, pageCount, pageCount)}},
-		})
-		return
-	}
-	for si, group := range splitPageImages(imgs, pageCount) {
-		var pages []pageScan
-		batchFail := false
-		for k, img := range group {
-			ps, err := readPageScan(book, k, img, opt)
-			if err != nil {
-				failed = append(failed, failInfo{si*pageCount + k + 1, fmt.Sprintf("识别失败: %v", err)})
-				batchFail = true
-				break
-			}
-			pages = append(pages, ps)
-		}
-		if batchFail {
-			continue // 该生整组丢弃(页不齐无法归属),其余学生继续
-		}
-		merged := mergePageScans(pages)
-		results = append(results, merged)
-		slices = append(slices, slicesOfPageScans(pages, base+len(results), merged.RegNumber))
-		rects := make([]*image.Gray, len(pages))
-		for k, p := range pages {
-			rects[k] = p.dbg.Rectified
-		}
-		pageGroups = append(pageGroups, rects)
-	}
-	if len(results) == 0 {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"added": 0, "failed": failed})
+	// 按考号逐页归组:每页独立判读考号+页点页号,不再要求张数是页数的整数倍;
+	// 单页判读失败只丢那一张,缺页只告警对应学生,不再连坐整批。
+	ing := ingestScanImages(imgs, book, opt, len(ex.Results), ab)
+	results, slices, pageGroups := ing.results, ing.slices, ing.pageGroups
+	failed = append(failed, ing.failed...)
+	notes := ing.notes
+	if len(imgs) > 0 && len(results) == 0 {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"added": 0, "failed": failed, "notes": notes})
 		return
 	}
 	markDuplicateRegs(ex.Results, results) // 与存量/批内重复考号 → 告警(疑似重答)
@@ -104,10 +76,7 @@ func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *
 		httpError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if failed == nil {
-		failed = []failInfo{}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"added": len(results), "students": total, "failed": failed})
+	writeJSON(w, http.StatusOK, map[string]any{"added": len(results), "students": total, "failed": failed, "notes": notes})
 }
 
 // handleManualEntry 手工补录:POST /api/v1/exams/{id}/manual

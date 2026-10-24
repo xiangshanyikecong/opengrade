@@ -194,9 +194,12 @@ func TestConventionalFlowE2E(t *testing.T) {
 		if q1["total"].(float64) != 5 || q1["graded"].(float64) != 0 {
 			t.Fatalf("任务进度 = %v", q1)
 		}
-		// 评一份(带 ⚑ 标记,同时造待复核样本)
+		// 评一份(带 ⚑ 标记,同时造待复核样本);超满分打分应被服务端拒绝(评分颗粒度兜底)
 		teacher.json("POST", "/api/v1/grades", map[string]any{
-			"examId": examID, "student": 1, "question": 1, "score": 9, "mark": "flag", "graded": true,
+			"examId": examID, "student": 1, "question": 1, "score": 99, "graded": true,
+		}, http.StatusBadRequest)
+		teacher.json("POST", "/api/v1/grades", map[string]any{
+			"examId": examID, "student": 1, "question": 1, "score": 3, "mark": "flag", "graded": true,
 		}, http.StatusOK)
 		items = teacher.jsonArr("GET", "/api/v1/my/tasks", http.StatusOK)
 		for _, it := range items {
@@ -226,7 +229,7 @@ func TestConventionalFlowE2E(t *testing.T) {
 					continue // 已评
 				}
 				teacher.json("POST", "/api/v1/grades", map[string]any{
-					"examId": examID, "student": s, "question": q, "score": 8, "graded": true,
+					"examId": examID, "student": s, "question": q, "score": 3.5, "graded": true,
 				}, http.StatusOK)
 			}
 		}

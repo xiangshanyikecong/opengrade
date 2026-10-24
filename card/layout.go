@@ -42,6 +42,13 @@ const (
 
 	marginX       = 14.0 // 版心左右边距
 	bottomReserve = 14.0 // 底部预留(下角标 + 页脚)
+
+	pageDotRight = 174.0 // 页点行右缘(mm)
+	pageDotPitch = 4.4   // 页点间距(mm)
+	pageDotSide  = 2.6   // 页点方块边长(mm)
+	pageDotRMM   = 1.05  // 页点判读采样半径(mm,只看方块内部避开边缘)
+
+	variantDotRight = 152.0 // 卷种点右缘(mm):在页点(右缘 174,最多向左铺)左侧,互不挤占
 )
 
 // 题型常量。
@@ -112,11 +119,11 @@ type SubjectiveSpec struct {
 
 // 考号通道模式(版式 v3 增量,向后兼容:缺省 "fill")。
 const (
-	RegFill        = "fill"        // 填涂(默认)
-	RegBarcode     = "barcode"     // Code128 条码
-	RegQR          = "qr"          // 二维码
+	RegFill        = "fill"         // 填涂(默认)
+	RegBarcode     = "barcode"      // Code128 条码
+	RegQR          = "qr"           // 二维码
 	RegFillBarcode = "fill+barcode" // 填涂 + 条码双通道(条码修复涂卡异常)
-	RegFillQR      = "fill+qr"     // 填涂 + 二维码双通道
+	RegFillQR      = "fill+qr"      // 填涂 + 二维码双通道
 )
 
 // Layout 是开放数据格式的版式定义:JSON 序列化即 .layout.json 文件内容,
@@ -126,6 +133,7 @@ type Layout struct {
 	Title     string `json:"title"`
 	RegDigits int    `json:"regDigits"`         // 考号位数,0 表示无考号区
 	RegMode   string `json:"regMode,omitempty"` // 考号通道:fill(默认)/barcode/qr/fill+barcode/fill+qr
+	Variant   string `json:"variant,omitempty"` // 卷种(AB 卷):"" 单卷 | "A" | "B" —— 卡面印卷种点(第 1/2 点实心),OMR 自动识别
 	Columns   int    `json:"columns,omitempty"` // 客观题分栏数 1~4,缺省 2
 
 	// v1 专用字段(Version==1 时生效,读取时规范化为 v2)
@@ -209,6 +217,7 @@ func (l Layout) normalize() (Layout, error) {
 			Title:     l.Title,
 			RegDigits: l.RegDigits,
 			RegMode:   normalizeRegMode(l.RegMode),
+			Variant:   l.Variant,
 			Columns:   firstNonZero(l.Columns, 2),
 			Questions: repQuestion(l.ChoiceCount, QuestionSpec{Kind: KindChoice, Options: opts, Score: 1}),
 		}
@@ -308,6 +317,11 @@ func (l Layout) Validate() error {
 	default:
 		return fmt.Errorf("考号通道 %q 不合法(fill/barcode/qr/fill+barcode/fill+qr)", n.RegMode)
 	}
+	switch n.Variant {
+	case "", "A", "B":
+	default:
+		return fmt.Errorf("卷种 variant %q 不合法(留空 / A / B)", n.Variant)
+	}
 	if n.RegCodeKind() != "" && n.RegDigits == 0 {
 		return fmt.Errorf("考号通道 %s 需要考号位数 > 0", n.RegMode)
 	}
@@ -387,6 +401,8 @@ type codeGeom struct {
 type geom struct {
 	locators                               [4]mmPt // 中心点,顺序 TL TR BL BR
 	title                                  mmPt
+	pageDots                               []mmPt // 多页卡的页点中心(第 k 点对应第 k 页,卷头右上一排)
+	variantDots                            []mmPt // 卷种点(AB 卷两点:A 卷第 1 点实心,B 卷第 2 点实心)
 	regLabel                               mmPt
 	nameLabel                              mmPt
 	nameBoxX, nameBoxY, nameBoxW, nameBoxH float64
@@ -401,7 +417,9 @@ type geom struct {
 
 // geometryFor 计算某一页的版面几何(所有标签坐标均为文本包围盒中心)。
 // 第 1 页 = 卷头 + 客观题 + 本页主观题;后续页 = 身份卷头 + 本页主观题。
-func (l Layout) geometryFor(pageNo int, pageSubs []int) (geom, error) {
+// pageCount > 1 时在卷头右上加一排"页点"(第 k 页实心第 k 点),
+// 供 OMR 机器判读页号 —— 按页归组、缺页告警("该生缺第 2 页")依赖它。
+func (l Layout) geometryFor(pageNo, pageCount int, pageSubs []int) (geom, error) {
 	n, err := l.normalize()
 	if err != nil {
 		return geom{}, err
@@ -410,6 +428,22 @@ func (l Layout) geometryFor(pageNo int, pageSubs []int) (geom, error) {
 	c := locatorInsetMM + locatorSideMM/2
 	g.locators = [4]mmPt{{c, c}, {PageWMM - c, c}, {c, PageHMM - c}, {PageWMM - c, PageHMM - c}}
 	g.title = mmPt{PageWMM / 2, 11}
+
+	// 页点:右缘 174mm,避开页码文字(右缘 190)与码区框(顶 16.5),
+	// 距最近定位块 >30mm,不会粘连角标连通域。
+	if pageCount > 1 {
+		for i := 0; i < pageCount; i++ {
+			g.pageDots = append(g.pageDots, mmPt{pageDotRight - float64(pageCount-1-i)*pageDotPitch, g.title.y})
+		}
+	}
+
+	// 卷种点(AB 卷):两点,A 卷实心第 1 点、B 卷实心第 2 点;位置在页点行左侧,
+	// 与页码文字(右缘 190)/页点(右缘 174)均不重叠,距最近定位块 >30mm。
+	if n.Variant == "A" || n.Variant == "B" {
+		for i := 0; i < 2; i++ {
+			g.variantDots = append(g.variantDots, mmPt{variantDotRight - float64(1-i)*pageDotPitch, g.title.y})
+		}
+	}
 
 	if n.RegDigits > 0 {
 		g.regLabel = mmPt{26, 18.5}
@@ -450,21 +484,21 @@ func (l Layout) geometryFor(pageNo int, pageSubs []int) (geom, error) {
 	objRows := int(math.Ceil(float64(len(n.Questions)) / float64(n.Columns)))
 	colPitch := (PageWMM - 2*marginX) / float64(n.Columns)
 	if pageNo == 1 {
-	for i := range n.Questions {
-		col, row := i/objRows, i%objRows
-		base := marginX + float64(col)*colPitch
-		cy := headerH + float64(row)*rowPitchMM + 3.5
-		letters := OptionLetters(n.Questions[i].Kind, n.Questions[i].Options)
-		opts := make([]mmPt, len(letters))
-		lbls := make([]mmPt, len(letters))
-		for j := range letters {
-			opts[j] = mmPt{base + 12 + float64(j)*optPitchMM, cy}
-			lbls[j] = mmPt{base + 12 + float64(j)*optPitchMM - 4.5, cy}
+		for i := range n.Questions {
+			col, row := i/objRows, i%objRows
+			base := marginX + float64(col)*colPitch
+			cy := headerH + float64(row)*rowPitchMM + 3.5
+			letters := OptionLetters(n.Questions[i].Kind, n.Questions[i].Options)
+			opts := make([]mmPt, len(letters))
+			lbls := make([]mmPt, len(letters))
+			for j := range letters {
+				opts[j] = mmPt{base + 12 + float64(j)*optPitchMM, cy}
+				lbls[j] = mmPt{base + 12 + float64(j)*optPitchMM - 4.5, cy}
+			}
+			g.choice = append(g.choice, opts)
+			g.qNumLbl = append(g.qNumLbl, mmPt{base + 3.5, cy})
+			g.optLbls = append(g.optLbls, lbls)
 		}
-		g.choice = append(g.choice, opts)
-		g.qNumLbl = append(g.qNumLbl, mmPt{base + 3.5, cy})
-		g.optLbls = append(g.optLbls, lbls)
-	}
 	}
 
 	y := headerH
@@ -551,8 +585,11 @@ type Sheet struct {
 	ChoiceR         int
 	Reg             [][]image.Point // [位][数字 0~9] 涂卡圆心(px);无考号区时为空(纯码制不印涂卡,由 RegHasFill 区分)
 	RegR            int
-	RegCode         image.Rectangle // 考号码区(px):条码条带/二维码本体(含内部静区);纯填涂为零值
-	RegCodeKind     string          // "barcode" | "qr" | ""
+	RegCode         image.Rectangle   // 考号码区(px):条码条带/二维码本体(含内部静区);纯填涂为零值
+	RegCodeKind     string            // "barcode" | "qr" | ""
+	PageDots        []image.Point     // 页点中心(px,多页卡):第 k 点实心 = 第 k 页;单页卡为空
+	PageDotR        int               // 页点判读采样半径(px)
+	VariantDots     []image.Point     // 卷种点(px,AB 卷两点:A 卷第 1 点实心,B 卷第 2 点实心);非 AB 卡为空
 	SubjectiveBoxes []image.Rectangle // 每道主观题作答区(px),切片器据此裁剪
 	Electives       []ElectiveRow     // 选做题号区(版式 v3);无选做题时为空
 }
@@ -588,7 +625,7 @@ func (l Layout) BuildBook() ([]*Sheet, error) {
 }
 
 func (l Layout) buildSheet(pageNo, pageCount int, pageSubs []int) (*Sheet, error) {
-	g, err := l.geometryFor(pageNo, pageSubs)
+	g, err := l.geometryFor(pageNo, pageCount, pageSubs)
 	if err != nil {
 		return nil, err
 	}
@@ -603,6 +640,13 @@ func (l Layout) buildSheet(pageNo, pageCount int, pageSubs []int) (*Sheet, error
 		LocatorSidePx: mmToPx(locatorSideMM),
 		ChoiceR:       mmToPx(choiceRMM),
 		RegR:          mmToPx(regRMM),
+		PageDotR:      mmToPx(pageDotRMM),
+	}
+	for _, p := range g.pageDots {
+		s.PageDots = append(s.PageDots, image.Point{mmToPx(p.x), mmToPx(p.y)})
+	}
+	for _, p := range g.variantDots {
+		s.VariantDots = append(s.VariantDots, image.Point{mmToPx(p.x), mmToPx(p.y)})
 	}
 	for i, p := range g.locators {
 		s.Locators[i] = image.Point{mmToPx(p.x), mmToPx(p.y)}

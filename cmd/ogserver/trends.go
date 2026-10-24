@@ -241,7 +241,7 @@ func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *
 			continue // 该班不在本场考试中,不进入该班的时间轴
 		}
 		tExams = append(tExams, TrendExam{
-			ID: ex.ID, Date: ex.CreatedAt.Format("2006-01-02"), Subject: ex.Subject,
+			ID: ex.ID, Date: examDateOf(ex), Subject: ex.Subject,
 			Students: rep.Count, Total: rep.Total, Mean: rep.Mean, ClassMean: mean, ClassCount: n,
 		})
 		for _, l := range rep.Students {
@@ -254,7 +254,7 @@ func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *
 				ts = &TrendStudent{Reg: reg, Name: regName[reg], Class: regClass[reg]}
 				students[reg] = ts
 			}
-			pt := TrendPoint{ExamID: ex.ID, Date: ex.CreatedAt.Format("2006-01-02"),
+			pt := TrendPoint{ExamID: ex.ID, Date: examDateOf(ex),
 				Subject: ex.Subject, Absent: l.Absent, Score: l.Score, Total: l.Total, Rank: l.Rank}
 			if l.Total > 0 {
 				pt.Rate = l.Score / l.Total
@@ -315,7 +315,7 @@ func handleStudentTrends(w http.ResponseWriter, r *http.Request, store *Store, u
 		if !found {
 			continue
 		}
-		pt := TrendPoint{ExamID: ex.ID, Date: ex.CreatedAt.Format("2006-01-02"),
+		pt := TrendPoint{ExamID: ex.ID, Date: examDateOf(ex),
 			Subject: ex.Subject, Absent: line.Absent, Score: line.Score, Total: line.Total,
 			Rank: line.Rank, Mean: rep.Mean}
 		if line.Total > 0 {

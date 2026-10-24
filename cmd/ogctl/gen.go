@@ -27,16 +27,18 @@ type layoutFlags struct {
 	// corruptStudent > 0 时,该学生卷的考号中段留空一位(模拟漏涂,
 	// 用于演示名册模糊匹配/人工指派的异常卷自愈流程)
 	corruptStudent int
+	variant        string // AB 卷种:空=单卷 | A | B(卡面印卷种点)
 }
 
 func addLayoutFlags(fs *flag.FlagSet, lf *layoutFlags) {
 	fs.StringVar(&lf.out, "o", "og_out", "输出目录")
 	fs.StringVar(&lf.title, "title", "OPENGRADE ANSWER SHEET", "卷头标题(ASCII;中文标题请走 -layout-file)")
 	fs.IntVar(&lf.questions, "questions", 40, "客观单选题数量(v1 模式)")
-	fs.IntVar(&lf.options, "options", 4, "每题选项数(v1 模式)")
+	fs.IntVar(&lf.options, "options", 4, "每题选项数")
 	fs.IntVar(&lf.columns, "columns", 2, "客观题分栏数")
 	fs.IntVar(&lf.reg, "reg", 8, "考号位数(0=不设考号区)")
 	fs.StringVar(&lf.regMode, "reg-mode", "fill", "考号通道:fill|barcode|qr|fill+barcode|fill+qr(条码/二维码印在卷头右侧)")
+	fs.StringVar(&lf.variant, "variant", "", "AB 卷种:空=单卷|A|B(卡面卷头印卷种点,A/B 各出一份版式)")
 	fs.IntVar(&lf.students, "students", 0, "模拟涂卡学生份数(0=只出空白卡)")
 	fs.Int64Var(&lf.seed, "seed", 1, "随机种子(复现实验)")
 	fs.StringVar(&lf.layoutFile, "layout-file", "", "版式 JSON 文件(v1/v2 均可;指定后忽略 -questions/-options/-title)")
@@ -52,6 +54,9 @@ func resolveLayout(lf layoutFlags) (card.Layout, error) {
 		if err := readJSONFile(lf.layoutFile, &l); err != nil {
 			return card.Layout{}, fmt.Errorf("读取版式文件失败: %w", err)
 		}
+		if lf.variant != "" {
+			l.Variant = lf.variant // -variant 覆盖版式文件里的卷种(白卡 AB 母版:两次出卡分别 -variant A/B)
+		}
 		return l, nil
 	}
 	return card.Layout{
@@ -59,6 +64,7 @@ func resolveLayout(lf layoutFlags) (card.Layout, error) {
 		Title:       lf.title,
 		RegDigits:   lf.reg,
 		RegMode:     lf.regMode,
+		Variant:     lf.variant,
 		ChoiceCount: lf.questions,
 		Options:     lf.options,
 		Columns:     lf.columns,

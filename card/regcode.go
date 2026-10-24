@@ -28,6 +28,28 @@ func regDigitsText(l Layout, f *Filling) string {
 	return sb.String()
 }
 
+// codeContent 拼出实际码内容:AB 卷个性化卡在考号前加「考试短号(4)+卷种位(1/2)」
+// 复合前缀(OMR 判读侧按长度区分纯考号与复合码);普通卡为纯考号。
+func codeContent(l Layout, f *Filling) string {
+	digits := regDigitsText(l, f)
+	if digits == "" {
+		return ""
+	}
+	if f != nil && f.CodePrefix != "" && allDigitsASCII(f.CodePrefix) {
+		return f.CodePrefix + digits
+	}
+	return digits
+}
+
+func allDigitsASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
 // codeLabel 返回码区顶部标签文案。
 func codeLabel(kind string) string {
 	if kind == "barcode" {
@@ -48,9 +70,10 @@ func renderCodeSVG(b *bytes.Buffer, cg *codeGeom, l Layout, f *Filling) {
 			cg.frame.x+cg.frame.w/2, cg.frame.y+cg.frame.h/2, "(按学生生成时印码)")
 		return
 	}
+	content := codeContent(l, f) // AB 卷复合内容(考试短号+卷种位+考号);普通卡=纯考号
 	switch cg.kind {
 	case "barcode":
-		if mods, err := barcode.Encode(digits); err == nil {
+		if mods, err := barcode.Encode(content); err == nil {
 			// 两侧各留 6mm 静区(Code128 要求 ≥10 模块)
 			const quiet = 6.0
 			stripW := cg.body.w - 2*quiet
@@ -64,7 +87,7 @@ func renderCodeSVG(b *bytes.Buffer, cg *codeGeom, l Layout, f *Filling) {
 			}
 		}
 	default:
-		if m, err := qrcode.EncodeNumeric(digits); err == nil {
+		if m, err := qrcode.EncodeNumeric(content); err == nil {
 			const quiet = 2.0
 			mod := cg.body.w / float64(len(m.Dark)+2*quiet)
 			for r, row := range m.Dark {
@@ -102,11 +125,12 @@ func drawCodePNG(c *raster.Canvas, cg *codeGeom, l Layout, f *Filling, tf *font.
 		drawLabelMM(cg.frame.x+cg.frame.w/2, cg.frame.y+cg.frame.h/2, 3, "(按学生生成时印码)")
 		return
 	}
+	content := codeContent(l, f) // AB 卷复合内容(考试短号+卷种位+考号);普通卡=纯考号
 	bodyW, bodyH := mmToPx(cg.body.w), mmToPx(cg.body.h)
 	bx, by := mmToPx(cg.body.x), mmToPx(cg.body.y)
 	switch cg.kind {
 	case "barcode":
-		mods, err := barcode.Encode(digits)
+		mods, err := barcode.Encode(content)
 		if err != nil {
 			return
 		}
@@ -125,7 +149,7 @@ func drawCodePNG(c *raster.Canvas, cg *codeGeom, l Layout, f *Filling, tf *font.
 			}
 		}
 	default:
-		m, err := qrcode.EncodeNumeric(digits)
+		m, err := qrcode.EncodeNumeric(content)
 		if err != nil {
 			return
 		}

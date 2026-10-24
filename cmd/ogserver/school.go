@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/opengrade/opengrade/auth"
 )
@@ -23,11 +24,21 @@ type GradeDef struct {
 	Classes []string `json:"classes"`
 }
 
+// SessionDef 是全校场次表的一节(监考时段与冲突检测的时间颗粒):
+// Name 如「第1节」,Start/End 为 HH:MM。考试挂场次(Exam.Session)后,
+// 同日同场次的不同考试若指派了同一监考教师即构成冲突。
+type SessionDef struct {
+	Name  string `json:"name"`
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
 // School 是组织架构存储(零依赖单文件,模式同 bank.json)。
 type School struct {
-	mu     sync.Mutex
-	path   string
-	Grades []GradeDef `json:"grades"`
+	mu       sync.Mutex
+	path     string
+	Grades   []GradeDef    `json:"grades"`
+	Sessions []SessionDef  `json:"sessions,omitempty"` // 场次表(可为空 = 不启用时段/冲突检测)
 }
 
 // LoadSchool 从数据目录加载组织架构;文件不存在视为空(未配置)。
@@ -65,6 +76,70 @@ func (s *School) Snapshot() []GradeDef {
 		out[i] = GradeDef{Name: g.Name, Classes: append([]string(nil), g.Classes...)}
 	}
 	return out
+}
+
+// SessionsSnapshot 返回场次表深拷贝。
+func (s *School) SessionsSnapshot() []SessionDef {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]SessionDef, len(s.Sessions))
+	copy(out, s.Sessions)
+	return out
+}
+
+// HasSession 报告场次名是否存在于场次表(考试挂场次时校验用)。
+func (s *School) HasSession(name string) bool {
+	if s == nil || name == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, x := range s.Sessions {
+		if x.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// validateSessions 校验场次表:名称非空且不重复、HH:MM 可解析且开始早于结束。
+func validateSessions(sessions []SessionDef) error {
+	seen := map[string]bool{}
+	for _, x := range sessions {
+		if x.Name == "" {
+			return fmt.Errorf("场次名不能为空")
+		}
+		if seen[x.Name] {
+			return fmt.Errorf("场次 %s 重复", x.Name)
+		}
+		seen[x.Name] = true
+		st, err1 := time.Parse("15:04", x.Start)
+		en, err2 := time.Parse("15:04", x.End)
+		if err1 != nil || err2 != nil {
+			return fmt.Errorf("场次 %s 的起止时间须为 HH:MM(如 08:00)", x.Name)
+		}
+		if !st.Before(en) {
+			return fmt.Errorf("场次 %s 的开始时间须早于结束时间", x.Name)
+		}
+	}
+	return nil
+}
+
+// SetSessions 整体替换场次表(仅管理员,与年级配置共用 school.json)。
+func (s *School) SetSessions(sessions []SessionDef) error {
+	if sessions == nil {
+		sessions = []SessionDef{}
+	}
+	if err := validateSessions(sessions); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Sessions = sessions
+	return s.save()
 }
 
 // SetGrades 整体替换年级配置:校验年级不重名、班级不重复归属。
@@ -150,13 +225,42 @@ func (s *School) ClassesOfGrades(grades []string) []string {
 	return out
 }
 
-// handleSchoolGet GET /api/v1/school → {grades:[{name,classes[]}]}(教职员可读,建考选名册/筛选用)。
+// handleSchoolGet GET /api/v1/school → {grades:[...], sessions:[...]}(教职员可读,建考/场次下拉用)。
 func handleSchoolGet(w http.ResponseWriter, school *School, _ *auth.User) {
 	grades := school.Snapshot()
 	if grades == nil {
 		grades = []GradeDef{} // 空列表返回 [] 而非 null
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"grades": grades})
+	sessions := school.SessionsSnapshot()
+	if sessions == nil {
+		sessions = []SessionDef{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"grades": grades, "sessions": sessions})
+}
+
+// handleSchoolSessionsGet GET /api/v1/school/sessions → 场次表(教职员可读)。
+func handleSchoolSessionsGet(w http.ResponseWriter, school *School, _ *auth.User) {
+	sessions := school.SessionsSnapshot()
+	if sessions == nil {
+		sessions = []SessionDef{}
+	}
+	writeJSON(w, http.StatusOK, sessions)
+}
+
+// handleSchoolSessionsSet PUT /api/v1/school/sessions {sessions:[...]}(仅管理员;整体替换)。
+func handleSchoolSessionsSet(w http.ResponseWriter, r *http.Request, school *School, _ *auth.User) {
+	var req struct {
+		Sessions []SessionDef `json:"sessions"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		httpError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := school.SetSessions(req.Sessions); err != nil {
+		httpError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // handleSchoolSet PUT /api/v1/school {grades:[...]}(仅管理员;整体替换)。

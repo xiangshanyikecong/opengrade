@@ -1,7 +1,7 @@
 package main
 
-// 多页版式端到端:主观题超容量自动分页(每页重印身份区)→ 每生连续 P 页上传 →
-// 逐页判读合并(考号/客观题/选做题号区/切片全局题号)→ 张数不为 P 的倍数时明确报错。
+// 多页版式端到端:主观题超容量自动分页(每页重印身份区)→ 逐页判读考号+页点页号 →
+// 按考号归组合并(考号/客观题/选做题号区/切片全局题号)→ 缺页告警 + 乱序上传归组自愈。
 
 import (
 	"bytes"
@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/opengrade/opengrade/card"
@@ -123,11 +124,51 @@ func TestMultipageE2E(t *testing.T) {
 		}
 	}
 
-	// 张数不是页数整数倍 → 明确报错
+	// 张数不是页数整数倍:不再报错 —— 按考号归组,乙缺第 2 页 → 建考成功 + 页级缺页告警
 	var bad bytes.Buffer
-	writeExamForm(&bad, layout, key, roster, files[:3]...)
+	writeExamForm(&bad, layout, key, roster, files[:3]...) // 甲(p1+p2) + 乙(p1)
 	resp2, data2 := admin.do("POST", "/api/v1/exams", &bad, "multipart/form-data; boundary="+multipartBoundary)
-	if resp2.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("3 张(非 2 的倍数)应 422,得到 %d: %s", resp2.StatusCode, data2)
+	if resp2.StatusCode != http.StatusCreated {
+		t.Fatalf("3 张(乙缺第 2 页)应 201 并带缺页告警,得到 %d: %s", resp2.StatusCode, data2)
+	}
+	var m2 map[string]any
+	_ = json.Unmarshal(data2, &m2)
+	if m2["students"].(float64) != 2 {
+		t.Fatalf("缺页场景 students = %v,期望 2(甲完整,乙缺页仍入库)", m2["students"])
+	}
+	notes, _ := m2["notes"].([]any)
+	joined := fmt.Sprintf("%v", notes)
+	if !strings.Contains(joined, "02000002") || !strings.Contains(joined, "缺第 2 页") {
+		t.Fatalf("缺页告警应指出考号与缺的页号,得到 %v", notes)
+	}
+
+	// 乱序上传(扫描仪卡纸重排):乙p1、甲p2、甲p1、乙p2 —— 按考号归组后结果必须与顺序上传一致
+	var shuf bytes.Buffer
+	shuffled := []multipartFile{files[2], files[1], files[0], files[3]} // 乙p1 甲p2 甲p1 乙p2
+	writeExamForm(&shuf, layout, key, roster, shuffled...)
+	resp3, data3 := admin.do("POST", "/api/v1/exams", &shuf, "multipart/form-data; boundary="+multipartBoundary)
+	if resp3.StatusCode != http.StatusCreated {
+		t.Fatalf("乱序 4 张应 201,得到 %d: %s", resp3.StatusCode, data3)
+	}
+	var m3 map[string]any
+	_ = json.Unmarshal(data3, &m3)
+	shufID, _ := m3["id"].(string)
+	if m3["students"].(float64) != 2 {
+		t.Fatalf("乱序场景 students = %v,期望 2", m3["students"])
+	}
+	rep3 := admin.json("GET", "/api/v1/exams/"+shufID+"/report", nil, http.StatusOK)
+	regs3 := map[string]bool{}
+	for _, s := range rep3["students"].([]any) {
+		regs3[s.(map[string]any)["regNumber"].(string)] = true
+	}
+	if !regs3["02000001"] || !regs3["02000002"] {
+		t.Fatalf("乱序归组后报告考号缺失:%v", regs3)
+	}
+	// 乱序归组:第 5、6 题(第 2 页)切片仍应两位学生齐全(页点判读把 p2 归回原卷)
+	for q := 5; q <= 6; q++ {
+		items := admin.jsonArr("GET", fmt.Sprintf("/api/v1/exams/%s/slices?q=%d&grading=1", shufID, q), http.StatusOK)
+		if len(items) != 2 {
+			t.Fatalf("乱序归组后第 %d 题切片数 = %d,期望 2", q, len(items))
+		}
 	}
 }

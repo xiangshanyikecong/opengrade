@@ -116,7 +116,18 @@ func (c *e2eClient) jsonArr(method, path string, wantCode int) []map[string]any 
 
 func (c *e2eClient) login(user, pass string) {
 	c.t.Helper()
-	c.json("POST", "/api/v1/auth/login", map[string]string{"username": user, "password": pass}, http.StatusOK)
+	resp, data := c.do("POST", "/api/v1/auth/login",
+		jsonBody(map[string]string{"username": user, "password": pass}), "application/json")
+	if resp.StatusCode != http.StatusOK {
+		c.t.Fatalf("login %s: got %d\n%s", user, resp.StatusCode, data)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(data, &m)
+	if m["mustChangePassword"] == true {
+		// 服务端强制改密已生效(初始管理员/批量导入/管理员重置):
+		// 测试里"改成同密码"解锁,后续仍可用原密码重复登录。
+		c.json("POST", "/api/v1/auth/password", map[string]string{"oldPassword": pass, "newPassword": pass}, http.StatusOK)
+	}
 }
 
 // ---- 测试数据 ----
