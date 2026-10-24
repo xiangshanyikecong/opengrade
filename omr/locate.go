@@ -21,13 +21,17 @@ func (b blob) cy() float64 { return b.sumY / float64(b.area) }
 
 // findLocators 在二值图中定位四个实心方形定位角标,返回其在原图尺度下的中心点。
 // 检测在降采样图上进行(连通域 BFS + 实心度/尺寸/象限三重先验),
-// 对噪声、断线与轻微形变稳健;失败时返回携带诊断信息的错误。
+// 对噪声、断线与轻微形变稳健。针对真实扫描的两种常见偏移问题加固:
+//   - 扫描仪黑边/深色边框:先裁掉边缘墨迹密集条带再检测;
+//   - 纸张偏移导致定位块贴边甚至被裁掉一角:期望位置容差放宽到 40% 图宽,
+//     常规过滤无候选的象限再做「期望位置吸附近」(窗口内取最近的大块墨迹)。
 func findLocators(bin *bitmap, sheet *card.Sheet) ([4]image.Point, error) {
 	ds := bin.W / 1240
 	if ds < 1 {
 		ds = 1
 	}
 	small := downsample(bin, ds)
+	ox, oy, small := trimFrame(small)
 	blobs := connectedBlobs(small)
 
 	expSide := float64(sheet.LocatorSidePx) / float64(ds)
@@ -39,8 +43,8 @@ func findLocators(bin *bitmap, sheet *card.Sheet) ([4]image.Point, error) {
 	var have [4]bool
 	for _, bl := range blobs {
 		w, h := bl.w(), bl.h()
-		if float64(w) < expSide*0.72 || float64(w) > expSide*2.0 ||
-			float64(h) < expSide*0.72 || float64(h) > expSide*2.0 {
+		if float64(w) < expSide*0.55 || float64(w) > expSide*2.0 ||
+			float64(h) < expSide*0.55 || float64(h) > expSide*2.0 {
 			continue
 		}
 		// 实心度与尺寸双闸门区分定位方块与涂卡圆:涂卡圆直径仅约 0.68×边长,
@@ -51,7 +55,7 @@ func findLocators(bin *bitmap, sheet *card.Sheet) ([4]image.Point, error) {
 			continue
 		}
 		aspect := float64(w) / float64(h)
-		if aspect < 0.66 || aspect > 1.5 {
+		if aspect < 0.45 || aspect > 2.2 { // 贴边裁切会让方块变扁/变窄,放宽纵横比
 			continue
 		}
 		q := quadrant(bl.cx(), bl.cy(), small.W, small.H)
@@ -61,7 +65,7 @@ func findLocators(bin *bitmap, sheet *card.Sheet) ([4]image.Point, error) {
 		expX := float64(sheet.Locators[q].X) / float64(ds)
 		expY := float64(sheet.Locators[q].Y) / float64(ds)
 		d := math.Hypot(bl.cx()-expX, bl.cy()-expY)
-		if d > 0.25*float64(small.W) {
+		if d > 0.40*float64(small.W) { // 纸张大幅平移(送纸偏斜/照片取景偏)容忍
 			continue
 		}
 		if !have[q] || d < best[q].val {
@@ -72,19 +76,87 @@ func findLocators(bin *bitmap, sheet *card.Sheet) ([4]image.Point, error) {
 			have[q] = true
 		}
 	}
+	// 吸附近:常规闸门筛掉被裁切的定位块时,在其期望位置附近按"最近的大块墨迹"找回
+	for q := 0; q < 4; q++ {
+		if have[q] {
+			continue
+		}
+		expX := float64(sheet.Locators[q].X) / float64(ds)
+		expY := float64(sheet.Locators[q].Y) / float64(ds)
+		win := 0.12 * float64(small.W)
+		bestD := win
+		for _, bl := range blobs {
+			if float64(bl.area) < 0.22*expSide*expSide {
+				continue // 至少要有一小块实心墨迹(裁剩的角)
+			}
+			d := math.Hypot(bl.cx()-expX, bl.cy()-expY)
+			if d < bestD {
+				bestD = d
+				best[q] = cand{pt: image.Point{int(math.Round(bl.cx())) * ds, int(math.Round(bl.cy())) * ds}, val: d}
+				have[q] = true
+			}
+		}
+	}
 	for q := 0; q < 4; q++ {
 		if !have[q] {
 			return [4]image.Point{}, fmt.Errorf(
-				"未能在%s象限找到定位角标(需要 %.0fpx 见方的实心方块);请确认图像完整、四角无遮挡", quadName(q), expSide)
+				"未能在%s象限找到定位角标(需 %.0fpx 见方实心方块);定位块可能被扫描边缘裁切或遮挡——请检查扫描件边距后重试", quadName(q), expSide)
 		}
 	}
 	var out [4]image.Point
 	for q := 0; q < 4; q++ {
-		// 降采样块中心补偿
-		out[q] = image.Point{best[q].pt.X + ds/2, best[q].pt.Y + ds/2}
+		// 降采样块中心补偿 + 黑边裁剪偏移还原
+		out[q] = image.Point{best[q].pt.X + ox*ds + ds/2, best[q].pt.Y + oy*ds + ds/2}
 	}
 	return out, nil
 }
+
+// trimFrame 裁掉二值图四周的墨迹密集条带(扫描仪黑边/复印深色边框),
+// 返回裁剪偏移与裁剪后的图。扫描黑边会连成巨大连通域,既污染检测
+// 又常把贴边的定位块吞进去,必须先剥离。
+func trimFrame(b *bitmap) (int, int, *bitmap) {
+	const dense = 0.5   // 边缘行/列墨迹占比超过此值视为边框
+	const maxCut = 0.08 // 每边最多裁 8% 边长
+	cutL, cutR, cutT, cutB := 0, 0, 0, 0
+	rowInk := func(y int) float64 {
+		n := 0
+		for x := 0; x < b.W; x++ {
+			n += int(b.D[y*b.W+x])
+		}
+		return float64(n) / float64(b.W)
+	}
+	colInk := func(x int) float64 {
+		n := 0
+		for y := 0; y < b.H; y++ {
+			n += int(b.D[y*b.W+x])
+		}
+		return float64(n) / float64(b.H)
+	}
+	for cutT < int(maxCut*float64(b.H)) && rowInk(cutT) > dense {
+		cutT++
+	}
+	for cutB < int(maxCut*float64(b.H)) && rowInk(b.H-1-cutB) > dense {
+		cutB++
+	}
+	for cutL < int(maxCut*float64(b.W)) && colInk(cutL) > dense {
+		cutL++
+	}
+	for cutR < int(maxCut*float64(b.W)) && colInk(b.W-1-cutR) > dense {
+		cutR++
+	}
+	if cutL+cutR >= b.W || cutT+cutB >= b.H {
+		return 0, 0, b
+	}
+	if cutL+cutR+cutT+cutB == 0 {
+		return 0, 0, b
+	}
+	out := &bitmap{W: b.W - cutL - cutR, H: b.H - cutT - cutB, D: make([]byte, 0, (b.W-cutL-cutR)*(b.H-cutT-cutB))}
+	for y := cutT; y < b.H-cutB; y++ {
+		out.D = append(out.D, b.D[y*b.W+cutL:y*b.W+b.W-cutR]...)
+	}
+	return cutL, cutT, out
+}
+
 
 // connectedBlobs 对二值图做 4-连通域标记,返回全部连通域的统计量。
 func connectedBlobs(b *bitmap) []blob {

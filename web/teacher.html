@@ -278,13 +278,21 @@ function loadCreate() {
       <button class="secondary" onclick="loadLastLayout()">⇩ 载入设计器最近生成的版式</button>
       <a class="ghost" style="padding:6px 12px;border:1px solid var(--line);border-radius:8px;font-size:13px" href="/" target="_blank">打开设计器出卡 ↗</a>
     </div>
-    <label>版式 JSON(设计器生成,或整段粘贴)
-      <textarea id="examLayout" rows="8" placeholder='{"version":2, ...}'></textarea>
+    <label>版式 JSON(设计器自动带出,一般无需手改)
+      <textarea id="examLayout" rows="6" placeholder='{"version":2, ...}' style="font-family:monospace;font-size:12px"></textarea>
     </label>
-    <label>客观题参考答案(JSON 数组,如 ["A","T","AC",...];判断题用 T/F,多选题如 "AC")
-      <textarea id="examKey" rows="3" placeholder='["A","B","T",...]'></textarea>
-    </label>
-    <p class="hint" style="margin:4px 0 10px">答案也可在「题库」选题后由设计器带出;未提供的题为不判分处理请按题序补齐。</p>
+    <div id="layoutSummary" class="hint" style="background:var(--bg);border-radius:8px;padding:8px 12px"></div>
+    <div>
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+        <b style="font-size:13px">客观题参考答案(按题号逐格填写)</b>
+        <input id="keyQuick" placeholder="或把整串答案粘进来,如 ABCDABT..." style="width:220px;padding:5px 8px;font-size:13px">
+        <button class="ghost" onclick="quickFillKey()">快速填入</button>
+        <button class="ghost" onclick="bankFillKey()">从题库带出</button>
+        <span class="hint" id="keyFilled"></span>
+      </div>
+      <div id="keyGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:5px"></div>
+      <p class="hint" style="margin:6px 0 0">判断题填 T(对)/ F(错);多选题连写如 AC;题库选题的答案点「从题库带出」自动填好。</p>
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
       <label>学科(教师按学科过滤考试)
         <input id="examSubject" placeholder="数学">
@@ -303,6 +311,12 @@ function loadCreate() {
     <div class="err" id="examMsg" style="margin-top:8px"></div>
   </div>`;
   document.getElementById("createExamBtn").onclick = submitCreateExam;
+  let h = null;
+  document.getElementById("examLayout").addEventListener("input", () => {
+    clearTimeout(h);
+    h = setTimeout(renderLayoutMeta, 400);
+  });
+  loadLastLayout(); // 进入页面即尝试载入设计器最近版式
 }
 
 function loadLastLayout() {
@@ -313,6 +327,108 @@ function loadLastLayout() {
   document.getElementById("examLayout").value = saved;
   box.className = "hint";
   box.textContent = "已载入设计器最近生成的版式。";
+  renderLayoutMeta();
+}
+
+// 解析当前版式(失败返回 null 并提示)
+function parseLayoutQuiet() {
+  try {
+    const l = JSON.parse(document.getElementById("examLayout").value);
+    if (!l || (!l.questions && !l.subjectives)) throw new Error("版式里没有题目");
+    return l;
+  } catch (e) {
+    const box = document.getElementById("examMsg");
+    box.className = "err";
+    box.textContent = "版式 JSON 无法解析:" + e.message;
+    return null;
+  }
+}
+
+// 版式摘要:教师不必看懂 JSON,只看人话
+function renderLayoutMeta() {
+  const l = parseLayoutQuiet();
+  if (!l) { document.getElementById("layoutSummary").textContent = ""; return; }
+  const qs = l.questions || [], subs = l.subjectives || [];
+  const kinds = {};
+  for (const q of qs) kinds[q.kind] = (kinds[q.kind] || 0) + 1;
+  const kindTxt = Object.entries(kinds).map(([k, n]) => ({ choice: "单选", judge: "判断", multiple: "多选" }[k] || k) + "×" + n).join(" + ") || "无客观题";
+  const subTxt = subs.length ? subs.map(s => ({ fillblank: "填空", subjective: "解答" }[s.kind] || s.kind) + `${s.score || ""}分`).join("、") : "无";
+  const objScore = qs.reduce((a, q) => a + (+q.score || 1), 0);
+  const subScore = subs.reduce((a, s) => {
+    const parts = (s.parts || []).reduce((x, p) => x + (+p.score || 0), 0);
+    return a + (parts || +s.score || 0);
+  }, 0);
+  const regTxt = { fill: "填涂", barcode: "条码", qr: "二维码", "fill+barcode": "填涂+条码", "fill+qr": "填涂+二维码" }[l.regMode || "fill"] || l.regMode;
+  document.getElementById("layoutSummary").innerHTML =
+    `卷头 <b>${(l.title || "未命名").replace(/</g, "&lt;")}</b> · 考号 ${l.regDigits || 0} 位(${regTxt}) · 客观 ${qs.length} 题(${kindTxt},${objScore} 分) · 主观 ${subs.length} 题(${subTxt},${subScore} 分) · 卷面合计 <b>${objScore + subScore} 分</b>`;
+  renderKeyGrid();
+}
+
+// 答案逐题网格:按版式客观题自动出格子
+function renderKeyGrid() {
+  const l = parseLayoutQuiet();
+  const grid = document.getElementById("keyGrid");
+  if (!l) { grid.innerHTML = ""; return; }
+  const qs = l.questions || [];
+  grid.innerHTML = qs.map((q, i) => {
+    const ph = q.kind === "judge" ? "T/F" : q.kind === "multiple" ? "如 AC" : "A~F";
+    const tag = q.kind === "judge" ? "判" : q.kind === "multiple" ? "多" : "";
+    return `<label style="font-size:12px;color:var(--text2);display:grid;gap:2px">${i + 1}${tag}
+      <input data-key="${i}" maxlength="4" placeholder="${ph}" style="padding:6px 4px;text-align:center;font-size:14px" oninput="keyFilledCount()"></label>`;
+  }).join("") || `<span class="hint">本版式没有客观题,无需答案。</span>`;
+  keyFilledCount();
+}
+function keyFilledCount() {
+  const cells = [...document.querySelectorAll("#keyGrid input[data-key]")];
+  const filled = cells.filter(c => c.value.trim()).length;
+  document.getElementById("keyFilled").textContent = cells.length ? `已填 ${filled}/${cells.length}` : "";
+}
+// 一串字母快速填入:ABCDABT... 按题序拆格(判断题吃 T/F,其余每格一个字母)
+function quickFillKey() {
+  const l = parseLayoutQuiet();
+  if (!l) return;
+  const raw = (document.getElementById("keyQuick").value || "").toUpperCase().replace(/[^A-FTF]/g, "");
+  const qs = l.questions || [];
+  const cells = [...document.querySelectorAll("#keyGrid input[data-key]")];
+  let pos = 0, used = 0;
+  for (let i = 0; i < qs.length && pos < raw.length; i++) {
+    if (qs[i].kind === "judge") {
+      const ch = raw[pos];
+      if (ch === "T" || ch === "F") { cells[i].value = ch; pos++; used++; }
+    } else {
+      cells[i].value = raw[pos++];
+      used++;
+    }
+  }
+  keyFilledCount();
+  const box = document.getElementById("examMsg");
+  box.className = used ? "hint" : "err";
+  box.textContent = used ? `快速填入 ${used} 题(判断题按 T/F 识别)。` : "没有识别到可填入的字母。";
+}
+// 从题库带出:版式题目携带 bankId 时按 id 匹配参考答案
+async function bankFillKey() {
+  const l = parseLayoutQuiet();
+  if (!l) return;
+  const qs = l.questions || [];
+  const ids = [...new Set(qs.map(q => q.bankId).filter(Boolean))];
+  if (!ids.length) {
+    const box = document.getElementById("examMsg");
+    box.className = "err";
+    box.textContent = "版式里的题不是从题库选的(无题库编号),请手填或用快速填入。";
+    return;
+  }
+  const bank = await (await fetch("/api/v1/bank")).json();
+  const byId = Object.fromEntries(bank.map(it => [it.id, it]));
+  const cells = [...document.querySelectorAll("#keyGrid input[data-key]")];
+  let filled = 0;
+  qs.forEach((q, i) => {
+    const it = q.bankId && byId[q.bankId];
+    if (it && it.answer) { cells[i].value = String(it.answer).toUpperCase(); filled++; }
+  });
+  keyFilledCount();
+  const box = document.getElementById("examMsg");
+  box.className = filled ? "hint" : "err";
+  box.textContent = filled ? `从题库带出 ${filled} 题答案。` : "题库里没有这些题的参考答案。";
 }
 
 async function submitCreateExam() {
@@ -320,7 +436,13 @@ async function submitCreateExam() {
   msg.className = "err"; msg.textContent = "";
   try {
     const layout = JSON.parse(document.getElementById("examLayout").value);
-    const key = JSON.parse(document.getElementById("examKey").value);
+    const cells = [...document.querySelectorAll("#keyGrid input[data-key]")];
+    let key = [];
+    if (cells.length) {
+      key = cells.map(c => c.value.trim().toUpperCase());
+      const empty = key.findIndex(v => !v);
+      if (empty >= 0) throw new Error(`第 ${empty + 1} 题参考答案未填(判断题填 T/F,多选题填如 AC)`);
+    }
     const files = document.getElementById("examImages").files;
     if (!files.length) throw new Error("请选择至少一张整卷扫描件");
     const fd = new FormData();
