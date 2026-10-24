@@ -118,6 +118,7 @@
       <input id="examImages" type="file" accept="image/png,image/jpeg" multiple>
     </label>
     <button class="primary" id="createExam">创建考试并切片</button>
+    <p class="hint">也可在<a href="/teacher.html" target="_blank">教师工作台 → 新建考试</a>创建(版式已自动同步)。</p>
     <div class="err" id="examMsg"></div>
   </section>
   <section class="panel" style="flex:1">
@@ -293,9 +294,8 @@ function insertBank() {
 // 按当前版式客观题题序从题库带出参考答案(dataset.answer 随题库插入记录;缺答案的题为 ?)
 function bankKey() {
   const key = [];
-  [...$("objSpecs").children].forEach(d => {
-    const count = +d.querySelector(".c").value;
-    for (let i = 0; i < count; i++) key.push(d.dataset.answer || "?");
+  [...$("objSpecs").children].forEach(d => { // 逐题模式:一题一行
+    key.push(d.dataset.answer || "?");
   });
   $("examKey").value = JSON.stringify(key);
   $("examMsg").className = "ok";
@@ -317,6 +317,7 @@ async function gen() {
     : "";
   $("download").disabled = false;
   $("examLayout").value = JSON.stringify(buildLayout());
+  localStorage.setItem("og.lastLayout", $("examLayout").value); // 供教师工作台「新建考试」一键载入
   $("designMsg").className = "ok";
   $("designMsg").textContent = pageCount > 1
     ? `已生成。内容超出单页,已自动分 ${pageCount} 页(A4):第 2 页起重印考号与条码,扫描时每名学生连续 ${pageCount} 页上传即可。版式 JSON 已同步到「建考与阅卷」页。`

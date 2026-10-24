@@ -71,6 +71,7 @@
   </div>
   <div class="content">
     <div id="tab-exams"></div>
+  <div id="tab-create" hidden></div>
     <div id="tab-bank" hidden></div>
     <div id="tab-tasks" hidden></div>
     <div id="tab-reports" hidden></div>
@@ -86,13 +87,13 @@ let exams = [];
 
 // 侧栏手风琴分组(智学网式):低频分组默认收起
 const NAV_GROUPS = [
-  { name: "考试", ico: "📋", open: true, items: [["exams", "考试列表"], ["rooms", "考场编排"]] },
+  { name: "考试", ico: "📋", open: true, items: [["exams", "考试列表"], ["create", "新建考试"], ["rooms", "考场编排"]] },
   { name: "阅卷", ico: "✍️", open: false, items: [["tasks", "任务分配"]] },
   { name: "学情", ico: "📈", open: true, items: [["reports", "学情分析"], ["trends", "纵向趋势"]] },
   { name: "资源", ico: "📚", open: false, items: [["bank", "校本题库"]] },
   { name: "账号", ico: "👤", open: false, items: [["me", "账号设置"]] },
 ];
-const PAGE_TITLES = { exams: "考试列表", rooms: "考场编排", tasks: "任务分配", reports: "学情分析", trends: "纵向趋势", bank: "校本题库", me: "账号设置" };
+const PAGE_TITLES = { exams: "考试列表", create: "新建考试", rooms: "考场编排", tasks: "任务分配", reports: "学情分析", trends: "纵向趋势", bank: "校本题库", me: "账号设置" };
 
 async function main() {
   if (!await OG.init()) return;
@@ -120,13 +121,14 @@ function toggleSide() { document.body.classList.toggle("side-collapsed"); }
 
 function showTab(id) {
   document.querySelectorAll("#tabs .nav-sub button").forEach(b => b.classList.toggle("active", b.dataset.t === id));
-  ["exams", "bank", "tasks", "reports", "trends", "rooms", "me"].forEach(t => document.getElementById(tab_(t)).hidden = t !== id);
+  ["exams", "create", "bank", "tasks", "reports", "trends", "rooms", "me"].forEach(t => document.getElementById(tab_(t)).hidden = t !== id);
   const title = document.getElementById("pageTitle");
   if (title && PAGE_TITLES[id]) title.textContent = PAGE_TITLES[id];
   // 激活的子项若在收起分组里,自动展开该分组
   const btn = document.querySelector(`#tabs .nav-sub button[data-t="${id}"]`);
   if (btn) btn.closest(".nav-group").classList.add("open");
   if (id === "exams") loadExams();
+  if (id === "create") loadCreate();
   if (id === "bank") loadBank();
   if (id === "tasks") loadTasks();
   if (id === "reports") loadReports();
@@ -237,7 +239,13 @@ async function setProctor(room, teacher) {
 async function loadExams() {
   exams = await OG.jget("/api/v1/exams");
   const box = document.getElementById("tab-exams");
-  let html = `<div class="panel"><table><tr><th>考试</th><th>时间</th><th>建卷人</th><th>学科</th><th>卷数</th><th>题型</th><th>状态</th><th>操作</th></tr>`;
+  let html = `<div class="panel">
+    <div style="display:flex;align-items:center;margin-bottom:10px">
+      <b>考试列表</b><span class="hint" style="margin-left:10px">共 ${exams.length} 场</span>
+      <span style="flex:1"></span>
+      <button class="primary" onclick="showTab('create')">+ 新建考试</button>
+    </div>
+    <table><tr><th>考试</th><th>时间</th><th>建卷人</th><th>学科</th><th>卷数</th><th>题型</th><th>状态</th><th>操作</th></tr>`;
   for (const e of exams) {
     html += `<tr><td>${e.id}</td><td>${e.createdAt}</td><td>${e.createdBy || "-"}</td>
       <td>${e.subject || "-"}</td><td>${e.students}</td><td>客观 ${e.objective} + 主观 ${e.subjective}</td>
@@ -255,8 +263,82 @@ async function loadExams() {
       </td></tr>`;
   }
   html += "</table>";
-  if (!exams.length) html = `<div class="empty"><div class="pic">🗂️</div>当前暂无考试~ 先到「设计器」出卡,再在建考流程上传扫描件</div>`;
+  if (!exams.length) html = `<div class="empty"><div class="pic">🗂️</div>当前暂无考试~ 点右上「+ 新建考试」开始(先到设计器出卡、扫描后上传)</div>`;
   box.innerHTML = exams.length ? html + "</div>" : `<div class="panel">${html}</div>`;
+}
+
+/* —— 新建考试(从设计器页搬到工作台,成为主入口) —— */
+function loadCreate() {
+  const box = document.getElementById("tab-create");
+  if (box.dataset.ready) return; // 表单只渲染一次
+  box.dataset.ready = "1";
+  box.innerHTML = `<div class="panel" style="max-width:760px">
+    <div class="group-title">创建考试:版式 → 参考答案 → 名册(可选)→ 上传扫描件</div>
+    <div style="display:flex;gap:10px;margin-bottom:10px">
+      <button class="secondary" onclick="loadLastLayout()">⇩ 载入设计器最近生成的版式</button>
+      <a class="ghost" style="padding:6px 12px;border:1px solid var(--line);border-radius:8px;font-size:13px" href="/" target="_blank">打开设计器出卡 ↗</a>
+    </div>
+    <label>版式 JSON(设计器生成,或整段粘贴)
+      <textarea id="examLayout" rows="8" placeholder='{"version":2, ...}'></textarea>
+    </label>
+    <label>客观题参考答案(JSON 数组,如 ["A","T","AC",...];判断题用 T/F,多选题如 "AC")
+      <textarea id="examKey" rows="3" placeholder='["A","B","T",...]'></textarea>
+    </label>
+    <p class="hint" style="margin:4px 0 10px">答案也可在「题库」选题后由设计器带出;未提供的题为不判分处理请按题序补齐。</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <label>学科(教师按学科过滤考试)
+        <input id="examSubject" placeholder="数学">
+      </label>
+      <label>二值化方式
+        <select id="threshold"><option value="otsu">全局 Otsu(常规扫描)</option><option value="adaptive">局部自适应(阴影/翻拍)</option></select>
+      </label>
+    </div>
+    <label>学生名册(可选;JSON 数组或 CSV「考号,姓名,班级」,走班多班用 班A|班B;用于异常卷考号推荐与班级统计)
+      <textarea id="examRoster" rows="3" placeholder='[{"reg":"20250001","name":"李雷","classes":["三年二班","物理走班A"]}] 或 20250001,李雷,三年二班|物理走班A'></textarea>
+    </label>
+    <label>整卷扫描件(可多选;多页版式每名学生连续上传全部页,按份扫描的自然顺序即可)
+      <input id="examImages" type="file" accept="image/png,image/jpeg" multiple>
+    </label>
+    <button class="primary" id="createExamBtn" style="margin-top:12px">创建考试并切片</button>
+    <div class="err" id="examMsg" style="margin-top:8px"></div>
+  </div>`;
+  document.getElementById("createExamBtn").onclick = submitCreateExam;
+}
+
+function loadLastLayout() {
+  const saved = localStorage.getItem("og.lastLayout");
+  const box = document.getElementById("examMsg");
+  box.className = "err";
+  if (!saved) { box.textContent = "设计器还没有生成过版式:先点「打开设计器出卡」生成一次。"; return; }
+  document.getElementById("examLayout").value = saved;
+  box.className = "hint";
+  box.textContent = "已载入设计器最近生成的版式。";
+}
+
+async function submitCreateExam() {
+  const msg = document.getElementById("examMsg");
+  msg.className = "err"; msg.textContent = "";
+  try {
+    const layout = JSON.parse(document.getElementById("examLayout").value);
+    const key = JSON.parse(document.getElementById("examKey").value);
+    const files = document.getElementById("examImages").files;
+    if (!files.length) throw new Error("请选择至少一张整卷扫描件");
+    const fd = new FormData();
+    fd.append("layout", JSON.stringify(layout));
+    fd.append("key", JSON.stringify(key));
+    fd.append("threshold", document.getElementById("threshold").value);
+    const rosterText = document.getElementById("examRoster").value.trim();
+    if (rosterText) fd.append("roster", rosterText);
+    const subject = document.getElementById("examSubject").value.trim();
+    if (subject) fd.append("subject", subject);
+    for (const f of files) fd.append("images", f);
+    const r = await fetch("/api/v1/exams", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    msg.className = "hint";
+    msg.textContent = `考试 ${j.id} 已创建:${j.students} 卷,客观 ${j.objectiveCount} 题,主观 ${j.subjectiveCount} 题${j.pages > 1 ? `,版式共 ${j.pages} 页` : ""}。`;
+    setTimeout(() => showTab("exams"), 1200); // 创建成功回考试列表
+  } catch (e) { msg.textContent = e.message; }
 }
 
 /* —— 补传扫描件(批量扫描会话/断点续传):建考后中途扫完的一批卷续接进同一会话 —— */
