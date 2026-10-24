@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>用户管理 · OpenGrade</title>
+<link rel="stylesheet" href="/common.css">
 <style>
-  :root { --ink:#1c2430; --line:#dde3ea; --brand:#0b6e4f; }
   * { box-sizing:border-box; }
   body { margin:0; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; color:var(--ink); background:#f5f7fa; }
   header { display:flex; align-items:center; gap:14px; padding:12px 24px; background:#fff; border-bottom:1px solid var(--line); }
@@ -134,7 +134,7 @@ async function importUsers() {
     const r = await OG.jpost("/api/v1/users/import", { csv, defaultPassword: document.getElementById("impPwd").value });
     let text = `导入完成:新建 ${r.created},更新 ${r.updated}` + (r.failed.length ? `,失败 ${r.failed.length}` : "");
     for (const x of r.failed) text += `\n${x.error}`;
-    msg.style.color = r.failed.length ? "#c2410c" : "var(--brand)";
+    msg.style.color = r.failed.length ? "var(--bad)" : "var(--brand)";
     msg.textContent = text;
     refresh();
   } catch (e) { msg.style.color = "#c2410c"; msg.textContent = e.message; }

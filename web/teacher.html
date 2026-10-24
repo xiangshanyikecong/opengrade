@@ -4,10 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>教师工作台 · OpenGrade</title>
+<link rel="stylesheet" href="/common.css">
 <style>
-  :root { --ink:#1c2430; --line:#dde3ea; --brand:#0b6e4f; --warn:#b45309; --bad:#c2410c; }
   * { box-sizing:border-box; }
-  body { margin:0; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; color:var(--ink); background:#f5f7fa; }
+  body { font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
   header { display:flex; align-items:center; gap:14px; padding:12px 24px; background:#fff; border-bottom:1px solid var(--line); }
   header h1 { font-size:17px; margin:0; }
   header .u { font-size:13px; color:#66707d; }
@@ -48,47 +48,84 @@
   .seat.empty { opacity:.45; }
   .seat.sel { outline:2px solid var(--brand); }
   @media print {
-    header, nav.tabs, .no-print { display:none !important; }
+    .sidebar, .topbar, .no-print { display:none !important; }
+    .main-area { margin-left:0 !important; }
     .seat { break-inside:avoid; }
     .room { break-inside:avoid; }
   }
 </style>
 </head>
 <body>
-<header>
-  <h1>教师工作台</h1>
-  <span class="u" id="ogUser"></span>
-  <span style="flex:1"></span>
-  <a href="/">设计器</a> · <a href="/admin.html" id="adminLink" hidden>用户管理</a>
-</header>
-<nav class="tabs" id="tabs"></nav>
-<main>
-  <div id="tab-exams"></div>
-  <div id="tab-bank" hidden></div>
-  <div id="tab-tasks" hidden></div>
-  <div id="tab-reports" hidden></div>
-  <div id="tab-trends" hidden></div>
-  <div id="tab-rooms" hidden></div>
-  <div id="tab-me" hidden></div>
-</main>
+<aside class="sidebar">
+  <div class="logo"><span class="mark">开</span><span>开元智阅</span></div>
+  <div class="user"><span class="avatar" id="sideAvatar">·</span><span class="name" id="sideUserName">…</span></div>
+  <nav class="nav" id="tabs"></nav>
+  <div class="side-foot"><button onclick="toggleSide()"><span>⇤</span><span class="txt"> 收起侧栏</span></button></div>
+</aside>
+<div class="main-area">
+  <div class="topbar">
+    <h1 id="pageTitle">考试</h1>
+    <span style="flex:1"></span>
+    <span class="hint" id="ogUser"></span>
+    <a href="/">设计器</a> · <a href="/admin.html" id="adminLink" hidden>用户管理</a>
+  </div>
+  <div class="content">
+    <div id="tab-exams"></div>
+    <div id="tab-bank" hidden></div>
+    <div id="tab-tasks" hidden></div>
+    <div id="tab-reports" hidden></div>
+    <div id="tab-trends" hidden></div>
+    <div id="tab-rooms" hidden></div>
+    <div id="tab-me" hidden></div>
+  </div>
+</div>
 <input type="file" id="scanFiles" multiple accept="image/*" hidden>
 <script src="/common.js"></script>
 <script>
 let exams = [];
 
+// 侧栏手风琴分组(智学网式):低频分组默认收起
+const NAV_GROUPS = [
+  { name: "考试", ico: "📋", open: true, items: [["exams", "考试列表"], ["rooms", "考场编排"]] },
+  { name: "阅卷", ico: "✍️", open: false, items: [["tasks", "任务分配"]] },
+  { name: "学情", ico: "📈", open: true, items: [["reports", "学情分析"], ["trends", "纵向趋势"]] },
+  { name: "资源", ico: "📚", open: false, items: [["bank", "校本题库"]] },
+  { name: "账号", ico: "👤", open: false, items: [["me", "账号设置"]] },
+];
+const PAGE_TITLES = { exams: "考试列表", rooms: "考场编排", tasks: "任务分配", reports: "学情分析", trends: "纵向趋势", bank: "校本题库", me: "账号设置" };
+
 async function main() {
   if (!await OG.init()) return;
   if (OG.is("admin")) document.getElementById("adminLink").hidden = false;
-  const tabs = [["exams", "考试"], ["bank", "题库"], ["reports", "学情分析"], ["trends", "纵向趋势"], ["rooms", "考场编排"], ["me", "账号设置"]];
-  if (OG.is("admin", "leader")) tabs.splice(2, 0, ["tasks", "任务分配"]);
-  document.getElementById("tabs").innerHTML = tabs.map(([id, name], i) =>
-    `<button class="${i === 0 ? 'active' : ''}" data-t="${id}" onclick="showTab('${id}')">${name}</button>`).join("");
+  const me = OG.me || {};
+  const av = document.getElementById("sideAvatar");
+  if (av && me.displayName) av.textContent = me.displayName.trim().charAt(0) || "·";
+  const un = document.getElementById("sideUserName");
+  if (un) un.textContent = me.displayName || me.username || "";
+  const groups = NAV_GROUPS
+    .map(g => ({ ...g, items: g.items.filter(([id]) => id !== "tasks" || OG.is("admin", "leader")) }))
+    .filter(g => g.items.length);
+  document.getElementById("tabs").innerHTML = groups.map((g, gi) => `
+    <div class="nav-group ${g.open ? 'open' : ''}" data-g="${gi}">
+      <div class="nav-head" onclick="this.parentNode.classList.toggle('open')">
+        <span class="ico">${g.ico}</span><span class="txt">${g.name}</span><span class="arr">▾</span>
+      </div>
+      <div class="nav-sub">${g.items.map(([id, name]) =>
+        `<button data-t="${id}" onclick="showTab('${id}')">${name}</button>`).join("")}</div>
+    </div>`).join("");
   showTab("exams");
 }
 
+function toggleSide() { document.body.classList.toggle("side-collapsed"); }
+
 function showTab(id) {
-  document.querySelectorAll("nav.tabs button").forEach(b => b.classList.toggle("active", b.dataset.t === id));
+  document.querySelectorAll("#tabs .nav-sub button").forEach(b => b.classList.toggle("active", b.dataset.t === id));
   ["exams", "bank", "tasks", "reports", "trends", "rooms", "me"].forEach(t => document.getElementById(tab_(t)).hidden = t !== id);
+  const title = document.getElementById("pageTitle");
+  if (title && PAGE_TITLES[id]) title.textContent = PAGE_TITLES[id];
+  // 激活的子项若在收起分组里,自动展开该分组
+  const btn = document.querySelector(`#tabs .nav-sub button[data-t="${id}"]`);
+  if (btn) btn.closest(".nav-group").classList.add("open");
   if (id === "exams") loadExams();
   if (id === "bank") loadBank();
   if (id === "tasks") loadTasks();
@@ -216,8 +253,8 @@ async function loadExams() {
       </td></tr>`;
   }
   html += "</table>";
-  if (!exams.length) html += `<p class="hint">暂无考试:先到「设计器」出卡,再在建考流程上传扫描件</p>`;
-  box.innerHTML = html + "</div>";
+  if (!exams.length) html = `<div class="empty"><div class="pic">🗂️</div>当前暂无考试~ 先到「设计器」出卡,再在建考流程上传扫描件</div>`;
+  box.innerHTML = exams.length ? html + "</div>" : `<div class="panel">${html}</div>`;
 }
 
 /* —— 补传扫描件(批量扫描会话/断点续传):建考后中途扫完的一批卷续接进同一会话 —— */
@@ -604,7 +641,7 @@ function drawKnowledge(ks) {
     ctx.fillText(k.name.length > 12 ? k.name.slice(0, 12) + "…" : k.name, padL - 8, y + 12);
     const barW = W - padL - padR;
     ctx.fillStyle = "#eef2f6"; ctx.fillRect(padL, y, barW, 16);
-    ctx.fillStyle = k.rate < 0.5 ? "#c2410c" : k.rate < 0.75 ? "#b45309" : "#0b6e4f";
+    ctx.fillStyle = k.rate < 0.5 ? "#e34d59" : k.rate < 0.75 ? "#ff8c00" : "#00b389";
     ctx.fillRect(padL, y, barW * Math.max(0, Math.min(1, k.rate)), 16);
     ctx.fillStyle = "#1c2430"; ctx.textAlign = "left";
     ctx.fillText((k.rate * 100).toFixed(0) + "%", padL + barW + 8, y + 12);
@@ -677,7 +714,7 @@ function drawSegments(segs) {
   segs.forEach((s, i) => {
     const h = (base - 16) * (s.count / maxC);
     const x = pad + i * bw + bw * 0.15, w = bw * 0.7;
-    ctx.fillStyle = s.count ? "#0b6e4f" : "#eef2f6";
+    ctx.fillStyle = s.count ? "#00b389" : "#eef2f6";
     ctx.fillRect(x, base - h, w, h);
     ctx.fillStyle = "#1c2430";
     ctx.textAlign = "center";
@@ -685,7 +722,7 @@ function drawSegments(segs) {
     ctx.fillStyle = "#8a94a3";
     ctx.fillText(`${s.low.toFixed(0)}-${s.high.toFixed(0)}`, x + w / 2, base + 14);
   });
-  ctx.strokeStyle = "#dde3ea";
+  ctx.strokeStyle = "#e8ecf0";
   ctx.beginPath(); ctx.moveTo(pad, base); ctx.lineTo(W - pad, base); ctx.stroke();
 }
 
@@ -797,10 +834,10 @@ function renderTrend() {
 
   const series = [];
   if (hasClass) {
-    series.push({ name: "本班均分", color: "#0b6e4f", values: t.exams.map(e => e.classMean) });
+    series.push({ name: "本班均分", color: "#00b389", values: t.exams.map(e => e.classMean) });
     series.push({ name: "全体均分", color: "#9aa7b6", values: t.exams.map(e => e.mean) });
   } else {
-    series.push({ name: "均分", color: "#0b6e4f", values: t.exams.map(e => e.mean) });
+    series.push({ name: "均分", color: "#00b389", values: t.exams.map(e => e.mean) });
   }
   OG.chartLine(document.getElementById("classTrendCv"), labels, series, v => f1(v));
 }
@@ -816,7 +853,7 @@ function drawStudentTrend(reg) {
   const clsRate = t.exams.map(e => e.total > 0 ? Math.round(e.classMean / e.total * 1000) / 10 : null);
   const cv = document.getElementById("studentTrendCv");
   OG.chartLine(cv, labels, [
-    { name: `${s.name || s.reg} 得分率%`, color: "#0b6e4f", values: mine },
+    { name: `${s.name || s.reg} 得分率%`, color: "#00b389", values: mine },
     { name: "班级均分率%", color: "#9aa7b6", values: clsRate },
   ], v => v.toFixed(0) + "%");
   document.getElementById("studentTrendTip").textContent =
