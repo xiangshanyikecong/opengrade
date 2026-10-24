@@ -104,11 +104,17 @@
       <button class="ghost" id="prevBtn">← 上一卷</button>
       <button id="nextBtn">下一卷 →</button>
     </div>
+    <div class="row" style="display:flex;align-items:center;gap:8px">
+      <label style="font-size:13px;display:flex;align-items:center;gap:6px;margin:0">
+        <input type="checkbox" id="autoAdv" checked style="width:auto"> 打分后自动跳下一份未评
+      </label>
+    </div>
+    <div id="toast" style="position:fixed;top:64px;right:360px;background:var(--ink);color:#fff;padding:10px 18px;border-radius:8px;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,.25);opacity:0;transition:opacity .25s;pointer-events:none;z-index:50"></div>
     <div class="row status" id="questionStatus"></div>
     <div class="row hint">
-      <kbd>0</kbd>~<kbd>9</kbd> 打分 · <kbd>Space</kbd> 满分 · <kbd>Z</kbd> 零分<br>
+      <kbd>0</kbd>~<kbd>9</kbd> 打分 · <kbd>Space</kbd> 满分 · <kbd>Z</kbd> 零分 · <kbd>R</kbd> 同上分<br>
       <kbd>V</kbd> 对 · <kbd>B</kbd> 错 · <kbd>X</kbd> 待复核 · <kbd>P</kbd> 画笔<br>
-      <kbd>Enter</kbd>/<kbd>→</kbd> 下一卷 · <kbd>←</kbd> 上一卷
+      <kbd>F</kbd> 跳到下一份未评 · <kbd>←</kbd> 上一卷(打分即保存,自动跳下一份未评卷)
     </div>
     <div class="row" id="report" hidden></div>
   </aside>
@@ -121,6 +127,18 @@ let meta = null, slices = [], cur = 0, qIndex = 1, qMax = 10;
 let penOn = false, curStroke = null;
 let specParts = []; // 当前题的小问拆分(版式 v3);空 = 整题单分模式
 let partSel = 0;    // 当前打分的小问下标
+let lastScore = null; // 上一次成功保存的分值(R 键同分连评)
+const AUTO_KEY = "og.autoAdvance";
+if (localStorage.getItem(AUTO_KEY) === "0") { /* 默认开;读到了 0 才关 */ }
+
+function toast(msg, ms = 2600) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.opacity = 1;
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.style.opacity = 0, ms);
+}
+function autoAdvOn() { return $("autoAdv") && $("autoAdv").checked; }
 
 async function jget(url) { const r = await fetch(url); if (!r.ok) throw new Error((await r.json()).error); return r.json(); }
 async function jpost(url, body) {
@@ -145,6 +163,9 @@ async function init() {
   if (meta.subjective.length) loadQuestion(1);
   else document.body.innerHTML = "<p style='padding:40px'>该考试没有主观题</p>";
   $("reportLink").onclick = async e => { e.preventDefault(); showReport(); };
+  const saved = localStorage.getItem(AUTO_KEY);
+  if (saved !== null) $("autoAdv").checked = saved === "1";
+  $("autoAdv").onchange = e => localStorage.setItem(AUTO_KEY, e.target.checked ? "1" : "0");
   $("penBtn").onclick = () => { penOn = !penOn; $("penBtn").classList.toggle("active", penOn); };
   $("clearBtn").onclick = async () => { slices[cur].ink = []; syncCanvas(); await saveGrade(); };
   $("enhance").onchange = e => $("sliceImg").style.filter = e.target.value;
@@ -160,9 +181,34 @@ async function loadQuestion(q) {
   partSel = 0;
   qMax = spec.score;
   buildScoreBtns();
-  cur = 0;
+  // 落位:第一份未评卷(评卷惯例;全评完落第 1 卷)
+  cur = Math.max(0, slices.findIndex(x => !x.graded));
   preload(Math.min(8, slices.length));
   render();
+}
+
+// 本题内跳下一份未评卷;没有则返回 false(全评完)
+function jumpNextUngraded() {
+  for (let i = cur + 1; i < slices.length; i++) if (!slices[i].graded) { cur = i; partSel = 0; buildScoreBtns(); render(); return true; }
+  for (let i = 0; i <= cur; i++) if (!slices[i].graded) { cur = i; partSel = 0; buildScoreBtns(); render(); return true; }
+  return false;
+}
+
+// 本题全部阅完:自动跳到下一个有未评卷的题(循环全题序列);全部阅完则庆祝
+async function crossQuestionAdvance() {
+  const n = meta.subjective.length, objN = meta.objective.length;
+  for (let step = 1; step < n; step++) {
+    const q = ((qIndex - 1 + step) % n) + 1;
+    try {
+      const sl = await jget(`/api/v1/exams/${examId}/slices?q=${q}&grading=1`);
+      if (sl.some(x => !x.graded)) {
+        toast(`第 ${objN + qIndex} 题已全部阅完,已跳到第 ${objN + q} 题(剩 ${sl.filter(x => !x.graded).length} 卷)`);
+        await loadQuestion(q);
+        return;
+      }
+    } catch (e) { /* 单题查询失败不阻塞,继续下一题 */ }
+  }
+  toast("🎉 全部主观题阅卷完成!可到「学情分析」查看统分结果", 5000);
 }
 
 function buildScoreBtns() {
@@ -331,15 +377,35 @@ async function setScore(score) {
   const s = slices[cur];
   if (specParts.length) {
     await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, part: partSel + 1, score, mark: s.mark || "", graded: true, ink: s.ink || [] });
+    lastScore = score;
     const st = partStateOf(s);
     st[partSel].score = score;
     st[partSel].graded = true;
-    partSel = Math.min(partSel + 1, specParts.length - 1); // 打完一问自动跳下一问
+    const allPartsDone = st.every(x => x.graded);
+    if (partSel < specParts.length - 1) {
+      partSel++; // 同卷内自动跳下一小问
+      render();
+      return;
+    }
+    // 已是最后一问:全部小问评完 → 自动跳下一份未评卷 / 跨题
+    if (autoAdvOn()) {
+      if (allPartsDone) {
+        if (!jumpNextUngraded()) await crossQuestionAdvance();
+        return;
+      }
+      partSel = 0; buildScoreBtns(); render();
+      return;
+    }
     render();
     return;
   }
   await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score, mark: s.mark || "", graded: true, ink: s.ink || [] });
+  lastScore = score;
   Object.assign(s, { graded: true, score });
+  if (autoAdvOn()) {
+    if (!jumpNextUngraded()) await crossQuestionAdvance();
+    return;
+  }
   render();
 }
 async function saveGrade() {
@@ -406,7 +472,13 @@ window.addEventListener("keydown", e => {
   else if (k === "b" || k === "B") setMark("cross");
   else if (k === "x" || k === "X") setMark("flag");
   else if (k === "p" || k === "P") { penOn = !penOn; $("penBtn").classList.toggle("active", penOn); }
+  else if (k === "r" || k === "R") { if (lastScore != null) setScore(lastScore); }
+  else if (k === "f" || k === "F") { // 跳到本题下一份未评;全评完提示
+    if (!jumpNextUngraded()) toast("本题已全部阅完(打分会自动跨题)");
+    e.preventDefault();
+  }
   else if (k === "Enter" || k === "ArrowRight") { next(); e.preventDefault(); }
+  else if (k === "Backspace") { prev(); e.preventDefault(); } // 回看上一卷(改分/复查)
   else if (k === "ArrowLeft") { prev(); e.preventDefault(); }
 });
 
