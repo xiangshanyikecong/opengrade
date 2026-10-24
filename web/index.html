@@ -8,11 +8,12 @@
 <style>
   * { box-sizing:border-box; }
   body { margin:0; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; color:var(--ink); background:#f5f7fa; }
-  header { padding:16px 28px; background:#fff; border-bottom:1px solid var(--line); }
-  header h1 { margin:0; font-size:20px; }
-  header p { margin:6px 0 0; font-size:13px; color:#66707d; }
-  nav.tabs { display:flex; gap:4px; padding:0 28px; background:#fff; border-bottom:1px solid var(--line); }
-  nav.tabs button { border:0; background:none; padding:12px 18px; font-size:14px; cursor:pointer; color:#66707d; border-bottom:2px solid transparent; }
+  header { display:flex; align-items:center; gap:10px; padding:10px 24px; background:#fff; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:10; }
+  header .mark { width:30px; height:30px; border-radius:8px; background:var(--brand); color:#fff; display:grid; place-items:center; font-size:15px; font-weight:700; }
+  header h1 { margin:0; font-size:16px; }
+  header .sub { font-size:12px; color:var(--text2); }
+  nav.tabs { display:flex; gap:22px; padding:0 24px; background:#fff; border-bottom:1px solid var(--line); position:sticky; top:51px; z-index:10; }
+  nav.tabs button { border:0; background:none; padding:10px 2px; font-size:14px; cursor:pointer; color:var(--ink); border-bottom:2px solid transparent; }
   nav.tabs button.active { color:var(--brand); border-bottom-color:var(--brand); font-weight:600; }
   main { display:flex; gap:24px; padding:24px; max-width:1280px; margin:0 auto; }
   main[hidden] { display:none; }
@@ -39,9 +40,11 @@
 </head>
 <body>
 <header>
-  <h1>OpenGrade · 答题卡设计器与考试工作台</h1>
+  <span class="mark">开</span>
+  <div><h1>开元智阅 · 答题卡设计器</h1><div class="sub">出卡 → 扫描 → 判读 → 建考,与教师工作台同账号</div></div>
   <span style="flex:1"></span>
-  <span class="u" id="ogUser" style="font-size:13px;color:#66707d"></span>
+  <a href="/teacher.html">教师工作台</a>
+  <span class="u" id="ogUser" style="font-size:13px;color:var(--text2)"></span>
 </header>
 <nav class="tabs">
   <button class="active" data-tab="design">① 设计答题卡</button>
@@ -78,7 +81,10 @@
     <button class="secondary" id="download" disabled>下载 SVG(可打印)</button>
     <div class="err" id="designMsg"></div>
   </section>
-  <section class="panel preview" id="preview">点击"生成"预览</section>
+  <div style="flex:1; display:grid; gap:8px; align-content:start">
+    <div id="pageTabs" class="hint no-print" style="min-height:20px"></div>
+    <section class="panel preview" id="preview">点击"生成"预览</section>
+  </div>
 </main>
 
 <main id="tab-exam" hidden>
@@ -101,7 +107,7 @@
     <label>二值化方式
       <select id="threshold"><option value="otsu">全局 Otsu(常规扫描)</option><option value="adaptive">局部自适应(阴影/翻拍)</option></select>
     </label>
-    <label>整卷扫描件(可多选)
+    <label>整卷扫描件(可多选;多页版式每名学生连续上传全部页,按份扫描的自然顺序即可)
       <input id="examImages" type="file" accept="image/png,image/jpeg" multiple>
     </label>
     <button class="primary" id="createExam">创建考试并切片</button>
@@ -242,17 +248,27 @@ function bankKey() {
 }
 
 let currentSVG = null;
-$("gen").onclick = async () => {
+let pageCount = 1, pageNow = 1;
+async function gen() {
   $("designMsg").textContent = "";
-  const res = await fetch("/api/v1/cards", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ layout: buildLayout() }) });
+  const res = await fetch(`/api/v1/cards?page=${pageNow}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ layout: buildLayout() }) });
   if (!res.ok) { $("designMsg").className = "err"; $("designMsg").textContent = (await res.json()).error; return; }
+  pageCount = +(res.headers.get("X-Pages") || 1);
   currentSVG = await res.text();
   $("preview").innerHTML = currentSVG;
+  $("pageTabs").innerHTML = pageCount > 1
+    ? `版式自动分 ${pageCount} 页(每生需连续扫描上传 ${pageCount} 页):` +
+      [...Array(pageCount)].map((_, i) => `<button class="ghost ${i + 1 === pageNow ? 'primary' : ''}" style="margin-left:6px" onclick="gotoPage(${i + 1})">第 ${i + 1} 页</button>`).join("")
+    : "";
   $("download").disabled = false;
   $("examLayout").value = JSON.stringify(buildLayout());
   $("designMsg").className = "ok";
-  $("designMsg").textContent = "已生成。版式 JSON 已同步到「建考与阅卷」页。";
-};
+  $("designMsg").textContent = pageCount > 1
+    ? `已生成。内容超出单页,已自动分 ${pageCount} 页(A4):第 2 页起重印考号与条码,扫描时每名学生连续 ${pageCount} 页上传即可。版式 JSON 已同步到「建考与阅卷」页。`
+    : "已生成。版式 JSON 已同步到「建考与阅卷」页。";
+}
+async function gotoPage(k) { pageNow = k; await gen(); }
+$("gen").onclick = () => { pageNow = 1; return gen(); };
 $("download").onclick = () => {
   const blob = new Blob([currentSVG], { type: "image/svg+xml" });
   const a = document.createElement("a");
@@ -293,12 +309,14 @@ async function refreshExams() {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td>${e.id}</td><td>${e.createdAt}</td><td>${e.students}</td>
       <td>${e.subject ? e.subject + " · " : ""}客观 ${e.objective} + 主观 ${e.subjective}</td>
-      <td style="display:flex;gap:8px;flex-wrap:wrap">
+      <td style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
         <a href="/grader.html?exam=${e.id}">阅卷</a>
         <a href="/api/v1/exams/${e.id}/export.xlsx">成绩册</a>
-        <a href="/api/v1/exams/${e.id}/review.pptx">讲评课件</a>
-        <a href="/api/v1/exams/${e.id}/export.zip">数据包</a>
-        <a href="#" style="color:#c2410c" onclick="delExam('${e.id}');return false">删除</a>
+        <details class="more"><summary>更多</summary><div class="menu">
+          <a href="/api/v1/exams/${e.id}/review.pptx">讲评课件</a>
+          <a href="/api/v1/exams/${e.id}/export.zip">数据包</a>
+          <a href="#" class="danger" onclick="delExam('${e.id}');return false">删除</a>
+        </div></details>
       </td>`;
     t.appendChild(tr);
   }

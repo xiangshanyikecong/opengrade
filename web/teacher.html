@@ -242,14 +242,16 @@ async function loadExams() {
     html += `<tr><td>${e.id}</td><td>${e.createdAt}</td><td>${e.createdBy || "-"}</td>
       <td>${e.subject || "-"}</td><td>${e.students}</td><td>客观 ${e.objective} + 主观 ${e.subjective}</td>
       <td><span class="pill ${e.published ? 'on' : 'off'}">${e.published ? '已发布' : '未发布'}</span></td>
-      <td style="display:flex;gap:8px;flex-wrap:wrap">
+      <td style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
         <a href="/grader.html?exam=${e.id}">阅卷</a>
-        <a href="#" onclick="pickScans('${e.id}');return false">补传扫描</a>
-        <a href="#" onclick="pubExam('${e.id}',${!e.published});return false">${e.published ? '撤回发布' : '发布成绩'}</a>
         <a href="/api/v1/exams/${e.id}/export.xlsx">成绩册</a>
-        <a href="/api/v1/exams/${e.id}/review.pptx">讲评课件</a>
-        <a href="/api/v1/exams/${e.id}/export.zip">数据包</a>
-        ${OG.is("admin", "leader") ? `<a href="#" class="danger" onclick="delExam('${e.id}');return false">删除</a>` : ""}
+        <details class="more"><summary>更多</summary><div class="menu">
+          <a href="#" onclick="pickScans('${e.id}');return false">补传扫描</a>
+          <a href="#" onclick="pubExam('${e.id}',${!e.published}).then(loadExams);return false">${e.published ? '撤回发布' : '发布成绩'}</a>
+          <a href="/api/v1/exams/${e.id}/review.pptx">讲评课件</a>
+          <a href="/api/v1/exams/${e.id}/export.zip">数据包</a>
+          ${OG.is("admin", "leader") ? `<a href="#" class="danger" onclick="delExam('${e.id}');return false">删除</a>` : ""}
+        </div></details>
       </td></tr>`;
   }
   html += "</table>";
@@ -474,9 +476,17 @@ async function renderReport() {
   for (const c of a.byClass) html += `<tr><td>${c.class}</td><td>${c.count}</td><td>${f1(c.mean)}</td><td>${pct(c.meanRate)}</td></tr>`;
   html += `</table></div></div>`;
 
-  // 逐题分析
+  // 逐题分析:可选班级对比(班级得分率 + 与全体差值,对齐智学网高频错题表)
+  const pcq = a.perClassQuestion || {};
+  const cmpClasses = Object.keys(pcq).filter(c => c !== "未匹配").sort();
+  const cmp = window.__cmpClass && pcq[window.__cmpClass] ? window.__cmpClass : "";
   html += `<div class="panel" style="margin-top:14px"><b>逐题分析</b>
-    <table><tr><th>题号</th><th>题型</th><th>满分</th><th>得分率/难度</th><th>区分度</th><th>作答分布</th></tr>`;
+    <span style="margin-left:12px" class="hint">对比班级
+      <select onchange="window.__cmpClass=this.value;renderReport()">
+        <option value="">不对比</option>
+        ${cmpClasses.map(c => `<option value="${c}" ${c === cmp ? 'selected' : ''}>${c}</option>`).join("")}
+      </select></span>
+    <table><tr><th>题号</th><th>题型</th><th>满分</th><th>得分率/难度</th>${cmp ? "<th>班级得分率</th><th>与全体差值</th>" : ""}<th>区分度</th><th>作答分布</th></tr>`;
   for (const q of a.questions) {
     let dist = "-";
     if (q.options) {
@@ -487,15 +497,27 @@ async function renderReport() {
       dist = `<span class="hint">选做 ${q.chosen || 0} 人</span>`;
     }
     const diff = q.difficulty != null ? (q.difficulty * 100).toFixed(0) + "%" : "-";
+    let cmpCells = "";
+    if (cmp) {
+      const cr = pcq[cmp] ? pcq[cmp][q.index - 1] : -1;
+      const crTxt = cr >= 0 ? pct(cr) : "-";
+      let dTxt = "-", dCls = "";
+      if (cr >= 0 && q.difficulty != null) {
+        const d = cr - q.difficulty;
+        dTxt = (d >= 0 ? "+" : "") + (d * 100).toFixed(1) + "pp";
+        dCls = d >= 0.02 ? "color:var(--brand)" : d <= -0.02 ? "color:var(--bad)" : "";
+      }
+      cmpCells = `<td>${crTxt}</td><td style="${dCls}">${dTxt}</td>`;
+    }
     html += `<tr><td>${q.index}</td><td>${q.label || q.kind}</td><td>${q.max}</td>
-      <td>${diff}</td><td>${f1(q.discrimination)}</td><td>${dist}</td></tr>`;
+      <td>${diff}</td>${cmpCells}<td>${f1(q.discrimination)}</td><td>${dist}</td></tr>`;
     if (q.parts) { // 版式 v3:小问拆分的逐问明细
-      html += `<tr><td></td><td colspan="5" class="hint">小问:` +
+      html += `<tr><td></td><td colspan="${cmp ? 7 : 5}" class="hint">小问:` +
         q.parts.map(p => `${p.label || "(" + p.index + ")"} 均分 ${f1(p.mean)}/${p.max}(得分率 ${pct(p.rate)},已阅 ${p.graded})`).join(" · ") +
         `</td></tr>`;
     }
   }
-  html += `</table><p class="hint">难度=得分率(越接近 100% 越易);区分度=高分组率−低分组率(<0.2 区分度偏低)。</p></div>`;
+  html += `</table><p class="hint">难度=得分率(越接近 100% 越易);区分度=高分组率−低分组率(<0.2 区分度偏低);差值=班级得分率−全体得分率(pp=百分点)。</p></div>`;
 
   // 知识点掌握度(CE 轨道 G2:建考录入标签 → 班级掌握雷达)
   html += `<div class="panel"><b>知识点掌握度</b> <span class="hint">掌握度 = 该知识点下所有题目的分值加权得分率;掌握度低的排前面。</span>

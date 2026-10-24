@@ -79,7 +79,8 @@ type NewExam struct {
 	Key       []string
 	Results   []*omr.Result
 	Slices    [][]omr.Slice
-	Pages     []*image.Gray // 矫正后的整卷图(答卷回溯)
+	Pages      []*image.Gray    // 矫正后的整卷图(答卷回溯;单页版式每生一张)
+	PageGroups [][]*image.Gray  // 多页版式:每生按页序的矫正图组(第 1 页兼容旧文件名)
 	Threshold string
 	CreatedBy string
 	Subject   string
@@ -166,16 +167,30 @@ func (s *Store) Create(ne NewExam) (*Exam, error) {
 			}
 		}
 	}
-	if len(ne.Pages) > 0 {
-		if err := os.MkdirAll(filepath.Join(dir, "pages"), 0o755); err != nil {
-			return nil, err
+	if err := os.MkdirAll(filepath.Join(dir, "pages"), 0o755); err != nil {
+		return nil, err
+	}
+	if ne.PageGroups != nil { // 多页版式:第 1 页用旧文件名,第 2+ 页加 _p 页号
+		for si, group := range ne.PageGroups {
+			for k, pg := range group {
+				if pg == nil {
+					continue
+				}
+				name := fmt.Sprintf("s%02d.jpg", si+1)
+				if k > 0 {
+					name = fmt.Sprintf("s%02d_p%02d.jpg", si+1, k+1)
+				}
+				if err := saveJPEGFile(filepath.Join(dir, "pages", name), pg); err != nil {
+					return nil, err
+				}
+			}
 		}
+	} else if len(ne.Pages) > 0 {
 		for si, pg := range ne.Pages {
 			if pg == nil {
 				continue
 			}
-			p := filepath.Join(dir, "pages", fmt.Sprintf("s%02d.jpg", si+1))
-			if err := saveJPEGFile(p, pg); err != nil {
+			if err := saveJPEGFile(filepath.Join(dir, "pages", fmt.Sprintf("s%02d.jpg", si+1)), pg); err != nil {
 				return nil, err
 			}
 		}
@@ -455,7 +470,7 @@ func (s *Store) PageDir(id string) string {
 // AppendScans 补传扫描件(批量扫描会话/断点续传的核心):把新建考之后又扫完的一批卷
 // 续接到既有会话——结果按现有卷序追加,切片与整卷回溯图落盘,学生号接着排。
 // 调用方已逐卷完成 OMR 判读;本方法只做追加与持久化。返回追加后的总卷数。
-func (s *Store) AppendScans(id, by string, results []*omr.Result, slices [][]omr.Slice, pages []*image.Gray) (int, error) {
+func (s *Store) AppendScans(id, by string, results []*omr.Result, slices [][]omr.Slice, pageGroups [][]*image.Gray) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ex, ok := s.exams[id]
@@ -476,18 +491,23 @@ func (s *Store) AppendScans(id, by string, results []*omr.Result, slices [][]omr
 			}
 		}
 	}
-	if len(pages) > 0 {
+	if len(pageGroups) > 0 {
 		pageDir := filepath.Join(dir, "pages")
 		if err := os.MkdirAll(pageDir, 0o755); err != nil {
 			return 0, err
 		}
-		for i, pg := range pages {
-			if pg == nil {
-				continue
-			}
-			p := filepath.Join(pageDir, fmt.Sprintf("s%02d.jpg", base+i+1))
-			if err := saveJPEGFile(p, pg); err != nil {
-				return 0, err
+		for i, group := range pageGroups {
+			for k, pg := range group {
+				if pg == nil {
+					continue
+				}
+				name := fmt.Sprintf("s%02d.jpg", base+i+1)
+				if k > 0 {
+					name = fmt.Sprintf("s%02d_p%02d.jpg", base+i+1, k+1)
+				}
+				if err := saveJPEGFile(filepath.Join(pageDir, name), pg); err != nil {
+					return 0, err
+				}
 			}
 		}
 	}

@@ -167,14 +167,102 @@ func handleAnalytics(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		qs[i] = qView{QuestionStat: q, Label: labels[i]}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":        ex.ID,
-		"subject":   ex.Subject,
-		"total":     rep.Total,
-		"stats":     rep.Stats,
-		"byClass":   computeClassStats(ex, rep),
-		"questions": qs,
-		"knowledge": knowledgeStatsOf(ex),
+		"id":               ex.ID,
+		"subject":          ex.Subject,
+		"total":            rep.Total,
+		"stats":            rep.Stats,
+		"byClass":          computeClassStats(ex, rep),
+		"questions":        qs,
+		"knowledge":        knowledgeStatsOf(ex),
+		"perClassQuestion": perClassQuestionRates(ex),
 	})
+}
+
+// perClassQuestionRates 按班级计算逐题得分率(与全体同口径:客观=对率/非缺考,
+// 主观=已阅均分/满分;选做题只计所选该题者),供「与年级差值」列。
+// 无数据的题位为 -1。键 "全体" 为全卷口径,便于前端直接做差。
+func perClassQuestionRates(ex *Exam) map[string][]float64 {
+	nObj, nSub := len(ex.Layout.Questions), len(ex.Layout.Subjectives)
+	nQ := nObj + nSub
+	if nQ == 0 {
+		return nil
+	}
+	regClasses := map[string][]string{}
+	for _, st := range ex.Roster {
+		regClasses[st.Reg] = st.AllClasses()
+	}
+	type acc struct {
+		count, correct int
+		sum            float64
+		graded         int
+	}
+	agg := map[string][]*acc{}
+	get := func(c string) []*acc {
+		if agg[c] == nil {
+			agg[c] = make([]*acc, nQ)
+			for i := range agg[c] {
+				agg[c][i] = &acc{}
+			}
+		}
+		return agg[c]
+	}
+	groups := score.ElectiveGroups(ex.Layout.Subjectives)
+	for si, res := range ex.Results {
+		if res == nil || res.Absent {
+			continue
+		}
+		cls := regClasses[ex.AssignedReg(si+1)]
+		if len(cls) == 0 {
+			cls = []string{"未匹配"}
+		}
+		for _, c := range cls {
+			accs := get(c)
+			for qi := 0; qi < nObj && qi < len(res.Answers); qi++ {
+				accs[qi].count++
+				if res.Answers[qi] == ex.ObjectiveKey[qi] {
+					accs[qi].correct++
+				}
+			}
+			for qi := 0; qi < nSub; qi++ {
+				spec := ex.Layout.Subjectives[qi]
+				qNo := nObj + qi + 1
+				if g := score.GroupOf(groups, qNo); g != nil {
+					marks := res.Electives[g.Members[0]]
+					if len(marks) != 1 || g.Members[marks[0]] != qNo {
+						continue // 选了同组另一题:不进本题统计
+					}
+				}
+				if sc, done, _ := score.SubjectiveScore(spec, ex.Grades, si+1, qNo); done {
+					accs[nObj+qi].graded++
+					accs[nObj+qi].sum += sc
+				}
+			}
+		}
+	}
+	rate := func(a *acc, max float64) float64 {
+		if a.count > 0 {
+			return float64(a.correct) / float64(a.count)
+		}
+		if a.graded > 0 && max > 0 {
+			return (a.sum / float64(a.graded)) / max
+		}
+		return -1
+	}
+	out := map[string][]float64{}
+	for c, accs := range agg {
+		rs := make([]float64, nQ)
+		for qi := 0; qi < nQ; qi++ {
+			max := 1.0
+			if qi < nObj {
+				max = 1
+			} else {
+				max = ex.Layout.Subjectives[qi-nObj].Score
+			}
+			rs[qi] = rate(accs[qi], max)
+		}
+		out[c] = rs
+	}
+	return out
 }
 
 var _ = strings.TrimSpace

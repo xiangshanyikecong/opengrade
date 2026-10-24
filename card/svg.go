@@ -9,7 +9,7 @@ import (
 // RenderSVG 输出矢量版答题卡(mm 精度,可直接送打印),供浏览器打印或印刷。
 // SVG 文本交由渲染方字体解析,天然支持中文卷头与题干。
 func RenderSVG(s *Sheet, f *Filling) []byte {
-	g := mustGeometry(s.Layout)
+	g := mustGeometry(s)
 	n := s.Layout
 	var b bytes.Buffer
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
@@ -52,8 +52,12 @@ func RenderSVG(s *Sheet, f *Filling) []byte {
 		renderCodeSVG(&b, cg, n, f)
 	}
 
-	// 文本标签
+	// 文本标签(每页右上角标页码,多页卡逐页可归属)
 	text(&b, g.title.x, g.title.y, 6, xmlEscape(n.Title))
+	if s.PageCount > 1 {
+		// 右端留在 190mm:紧贴定位块会被连成连通域,破坏角标定位
+		textEnd(&b, PageWMM-marginX-6, g.title.y, 3.5, fmt.Sprintf("第 %d/%d 页", s.PageNo, s.PageCount))
+	}
 	if n.RegHasFill() && len(g.reg) > 0 {
 		text(&b, g.regLabel.x, g.regLabel.y, 3.5, "REG NO")
 		for d, p := range g.regRowLbl {
@@ -130,6 +134,11 @@ func trimScore(v float64) string {
 // text 输出居中文本;(x,y) 为文本包围盒中心,换算为基线位置。
 func text(b *bytes.Buffer, x, y, size float64, s string) {
 	fmt.Fprintf(b, "<text x=\"%.2f\" y=\"%.2f\" font-size=\"%.2f\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"Helvetica, Arial, sans-serif\" fill=\"black\">%s</text>\n", x, y, size, s)
+}
+
+// textEnd 输出右对齐文本;(x,y) 为文本包围盒右缘中点。
+func textEnd(b *bytes.Buffer, x, y, size float64, str string) {
+	fmt.Fprintf(b, "<text x=\"%.2f\" y=\"%.2f\" font-size=\"%.2f\" text-anchor=\"end\" dominant-baseline=\"central\" font-family=\"Helvetica, Arial, sans-serif\" fill=\"black\">%s</text>\n", x, y, size, xmlEscape(str))
 }
 
 // textStart 输出左对齐文本;(x,y) 为文本包围盒左缘中点。

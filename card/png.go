@@ -1,6 +1,7 @@
 package card
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/opengrade/opengrade/font"
@@ -67,7 +68,7 @@ func RenderPNG(s *Sheet, f *Filling) *raster.Canvas {
 	}
 
 	// 卷头与标签文字
-	g := mustGeometry(s.Layout)
+	g := mustGeometry(s)
 
 	// 考号码区(条码/二维码):学生卡印实际码,母版只印区框与提示
 	if g.code != nil {
@@ -83,6 +84,17 @@ func RenderPNG(s *Sheet, f *Filling) *raster.Canvas {
 		c.TextCenter(mmToPx(cx), mmToPx(cyMM), asciiOrQ(text), max(1, px*5/33), black)
 	}
 	drawLabel(g.title.x, g.title.y, s.Layout.Title, 6)
+	if s.PageCount > 1 {
+		mk := fmt.Sprintf("第 %d/%d 页", s.PageNo, s.PageCount)
+		px := mmToPx(3.5)
+		rightPx := mmToPx(PageWMM - marginX - 6) // 避开右上定位块
+		if tf != nil {
+			tf.DrawRight(c, rightPx, mmToPx(g.title.y)-px/2, mk, px, black)
+		} else {
+			w := raster.TextWidth(asciiOrQ(mk), max(1, px*5/33))
+			c.Text(rightPx-w, mmToPx(g.title.y), asciiOrQ(mk), max(1, px*5/33), black)
+		}
+	}
 	if s.Layout.RegHasFill() && len(s.Reg) > 0 {
 		drawLabel(g.regLabel.x, g.regLabel.y, "考号 REG NO", 3.5)
 		for d, p := range g.regRowLbl {
@@ -218,9 +230,9 @@ func itoa(n int) string {
 	return string(b[i:])
 }
 
-// mustGeometry 供渲染器使用:Render 的入参 Sheet 一定来自 Build(),normalize 不会失败。
-func mustGeometry(l Layout) geom {
-	g, err := l.geometry()
+// mustGeometry 供渲染器使用:Render 的入参 Sheet 一定来自 BuildBook(),不会失败。
+func mustGeometry(sh *Sheet) geom {
+	g, err := sh.Layout.geometryFor(sh.PageNo, sh.pageSubs)
 	if err != nil {
 		panic("card: 渲染使用了未经 Build 的版式: " + err.Error())
 	}

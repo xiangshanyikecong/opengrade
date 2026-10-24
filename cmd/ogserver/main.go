@@ -263,11 +263,20 @@ func handleCards(w http.ResponseWriter, r *http.Request, u *auth.User) {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
-	sheet, err := req.Layout.Build()
+	book, err := req.Layout.BuildBook()
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
+	pageNo := 1
+	if pv := r.URL.Query().Get("page"); pv != "" {
+		if pageNo, err = strconv.Atoi(pv); err != nil || pageNo < 1 || pageNo > len(book) {
+			httpError(w, http.StatusBadRequest, fmt.Errorf("page 须为 1~%d", len(book)))
+			return
+		}
+	}
+	w.Header().Set("X-Pages", strconv.Itoa(len(book)))
+	sheet := book[pageNo-1]
 	if r.URL.Query().Get("format") == "png" {
 		w.Header().Set("Content-Type", "image/png")
 		_ = png.Encode(w, card.RenderPNG(sheet, req.Filling))
@@ -366,9 +375,14 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		st = parsed
 	}
 
-	var results []*omr.Result
-	var slicesByStudent [][]omr.Slice
-	var pages []*image.Gray
+	// 多页版式:主观题自动分页,每生 P 页连续上传,逐页判读后合并
+	book, err := sheet.Layout.BuildBook()
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err)
+		return
+	}
+	pageCount := len(book)
+	var imgs []image.Image
 	for i, fh := range r.MultipartForm.File["images"] {
 		f, err := fh.Open()
 		if err != nil {
@@ -381,20 +395,42 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 			httpError(w, http.StatusBadRequest, fmt.Errorf("第 %d 张图像解码失败: %w", i+1, err))
 			return
 		}
-		res, dbg, err := omr.Read(sheet, img, opt)
-		if err != nil {
-			httpError(w, http.StatusUnprocessableEntity, fmt.Errorf("第 %d 张卷识别失败: %w", i+1, err))
-			return
+		imgs = append(imgs, img)
+	}
+	if pageCount > 1 && len(imgs)%pageCount != 0 {
+		httpError(w, http.StatusUnprocessableEntity,
+			fmt.Errorf("版式共 %d 页:每名学生的整卷需连续上传 %d 页(当前 %d 张,须为 %d 的整数倍;扫描时按份出纸即可)", pageCount, pageCount, len(imgs), pageCount))
+		return
+	}
+
+	var results []*omr.Result
+	var slicesByStudent [][]omr.Slice
+	var pageGroups [][]*image.Gray
+	for si, group := range splitPageImages(imgs, pageCount) {
+		var pages []pageScan
+		for k, img := range group {
+			ps, err := readPageScan(book, k, img, opt)
+			if err != nil {
+				httpError(w, http.StatusUnprocessableEntity,
+					fmt.Errorf("第 %d 名学生第 %d/%d 页识别失败: %w", si+1, k+1, pageCount, err))
+				return
+			}
+			pages = append(pages, ps)
 		}
-		results = append(results, res)
-		slicesByStudent = append(slicesByStudent, omr.SliceRectified(dbg.Rectified, sheet, i+1, res.RegNumber))
-		pages = append(pages, dbg.Rectified)
+		merged := mergePageScans(pages)
+		results = append(results, merged)
+		slicesByStudent = append(slicesByStudent, slicesOfPageScans(pages, si+1, merged.RegNumber))
+		rects := make([]*image.Gray, len(pages))
+		for k, p := range pages {
+			rects[k] = p.dbg.Rectified
+		}
+		pageGroups = append(pageGroups, rects)
 	}
 
 	markDuplicateRegs(nil, results) // 批内重答检测(同考号二次上传 → 告警进异常清单)
 	ex, err := store.Create(NewExam{
 		Layout: sheet.Layout, Key: key, Results: results, Slices: slicesByStudent,
-		Pages: pages, Threshold: opt.Threshold, CreatedBy: u.Username, Subject: r.FormValue("subject"), Roster: st,
+		Pages: nil, PageGroups: pageGroups, Threshold: opt.Threshold, CreatedBy: u.Username, Subject: r.FormValue("subject"), Roster: st,
 	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err)
@@ -418,6 +454,7 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		"students":        len(results),
 		"objectiveCount":  len(sheet.Choice),
 		"subjectiveCount": len(sheet.SubjectiveBoxes),
+		"pages":           pageCount,
 		"threshold":       opt.Threshold,
 		"roster":          len(st),
 	})

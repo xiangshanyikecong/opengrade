@@ -579,7 +579,7 @@ func handleStudentPage(w http.ResponseWriter, r *http.Request, store *Store, u *
 		httpError(w, http.StatusNotFound, fmt.Errorf("未找到本人答卷"))
 		return
 	}
-	p := filepath.Join(store.PageDir(ex.ID), fmt.Sprintf("s%02d.jpg", idx))
+	p := pageImagePath(store, ex.ID, idx, r.URL.Query().Get("p"))
 	if !fileExists(p) {
 		httpError(w, http.StatusNotFound, fmt.Errorf("整卷回溯图不存在"))
 		return
@@ -600,11 +600,22 @@ func handleExamPageStaff(w http.ResponseWriter, r *http.Request, store *Store, u
 		httpError(w, http.StatusNotFound, fmt.Errorf("无权查看该生答卷"))
 		return
 	}
-	p := filepath.Join(store.PageDir(ex.ID), fmt.Sprintf("s%02d.jpg", idx))
+	p := pageImagePath(store, ex.ID, idx, r.URL.Query().Get("p"))
 	if !fileExists(p) {
 		httpError(w, http.StatusNotFound, fmt.Errorf("整卷回溯图不存在"))
 		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
 	http.ServeFile(w, r, p)
+}
+
+// pageImagePath 多页版式的整卷回溯文件名:第 1 页兼容旧名,第 2+ 页带 _p 页号。
+func pageImagePath(store *Store, examID string, idx int, pageParam string) string {
+	name := fmt.Sprintf("s%02d.jpg", idx)
+	if pv := pageParam; pv != "" {
+		if k, err := strconv.Atoi(pv); err == nil && k > 1 {
+			name = fmt.Sprintf("s%02d_p%02d.jpg", idx, k)
+		}
+	}
+	return filepath.Join(store.PageDir(examID), name)
 }

@@ -343,12 +343,12 @@ func (l Layout) Validate() error {
 			return fmt.Errorf("分栏过窄:第 %d 栏最宽题内容 %.1fmm,分栏后仅 %.1fmm", col+1, contentW, colW)
 		}
 	}
-	totalH := headerH + float64(objRows)*rowPitchMM + 4
-	for _, s := range n.Subjectives {
-		totalH += subLabelH + s.HeightMM + subGapMM
-	}
-	if totalH > PageHMM-bottomReserve {
-		return fmt.Errorf("版面超出 A4 容量:需要 %.0fmm,可用 %.0fmm(可缩减主观题高度或题量)", totalH, PageHMM-bottomReserve)
+	// 主观题超容量自动分页(每页重印身份区);单题高于一整页可用空间才拦下
+	capNext := PageHMM - headerH - bottomReserve
+	for i, s := range n.Subjectives {
+		if subLabelH+s.HeightMM > capNext {
+			return fmt.Errorf("第 %d 道主观题作答区 %.0fmm 超过单页可用 %.0fmm——请缩减该题高度(其余内容会自动分页)", i+1, subLabelH+s.HeightMM, capNext)
+		}
 	}
 	return nil
 }
@@ -399,8 +399,9 @@ type geom struct {
 	subjectives                            []subGeom
 }
 
-// geometry 计算版面全部几何要素(所有标签坐标均为文本包围盒中心)。
-func (l Layout) geometry() (geom, error) {
+// geometryFor 计算某一页的版面几何(所有标签坐标均为文本包围盒中心)。
+// 第 1 页 = 卷头 + 客观题 + 本页主观题;后续页 = 身份卷头 + 本页主观题。
+func (l Layout) geometryFor(pageNo int, pageSubs []int) (geom, error) {
 	n, err := l.normalize()
 	if err != nil {
 		return geom{}, err
@@ -448,6 +449,7 @@ func (l Layout) geometry() (geom, error) {
 
 	objRows := int(math.Ceil(float64(len(n.Questions)) / float64(n.Columns)))
 	colPitch := (PageWMM - 2*marginX) / float64(n.Columns)
+	if pageNo == 1 {
 	for i := range n.Questions {
 		col, row := i/objRows, i%objRows
 		base := marginX + float64(col)*colPitch
@@ -463,8 +465,12 @@ func (l Layout) geometry() (geom, error) {
 		g.qNumLbl = append(g.qNumLbl, mmPt{base + 3.5, cy})
 		g.optLbls = append(g.optLbls, lbls)
 	}
+	}
 
-	y := headerH + float64(objRows)*rowPitchMM + 4
+	y := headerH
+	if pageNo == 1 {
+		y += float64(objRows)*rowPitchMM + 4
+	}
 	// 选做组:组标签 → 组内主观题号(1-based,按出现序);题号区印在组内第一道题上
 	type eGroup struct{ members []int }
 	eGroups := map[string]*eGroup{}
@@ -494,20 +500,10 @@ func (l Layout) geometry() (geom, error) {
 			eg.points = append(eg.points, mmPt{cx, 0})
 			// 前缀与题号标签的 y 在下面按第一道题的标签行补齐
 		}
-		first := g.members[0]
-		rowY := headerH + float64(objRows)*rowPitchMM + 4
-		for i := 0; i < first-1; i++ {
-			rowY += subLabelH + n.Subjectives[i].HeightMM + subGapMM
-		}
-		rowY += subLabelH / 2
-		for i := range eg.points {
-			eg.points[i].y = rowY
-		}
-		leftmostLbl := eg.points[0].x - circleR - 3.2
-		eg.prefix = mmPt{leftmostLbl - 7.0, rowY}
-		electiveOf[first] = eg
+		electiveOf[g.members[0]] = eg // y 在下方随所在行补齐
 	}
-	for _, s := range n.Subjectives {
+	for _, gi := range pageSubs {
+		s := n.Subjectives[gi]
 		g.subjectives = append(g.subjectives, subGeom{
 			qNum:     mmPt{marginX + 2, y + subLabelH/2},
 			boxTop:   y + subLabelH,
@@ -515,8 +511,15 @@ func (l Layout) geometry() (geom, error) {
 			score:    s.Score,
 			kind:     s.Kind,
 			parts:    s.Parts,
-			elective: electiveOf[len(g.subjectives)+1],
+			elective: electiveOf[gi+1],
 		})
+		if eg := electiveOf[gi+1]; eg != nil {
+			rowY := y + subLabelH/2
+			for i := range eg.points {
+				eg.points[i].y = rowY
+			}
+			eg.prefix = mmPt{eg.points[0].x - electiveRMM - 3.2 - 7.0, rowY}
+		}
 		y += subLabelH + s.HeightMM + subGapMM
 	}
 	return g, nil
@@ -533,7 +536,12 @@ type ElectiveRow struct {
 }
 
 // Sheet 是 Layout 的像素编译结果(300 DPI 下的权威几何),OMR 与切片器据此工作。
+// 多页版式下每个 Sheet 是一页:第 1 页含客观题,主观题按容量装箱流到后续页;
+// 每页都重印完整身份区(标题+页码+考号涂卡+条码/二维码),可独立扫描归属。
 type Sheet struct {
+	PageNo          int    // 1-based 页码
+	PageCount       int    // 总页数
+	pageSubs        []int  // 本页承载的全局主观题下标(0-based)
 	Layout          Layout // 规范化后的 v2 版式
 	Wpx, Hpx        int
 	Locators        [4]image.Point // 定位方块中心(px),顺序 TL TR BL BR
@@ -549,8 +557,17 @@ type Sheet struct {
 	Electives       []ElectiveRow     // 选做题号区(版式 v3);无选做题时为空
 }
 
-// Build 校验并把 mm 几何编译为像素几何。
+// Build 校验并把 mm 几何编译为第 1 页的像素几何(单页版式即整卷;多页请用 BuildBook)。
 func (l Layout) Build() (*Sheet, error) {
+	book, err := l.BuildBook()
+	if err != nil {
+		return nil, err
+	}
+	return book[0], nil
+}
+
+// BuildBook 把版式编译为逐页像素几何:A4 单页装不下时主观题自动流到第 2+ 页。
+func (l Layout) BuildBook() ([]*Sheet, error) {
 	n, err := l.normalize()
 	if err != nil {
 		return nil, err
@@ -558,11 +575,28 @@ func (l Layout) Build() (*Sheet, error) {
 	if err := n.Validate(); err != nil {
 		return nil, err
 	}
-	g, err := n.geometry()
+	pages := n.paginate()
+	book := make([]*Sheet, 0, len(pages))
+	for k, subs := range pages {
+		sh, err := n.buildSheet(k+1, len(pages), subs)
+		if err != nil {
+			return nil, err
+		}
+		book = append(book, sh)
+	}
+	return book, nil
+}
+
+func (l Layout) buildSheet(pageNo, pageCount int, pageSubs []int) (*Sheet, error) {
+	g, err := l.geometryFor(pageNo, pageSubs)
 	if err != nil {
 		return nil, err
 	}
+	n := l
 	s := &Sheet{
+		PageNo:        pageNo,
+		PageCount:     pageCount,
+		pageSubs:      pageSubs,
 		Layout:        n,
 		Wpx:           mmToPx(PageWMM),
 		Hpx:           mmToPx(PageHMM),
@@ -607,6 +641,37 @@ func (l Layout) Build() (*Sheet, error) {
 		}
 	}
 	return s, nil
+}
+
+// paginate 把主观题按页容量装箱,返回每页承载的全局主观题下标(0-based)。
+// 第 1 页 = 卷头 + 客观题 + 装得下的主观题;后续页 = 身份卷头 + 其余主观题。
+func (l Layout) paginate() [][]int {
+	n, err := l.normalize()
+	if err != nil {
+		return [][]int{{}} // 调用方已在 BuildBook 校验过,防御性兜底
+	}
+	objRows := int(math.Ceil(float64(len(n.Questions)) / float64(n.Columns)))
+	capNext := PageHMM - bottomReserve - headerH
+	cap := capNext - float64(objRows)*rowPitchMM - 4 // 第 1 页主观题可用高
+	pages := [][]int{{}}
+	for i := range n.Subjectives {
+		need := subLabelH + n.Subjectives[i].HeightMM
+		if pages[len(pages)-1] != nil && len(pages[len(pages)-1]) > 0 && need+subGapMM > cap {
+			pages = append(pages, []int{})
+			cap = capNext
+		}
+		pages[len(pages)-1] = append(pages[len(pages)-1], i)
+		cap -= need + subGapMM
+	}
+	return pages
+}
+
+// PageCount 返回版式分页后的总页数(校验失败返回 0 与错误)。
+func (l Layout) PageCount() (int, error) {
+	if _, err := l.BuildBook(); err != nil {
+		return 0, err
+	}
+	return len(l.paginate()), nil
 }
 
 func mmToPx(v float64) int { return int(math.Round(v * pxPerMM)) }

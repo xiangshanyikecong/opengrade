@@ -90,6 +90,19 @@ body.side-collapsed .main-area { margin-left: 54px; }
 .topbar h1 { font-size: 16px; margin: 0; }
 .content { padding: 18px 24px; max-width: 1280px; }
 
+/* —— 操作列收纳:主操作外露 + 更多▾(原生 details) —— */
+details.more { display: inline-block; position: relative; }
+details.more > summary { list-style: none; cursor: pointer; color: var(--brand); white-space: nowrap; }
+details.more > summary::-webkit-details-marker { display: none; }
+details.more[open] > summary::after { content: " ▴"; }
+details.more > summary::after { content: " ▾"; }
+details.more > .menu { position: absolute; right: 0; top: 100%; background: #fff; border: 1px solid var(--line);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(16,24,40,.14); padding: 6px 0; z-index: 30; min-width: 120px; }
+details.more > .menu a, details.more > .menu button { display: block; width: 100%; text-align: left; padding: 6px 14px;
+  border: 0; background: none; font-size: 13px; color: var(--ink); white-space: nowrap; }
+details.more > .menu a:hover, details.more > .menu button:hover { background: var(--bg); color: var(--brand); }
+details.more > .menu a.danger, details.more > .menu button.danger { color: var(--bad); }
+
 /* —— 空态(插画字符 + 文案) —— */
 .empty { text-align: center; padding: 48px 0; color: var(--text2); }
 .empty .pic { font-size: 40px; line-height: 1; margin-bottom: 10px; }
