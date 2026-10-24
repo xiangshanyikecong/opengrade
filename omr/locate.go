@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"strings"
 
 	"github.com/opengrade/opengrade/card"
 )
@@ -19,12 +20,20 @@ func (b blob) h() int      { return b.maxY - b.minY + 1 }
 func (b blob) cx() float64 { return b.sumX / float64(b.area) }
 func (b blob) cy() float64 { return b.sumY / float64(b.area) }
 
+// locatorCand 是一个象限的定位候选:pt 为原图尺度坐标,val 为到期望位置的距离(-1=兼容层推算)。
+type locatorCand struct {
+	pt  image.Point
+	val float64
+}
+
 // findLocators 在二值图中定位四个实心方形定位角标,返回其在原图尺度下的中心点。
-// 检测在降采样图上进行(连通域 BFS + 实心度/尺寸/象限三重先验),
-// 对噪声、断线与轻微形变稳健。针对真实扫描的两种常见偏移问题加固:
-//   - 扫描仪黑边/深色边框:先裁掉边缘墨迹密集条带再检测;
-//   - 纸张偏移导致定位块贴边甚至被裁掉一角:期望位置容差放宽到 40% 图宽,
-//     常规过滤无候选的象限再做「期望位置吸附近」(窗口内取最近的大块墨迹)。
+// 检测在降采样图上进行,按兼容层阶梯逐级兜底(见 locate_rescue.go),
+// 任一级集齐四角即止,标准扫描始终走第 1 级、行为与历史一致:
+//  1. 连通域三重闸门(实心度/尺寸/象限+期望距离);先裁掉扫描仪黑边再检测;
+//  2. 比例自校准后重跑闸门(打印缩放/扫描 DPI/照片留白导致标准折算失准时);
+//  3. 多尺度实心窗模板匹配(角标粘连、贴边裁切破坏连通域统计时);
+//  4. 期望位置吸附近(窗口内取最近的大块墨迹,裁剩的角);
+//  5. 相邻角标几何推算(≥2 角在场,推算被完全遮挡/裁没的角)。
 func findLocators(bin *bitmap, sheet *card.Sheet) ([4]image.Point, error) {
 	ds := bin.W / 1240
 	if ds < 1 {
@@ -34,74 +43,60 @@ func findLocators(bin *bitmap, sheet *card.Sheet) ([4]image.Point, error) {
 	ox, oy, small := trimFrame(small)
 	blobs := connectedBlobs(small)
 
-	expSide := float64(sheet.LocatorSidePx) / float64(ds)
-	type cand struct {
-		pt  image.Point
-		val float64
-	}
-	var best [4]cand
+	var best [4]locatorCand
 	var have [4]bool
-	for _, bl := range blobs {
-		w, h := bl.w(), bl.h()
-		if float64(w) < expSide*0.55 || float64(w) > expSide*2.0 ||
-			float64(h) < expSide*0.55 || float64(h) > expSide*2.0 {
-			continue
-		}
-		// 实心度与尺寸双闸门区分定位方块与涂卡圆:涂卡圆直径仅约 0.68×边长,
-		// 先被上面的两维尺寸闸门拦住;方块在 JPEG/畸变啃角下实心度可跌到 ~0.84,
-		// 阈值取 0.80(仍高于实心涂卡圆的 π/4≈0.785)。
-		fill := float64(bl.area) / float64(w*h)
-		if fill < 0.80 {
-			continue
-		}
-		aspect := float64(w) / float64(h)
-		if aspect < 0.45 || aspect > 2.2 { // 贴边裁切会让方块变扁/变窄,放宽纵横比
-			continue
-		}
-		q := quadrant(bl.cx(), bl.cy(), small.W, small.H)
-		if q < 0 {
-			continue
-		}
-		expX := float64(sheet.Locators[q].X) / float64(ds)
-		expY := float64(sheet.Locators[q].Y) / float64(ds)
-		d := math.Hypot(bl.cx()-expX, bl.cy()-expY)
-		if d > 0.40*float64(small.W) { // 纸张大幅平移(送纸偏斜/照片取景偏)容忍
-			continue
-		}
-		if !have[q] || d < best[q].val {
-			best[q] = cand{
-				pt:  image.Point{int(math.Round(bl.cx())) * ds, int(math.Round(bl.cy())) * ds},
-				val: d,
+
+	std := standardExpect(sheet, ds)
+	var cal *locatorExpect
+	var banned [][2]float64 // 审计吊销的假角标位置(降采样坐标),重找轮次全员拒收
+	runLadder := func() {
+		runGates(blobs, small, std, &have, &best, ds, sheet, banned)
+		if countMissing(&have) > 0 {
+			if cal == nil {
+				cal = calibratedExpect(blobs, small, sheet, ds)
 			}
-			have[q] = true
-		}
-	}
-	// 吸附近:常规闸门筛掉被裁切的定位块时,在其期望位置附近按"最近的大块墨迹"找回
-	for q := 0; q < 4; q++ {
-		if have[q] {
-			continue
-		}
-		expX := float64(sheet.Locators[q].X) / float64(ds)
-		expY := float64(sheet.Locators[q].Y) / float64(ds)
-		win := 0.12 * float64(small.W)
-		bestD := win
-		for _, bl := range blobs {
-			if float64(bl.area) < 0.22*expSide*expSide {
-				continue // 至少要有一小块实心墨迹(裁剩的角)
+			if cal != nil {
+				runGates(blobs, small, cal, &have, &best, ds, sheet, banned)
 			}
-			d := math.Hypot(bl.cx()-expX, bl.cy()-expY)
-			if d < bestD {
-				bestD = d
-				best[q] = cand{pt: image.Point{int(math.Round(bl.cx())) * ds, int(math.Round(bl.cy())) * ds}, val: d}
-				have[q] = true
+		}
+		if countMissing(&have) > 0 {
+			rescueTemplate(small, std, &have, &best, ds, sheet, banned)
+			if cal != nil {
+				rescueTemplate(small, cal, &have, &best, ds, sheet, banned)
+			}
+		}
+		if countMissing(&have) > 0 {
+			suckNear(blobs, small, std, &have, &best, ds, sheet, banned)
+			if cal != nil {
+				suckNear(blobs, small, cal, &have, &best, ds, sheet, banned)
 			}
 		}
 	}
+	// 码区审计循环:条码/QR 图形充满实心方块(QR finder 与定位块几乎同构),
+	// 任何阶段都可能被它顶替;留一法用其余真实角标回代,判入码区即吊销并重找。
+	for round := 0; round < 3; round++ {
+		runLadder()
+		dropped := auditRegCode(sheet, ds, &have, &best)
+		if len(dropped) == 0 {
+			break
+		}
+		banned = append(banned, dropped...)
+		cal = nil // 被吊销的假角标可能正是校准锚点,旧校准作废重算
+	}
+	if countMissing(&have) > 0 {
+		synthesizeMissing(sheet, small, ds, &have, &best)
+	}
+
+	var miss []string
 	for q := 0; q < 4; q++ {
 		if !have[q] {
-			return [4]image.Point{}, fmt.Errorf(
-				"未能在%s象限找到定位角标(需 %.0fpx 见方实心方块);定位块可能被扫描边缘裁切或遮挡——请检查扫描件边距后重试", quadName(q), expSide)
+			miss = append(miss, quadName(q))
 		}
+	}
+	if len(miss) > 0 {
+		return [4]image.Point{}, fmt.Errorf(
+			"未能在%s象限定位角标(已尝试:连通域过滤、比例自校准、多尺度模板匹配、位置吸附、相邻角标推算);定位块可能被扫描边缘裁切、遮挡或与墨迹粘连——请检查扫描件边距后重试",
+			strings.Join(miss, "/"))
 	}
 	var out [4]image.Point
 	for q := 0; q < 4; q++ {
@@ -109,6 +104,180 @@ func findLocators(bin *bitmap, sheet *card.Sheet) ([4]image.Point, error) {
 		out[q] = image.Point{best[q].pt.X + ox*ds + ds/2, best[q].pt.Y + oy*ds + ds/2}
 	}
 	return out, nil
+}
+
+func countMissing(have *[4]bool) int {
+	n := 0
+	for q := 0; q < 4; q++ {
+		if !have[q] {
+			n++
+		}
+	}
+	return n
+}
+
+// auditRegCode 用留一法审计已找到的"角标":对其余已确认角标拟合 图→版面 映射
+// (≥3 仿射/2 相似,与缩放无关),把被检点回代版面坐标,落入考号码区(外扩 3mm)
+// 即吊销 —— 条码/QR 图形充满实心方块(QR finder 与定位块几乎同构)。
+// 返回吊销位置(供黑名单),无吊销返回空。
+func auditRegCode(sheet *card.Sheet, ds int, have *[4]bool, best *[4]locatorCand) [][2]float64 {
+	if sheet.RegCode == (image.Rectangle{}) {
+		return nil
+	}
+	var dropped [][2]float64
+	for q := 0; q < 4; q++ {
+		if !have[q] {
+			continue
+		}
+		var others []int
+		for i := 0; i < 4; i++ {
+			if have[i] && i != q {
+				others = append(others, i)
+			}
+		}
+		if len(others) < 2 {
+			continue
+		}
+		fn, ok := fitAnchorMap(sheet, ds, others, best)
+		if !ok {
+			continue
+		}
+		p := [2]float64{float64(best[q].pt.X) / float64(ds), float64(best[q].pt.Y) / float64(ds)}
+		if inRegCodeSheet(sheet, fn(p)) {
+			have[q] = false
+			dropped = append(dropped, p)
+		}
+	}
+	return dropped
+}
+
+// runGates 按期望几何跑连通域多重闸门,只填当前缺失的象限(不覆盖已找到的):
+//   - 尺寸闸门 0.55~2.0×期望边长:拦住大部分涂卡圆(直径≈0.68×边长);
+//   - 实心度闸门 0.80:方块在 JPEG/畸变啃角下可跌到 ~0.84,圆仅 π/4≈0.785;
+//   - 四角墨迹检查:实心方块四角必黑,涂卡圆/成组涂点四角露白 —— 实心度
+//     擦线(噪声把圆顶过 0.80)时的第二道保险;
+//   - 纵横比 0.45~2.2:贴边裁切会让方块变扁/变窄;
+//   - 码区排除:回代版面坐标落在考号码区(条码/QR)内的一律不认;
+//   - 期望距离:标准折算用 0.40×图宽(纸张大幅平移容忍);
+//     校准几何用 0.18×图宽(残余不确定性只有旋转/透视,收紧扣死假候选)。
+func runGates(blobs []blob, small *bitmap, exp *locatorExpect, have *[4]bool, best *[4]locatorCand, ds int, sheet *card.Sheet, banned [][2]float64) {
+	distFrac := 0.40
+	if exp.calibrated {
+		distFrac = 0.18
+	}
+	var local [4]locatorCand
+	var lh [4]bool
+	for _, bl := range blobs {
+		w, h := bl.w(), bl.h()
+		if float64(w) < exp.side*0.55 || float64(w) > exp.side*2.0 ||
+			float64(h) < exp.side*0.55 || float64(h) > exp.side*2.0 {
+			continue
+		}
+		fill := float64(bl.area) / float64(w*h)
+		if fill < 0.80 {
+			continue
+		}
+		if !squareCorners(small, bl) {
+			continue
+		}
+		aspect := float64(w) / float64(h)
+		if aspect < 0.45 || aspect > 2.2 {
+			continue
+		}
+		q := quadrant(bl.cx(), bl.cy(), small.W, small.H)
+		if q < 0 {
+			continue
+		}
+		if isBanned(banned, int(bl.cx()), int(bl.cy()), exp.side) {
+			continue
+		}
+		if inRegCode(sheet, exp, [2]float64{bl.cx(), bl.cy()}) {
+			continue
+		}
+		d := math.Hypot(bl.cx()-exp.pos[q][0], bl.cy()-exp.pos[q][1])
+		if d > distFrac*float64(small.W) {
+			continue
+		}
+		if !lh[q] || d < local[q].val {
+			local[q] = locatorCand{
+				pt:  image.Point{int(math.Round(bl.cx())) * ds, int(math.Round(bl.cy())) * ds},
+				val: d,
+			}
+			lh[q] = true
+		}
+	}
+	for q := 0; q < 4; q++ {
+		if !have[q] && lh[q] {
+			best[q] = local[q]
+			have[q] = true
+		}
+	}
+}
+
+// squareCorners 检查连通域包围盒四角是否为墨(≥3/4 角黑):
+// 实心方块的必要特征;涂卡圆与成组涂点四角露白,借此区分。
+// 容忍一角缺损(畸变啃角/轻微裁切)。
+func squareCorners(b *bitmap, bl blob) bool {
+	dark := func(x, y int) bool {
+		n := 0
+		for dy := 0; dy < 2; dy++ {
+			for dx := 0; dx < 2; dx++ {
+				xx, yy := x+dx, y+dy
+				if xx < b.W && yy < b.H && b.D[yy*b.W+xx] == 1 {
+					n++
+				}
+			}
+		}
+		return n >= 2
+	}
+	c := 0
+	if dark(bl.minX, bl.minY) {
+		c++
+	}
+	if dark(bl.maxX-1, bl.minY) {
+		c++
+	}
+	if dark(bl.minX, bl.maxY-1) {
+		c++
+	}
+	if dark(bl.maxX-1, bl.maxY-1) {
+		c++
+	}
+	return c >= 3
+}
+
+// suckNear 吸附近:各闸门筛掉被裁切的定位块时,在其期望位置附近按"最近的大块墨迹"找回。
+func suckNear(blobs []blob, small *bitmap, exp *locatorExpect, have *[4]bool, best *[4]locatorCand, ds int, sheet *card.Sheet, banned [][2]float64) {
+	for q := 0; q < 4; q++ {
+		if have[q] {
+			continue
+		}
+		win := 0.12 * float64(small.W)
+		bestD := win
+		for _, bl := range blobs {
+			if float64(bl.area) < 0.22*exp.side*exp.side {
+				continue // 至少要有一小块实心墨迹(裁剩的角)
+			}
+			if !squareCorners(small, bl) {
+				continue // 裁剩的角也该有黑角;整圆涂点四角露白,不认
+			}
+			if isBanned(banned, int(bl.cx()), int(bl.cy()), exp.side) {
+				continue
+			}
+			if inRegCode(sheet, exp, [2]float64{bl.cx(), bl.cy()}) {
+				continue // 码区图形(条码/QR)不得充当定位块
+			}
+			d := math.Hypot(bl.cx()-exp.pos[q][0], bl.cy()-exp.pos[q][1])
+			if d < bestD {
+				bestD = d
+				best[q] = locatorCand{
+					pt:  image.Point{int(math.Round(bl.cx())) * ds, int(math.Round(bl.cy())) * ds},
+					val: d,
+				}
+				have[q] = true
+			}
+		}
+	}
 }
 
 // trimFrame 裁掉二值图四周的墨迹密集条带(扫描仪黑边/复印深色边框),
@@ -156,7 +325,6 @@ func trimFrame(b *bitmap) (int, int, *bitmap) {
 	}
 	return cutL, cutT, out
 }
-
 
 // connectedBlobs 对二值图做 4-连通域标记,返回全部连通域的统计量。
 func connectedBlobs(b *bitmap) []blob {
