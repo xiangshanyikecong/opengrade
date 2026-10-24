@@ -23,10 +23,15 @@
   input, select, textarea { padding:8px 10px; border:1px solid var(--line); border-radius:6px; font-size:14px; font-family:inherit; }
   button.primary { padding:10px 14px; border:0; border-radius:8px; background:var(--brand); color:#fff; font-size:14px; cursor:pointer; }
   button.secondary { padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#eef2f6; color:var(--ink); font-size:13px; cursor:pointer; }
-  .spec { display:grid; grid-template-columns:1.1fr 0.9fr 0.9fr 0.9fr auto; gap:6px; align-items:center; margin-bottom:6px; }
+  .spec { display:grid; grid-template-columns:26px 1fr 0.8fr 0.8fr auto auto auto; gap:5px; align-items:center; margin-bottom:5px; }
   .spec input, .spec select { padding:6px; }
+  .spec .qno { font-size:12px; color:var(--text2); text-align:center; }
   .spec .know { grid-column:1/-1; }
-  .del { border:0; background:none; color:#c2410c; cursor:pointer; font-size:15px; }
+  .spec .mv { border:0; background:none; color:var(--text2); cursor:pointer; font-size:12px; padding:2px 3px; }
+  .spec .mv:hover { color:var(--brand); }
+  .del { border:0; background:none; color:var(--bad); cursor:pointer; font-size:15px; }
+  .totalbar { display:flex; gap:16px; align-items:center; font-size:13px; color:var(--ink); background:var(--brand-light); border-radius:8px; padding:8px 12px; }
+  .totalbar b { color:var(--brand); font-size:16px; }
   .group-title { font-size:13px; font-weight:600; color:#374151; margin-top:4px; }
   .preview { flex:1; min-height:70vh; overflow:auto; display:grid; place-items:start center; }
   .preview svg { height:82vh; box-shadow:0 6px 24px rgba(16,24,40,.12); border-radius:4px; background:#fff; }
@@ -69,11 +74,13 @@
         <option value="qr">仅二维码</option>
       </select>
     </label>
-    <div class="group-title">客观题(按顺序编号,可混排题型)</div>
+    <div class="group-title">客观题(一题一行:可单独删除 / 上下移动 / 改分值;批量插入一次加一段)</div>
     <div id="objSpecs"></div>
-    <button class="secondary" onclick="addObj()">+ 加一段客观题</button>
+    <button class="secondary" onclick="addObj()">+ 加 1 道客观题</button>
+    <button class="secondary" onclick="batchObj()">⇩ 批量插入客观题…</button>
     <div class="group-title">主观题(留白作答区,切片后人工阅卷)</div>
     <div id="subSpecs"></div>
+    <div class="totalbar">卷面合计 <b id="totalScore">-</b><span class="hint" id="totalDetail"></span></div>
     <button class="secondary" onclick="addSub()">+ 加一道主观题</button>
     <button class="secondary" id="bankPickBtn" onclick="pickBank()">⇩ 从题库选题</button>
     <div id="bankPick" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px;max-height:300px;overflow:auto"></div>
@@ -132,54 +139,102 @@ document.querySelectorAll("nav.tabs button").forEach(b => b.onclick = () => {
   if (b.dataset.tab === "exam") refreshExams();
 });
 
-// —— 设计器 ——
-function addObj(count = 20, kind = "choice", options = 4, score = 2, knowledge = "") {
+// —— 设计器:逐题编辑(一题一行,可单独删除/上下移动;批量插入一次加一段)——
+function addObj(kind = "choice", options = 4, score = 2, knowledge = "") {
   const div = document.createElement("div");
   div.className = "spec";
   div.innerHTML = `
-    <input type="number" class="c" value="${count}" min="1" max="116" title="题数">
+    <span class="qno"></span>
     <select class="k" title="题型">
       <option value="choice">单选</option><option value="judge">判断</option><option value="multiple">多选</option>
     </select>
     <input type="number" class="o" value="${options}" min="2" max="6" title="选项数">
-    <input type="number" class="s" value="${score}" min="0.5" step="0.5" title="每题分值">
-    <button class="del" onclick="this.parentNode.remove()">×</button>
+    <input type="number" class="s" value="${score}" min="0.5" step="0.5" title="分值">
+    <button class="mv" title="上移" onclick="moveSpec(this,-1)">▲</button>
+    <button class="mv" title="下移" onclick="moveSpec(this,1)">▼</button>
+    <button class="del" title="删除本题" onclick="delSpec(this)">×</button>
     <input type="text" class="kn know" placeholder="知识点标签(可空,多个用 , 或 、 分隔,如 函数、导数)" title="用于学情掌握度分析">`;
   div.querySelector(".k").value = kind;
   if (knowledge) div.querySelector(".kn").value = knowledge;
-  div.querySelector(".o").style.visibility = kind === "judge" ? "hidden" : "visible";
-  div.querySelector(".k").onchange = e => e.target.parentNode.querySelector(".o").style.visibility = e.target.value === "judge" ? "hidden" : "visible";
+  syncObjRow(div);
   $("objSpecs").appendChild(div);
+  refreshQnos(); updateTotal();
   return div;
+}
+function syncObjRow(div) {
+  div.querySelector(".o").style.visibility = div.querySelector(".k").value === "judge" ? "hidden" : "visible";
+  div.querySelector(".k").onchange = e => syncObjRow(e.target.closest(".spec"));
+}
+function batchObj() {
+  const n = parseInt(prompt("批量插入几道客观题?(插入到列表末尾)", "20"), 10);
+  if (!n || n < 1) return;
+  const kind = (prompt("题型:choice(单选)/ judge(判断)/ multiple(多选)", "choice") || "choice").trim();
+  const options = parseInt(prompt("每题选项数(判断题忽略)", "4"), 10) || 4;
+  const score = parseFloat(prompt("每题分值", "2")) || 2;
+  for (let i = 0; i < n; i++) addObj(kind, options, score);
+}
+function moveSpec(btn, dir) {
+  const row = btn.closest(".spec"), parent = row.parentNode;
+  if (dir < 0 && row.previousElementSibling) parent.insertBefore(row, row.previousElementSibling);
+  if (dir > 0 && row.nextElementSibling) parent.insertBefore(row.nextElementSibling, row);
+  refreshQnos();
+}
+function delSpec(btn) {
+  btn.closest(".spec").remove();
+  refreshQnos(); updateTotal();
+}
+function refreshQnos() {
+  [...$("objSpecs").querySelectorAll(".spec")].forEach((row, i) => row.querySelector(".qno").textContent = i + 1);
+}
+// 卷面总分实时统计(客观分值之和 + 主观分值,拆小问取小问之和)
+function updateTotal() {
+  let n = 0, objTotal = 0, subTotal = 0;
+  [...$("objSpecs").querySelectorAll(".spec")].forEach(row => {
+    n++; objTotal += parseFloat(row.querySelector(".s").value) || 0;
+  });
+  [...$("subSpecs").querySelectorAll(".spec")].forEach(row => {
+    n++;
+    const parts = row.querySelector(".p").value.split(/[,，\s]+/).map(parseFloat).filter(x => x > 0);
+    subTotal += parts.length ? parts.reduce((a, b) => a + b, 0) : (parseFloat(row.querySelector(".s").value) || 0);
+  });
+  const total = objTotal + subTotal;
+  $("totalScore").textContent = total > 0 ? total + " 分" : "-";
+  $("totalDetail").textContent = n ? `共 ${n} 题(客观 ${objTotal} 分 + 主观 ${subTotal} 分)` : "尚未添加题目";
 }
 function addSub(kind = "fillblank", label = "", score = 5, height = 16, parts = "", elective = "", knowledge = "") {
   const div = document.createElement("div");
   div.className = "spec";
   div.innerHTML = `
+    <span class="qno"></span>
     <select class="k"><option value="fillblank">填空</option><option value="subjective">解答</option></select>
-    <input type="text" class="l" value="${label}" placeholder="题干(可空)" style="grid-column:span 2">
+    <input type="text" class="l" value="${label}" placeholder="题干(可空)">
     <input type="number" class="s" value="${score}" title="满分">
-    <button class="del" onclick="this.parentNode.remove()">×</button>
-    <input type="number" class="h" value="${height}" min="4" max="120" title="作答区高度 mm" style="grid-column:span 3">
-    <input type="text" class="p" value="${parts}" placeholder="拆小问分值,如 6,5,6(留空=整题一问)" style="grid-column:span 2">
-    <input type="text" class="e" value="${elective}" placeholder="选做组(如 A;同组题互为多选一,2~4 道)" title="选做题:卡面印题号区,判分只取学生涂选的题" style="grid-column:span 3">
+    <button class="mv" title="上移" onclick="moveSpec(this,-1)">▲</button>
+    <button class="mv" title="下移" onclick="moveSpec(this,1)">▼</button>
+    <button class="del" title="删除本题" onclick="delSpec(this)">×</button>
+    <input type="number" class="h" value="${height}" min="4" max="120" title="作答区高度 mm" style="grid-column:span 2">
+    <input type="text" class="p" value="${parts}" placeholder="拆小问分值,如 6,5,6(留空=整题一问)">
+    <input type="text" class="e" value="${elective}" placeholder="选做组(如 A;同组题互为多选一,2~4 道)" title="选做题:卡面印题号区,判分只取学生涂选的题">
     <input type="text" class="kn know" placeholder="知识点标签(可空,多个用 , 或 、 分隔)" title="用于学情掌握度分析">`;
   div.querySelector(".k").value = kind;
   if (knowledge) div.querySelector(".kn").value = knowledge;
   $("subSpecs").appendChild(div);
+  updateTotal();
   return div;
 }
-addObj(); addObj(5, "judge", 2, 2); addObj(5, "multiple", 4, 2);
+for (let i = 0; i < 20; i++) addObj("choice", 4, 2);
+for (let i = 0; i < 5; i++) addObj("judge", 2, 2);
+for (let i = 0; i < 5; i++) addObj("multiple", 4, 2);
 addSub("fillblank", "", 5, 16); addSub("subjective", "", 10, 42);
 
 function buildLayout() {
   const questions = [];
-  [...$("objSpecs").children].forEach(d => {
+  [...$("objSpecs").children].forEach((d, i) => {
     const kind = d.querySelector(".k").value;
-    const count = +d.querySelector(".c").value, options = +d.querySelector(".o").value, score = +d.querySelector(".s").value;
+    const options = +d.querySelector(".o").value, score = +d.querySelector(".s").value;
     const knowledge = d.querySelector(".kn").value.trim();
     const bankId = d.dataset.bankId || "";
-    for (let i = 0; i < count; i++) questions.push({ kind, options, score, knowledge, bankId });
+    questions.push({ kind, options, score, knowledge, bankId });
   });
   const subjectives = [...$("subSpecs").children].map(d => {
     const subj = {
@@ -226,7 +281,7 @@ function insertBank() {
       div.dataset.answer = it.answer || "";
       div.dataset.bankId = it.id; // 建考后自动回记「被本场考试使用」
     } else {
-      const div = addObj(1, it.kind, it.options || 4, it.score || 2, it.knowledge);
+      const div = addObj(it.kind, it.options || 4, it.score || 2, it.knowledge);
       div.dataset.answer = it.answer || "";
       div.dataset.bankId = it.id;
     }
