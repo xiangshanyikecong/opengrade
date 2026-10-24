@@ -20,7 +20,7 @@ import (
 // handleAppendScans 补传扫描件:POST /api/v1/exams/{id}/scans(multipart images=多张扫描件)。
 func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, ok := store.Get(r.PathValue("id"))
-	if !ok || !canOpenExam(u, ex) {
+	if !ok || !canOpenExam(u, ex, store.School) {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
@@ -114,7 +114,7 @@ func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *
 // {"reg":"00000006","absent":false,"answers":["A","B",...]}(answers 可缺省/部分)。
 func handleManualEntry(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, ok := store.Get(r.PathValue("id"))
-	if !ok || !canOpenExam(u, ex) {
+	if !ok || !canOpenExam(u, ex, store.School) {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
@@ -138,7 +138,7 @@ func handleManualEntry(w http.ResponseWriter, r *http.Request, store *Store, u *
 // handleSetAbsentFlag 缺考标记:POST /api/v1/exams/{id}/absent {"student":3,"absent":true}。
 func handleSetAbsentFlag(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, ok := store.Get(r.PathValue("id"))
-	if !ok || !canOpenExam(u, ex) {
+	if !ok || !canOpenExam(u, ex, store.School) {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}

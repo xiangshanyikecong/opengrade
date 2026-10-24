@@ -59,7 +59,7 @@ type Room struct {
 
 // Seat 是一个座位;Reg 为空表示空座(可通过对调把学生移过来)。
 type Seat struct {
-	Idx   int    `json:"idx"`             // 座位号(场内 1-based)
+	Idx   int    `json:"idx"` // 座位号(场内 1-based)
 	Reg   string `json:"reg,omitempty"`
 	Name  string `json:"name,omitempty"`
 	Class string `json:"class,omitempty"` // 主班(打印座位表用)
@@ -75,16 +75,16 @@ type AuditEntry struct {
 
 // NewExam 是 Create 的入参包。
 type NewExam struct {
-	Layout    card.Layout
-	Key       []string
-	Results   []*omr.Result
-	Slices    [][]omr.Slice
-	Pages      []*image.Gray    // 矫正后的整卷图(答卷回溯;单页版式每生一张)
-	PageGroups [][]*image.Gray  // 多页版式:每生按页序的矫正图组(第 1 页兼容旧文件名)
-	Threshold string
-	CreatedBy string
-	Subject   string
-	Roster    []roster.Student
+	Layout     card.Layout
+	Key        []string
+	Results    []*omr.Result
+	Slices     [][]omr.Slice
+	Pages      []*image.Gray   // 矫正后的整卷图(答卷回溯;单页版式每生一张)
+	PageGroups [][]*image.Gray // 多页版式:每生按页序的矫正图组(第 1 页兼容旧文件名)
+	Threshold  string
+	CreatedBy  string
+	Subject    string
+	Roster     []roster.Student
 }
 
 // AssignedReg 返回某学生的最终考号:人工指派优先,否则用 OMR 判读值。
@@ -95,16 +95,19 @@ func (ex *Exam) AssignedReg(student int) string {
 		}
 	}
 	if student >= 1 && student <= len(ex.Results) {
-		return ex.Results[student-1].RegNumber
+		if res := ex.Results[student-1]; res != nil {
+			return res.RegNumber
+		}
 	}
 	return ""
 }
 
 // Store 是考试会话的文件存储(目录 + JSON,零外部依赖;SQLite 迁移在路线图 M1 末)。
 type Store struct {
-	mu    sync.Mutex
-	dir   string
-	exams map[string]*Exam
+	mu     sync.Mutex
+	dir    string
+	exams  map[string]*Exam
+	School *School // 组织架构(年级↔班级),newServer 装配;nil=未配置(权限判定按全看兜底)
 }
 
 func NewStore(dir string) (*Store, error) {

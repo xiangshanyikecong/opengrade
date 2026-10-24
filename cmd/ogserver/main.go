@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	_ "image/jpeg"
 	"image/png"
@@ -36,6 +37,7 @@ type Server struct {
 	Auth    *auth.Store
 	Exams   *Store
 	Bank    *BankStore
+	School  *School
 }
 
 // newServer 组装账号库、考试存储与全部路由(不含网络监听,便于 httptest 复测)。
@@ -59,6 +61,11 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("初始化数据目录失败: %w", err)
 	}
+	school, err := LoadSchool(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("初始化组织架构失败: %w", err)
+	}
+	store.School = school
 	bank, err := LoadBank(dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("初始化题库失败: %w", err)
@@ -162,6 +169,20 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	mux.HandleFunc("GET /api/v1/student/exams/{id}/practice.svg", studentOnly(withStore(handleStudentPracticeSVG)))
 	mux.HandleFunc("GET /api/v1/student/exams/{id}/report.pdf", studentOnly(withStore(handleStudentReportPDF)))
 
+	// —— 组织架构与名册源(常规流程"组织树×角色×数据范围"的树那一层) ——
+	mux.HandleFunc("GET /api/v1/school", staff(func(w http.ResponseWriter, r *http.Request, u *auth.User) {
+		handleSchoolGet(w, school, u)
+	}))
+	mux.HandleFunc("PUT /api/v1/school", adminOnly(func(w http.ResponseWriter, r *http.Request, u *auth.User) {
+		handleSchoolSet(w, r, school, u)
+	}))
+	mux.HandleFunc("GET /api/v1/students", staff(func(w http.ResponseWriter, r *http.Request, u *auth.User) {
+		handleStudentsList(w, school, authStore, u)
+	}))
+	mux.HandleFunc("GET /api/v1/my/tasks", staff(func(w http.ResponseWriter, r *http.Request, u *auth.User) {
+		handleMyTasks(w, r, store, school, u)
+	}))
+
 	if _, err := fs.Stat(os.DirFS("web"), "index.html"); err == nil {
 		mux.Handle("GET /", http.FileServerFS(os.DirFS("web")))
 	} else {
@@ -170,7 +191,7 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 		})
 	}
 
-	return &Server{Handler: mux, Auth: authStore, Exams: store, Bank: bank}, nil
+	return &Server{Handler: mux, Auth: authStore, Exams: store, Bank: bank, School: school}, nil
 }
 
 func main() {
@@ -352,27 +373,20 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		return
 	}
 
+	// 常规流程:建考=建档(版式+名册),参考答案与扫描件都可后补 ——
+	// 未带答案时以空串占位(该题不判分),答案在考试详情用「修正参考答案」补齐后自动重统。
 	var key []string
-	if err := json.Unmarshal([]byte(r.FormValue("key")), &key); err != nil {
-		httpError(w, http.StatusBadRequest, fmt.Errorf("key 字段不是合法的答案数组: %w", err))
-		return
-	}
-	if len(key) != len(sheet.Choice) {
-		httpError(w, http.StatusBadRequest, fmt.Errorf("参考答案 %d 道,与版式客观题 %d 道不一致", len(key), len(sheet.Choice)))
-		return
-	}
-	if r.MultipartForm == nil || len(r.MultipartForm.File["images"]) == 0 {
-		httpError(w, http.StatusBadRequest, fmt.Errorf("缺少 images 字段(至少一张整卷扫描件)"))
-		return
-	}
-	var st []roster.Student
-	if rb := r.FormValue("roster"); rb != "" {
-		parsed, err := roster.Load([]byte(rb))
-		if err != nil {
-			httpError(w, http.StatusBadRequest, err)
+	if kv := strings.TrimSpace(r.FormValue("key")); kv != "" {
+		if err := json.Unmarshal([]byte(kv), &key); err != nil {
+			httpError(w, http.StatusBadRequest, fmt.Errorf("key 字段不是合法的答案数组: %w", err))
 			return
 		}
-		st = parsed
+		if len(key) != len(sheet.Choice) {
+			httpError(w, http.StatusBadRequest, fmt.Errorf("参考答案 %d 道,与版式客观题 %d 道不一致", len(key), len(sheet.Choice)))
+			return
+		}
+	} else {
+		key = make([]string, len(sheet.Choice))
 	}
 
 	// 多页版式:主观题自动分页,每生 P 页连续上传,逐页判读后合并
@@ -383,21 +397,23 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 	}
 	pageCount := len(book)
 	var imgs []image.Image
-	for i, fh := range r.MultipartForm.File["images"] {
-		f, err := fh.Open()
-		if err != nil {
-			httpError(w, http.StatusBadRequest, err)
-			return
+	if r.MultipartForm != nil {
+		for i, fh := range r.MultipartForm.File["images"] {
+			f, err := fh.Open()
+			if err != nil {
+				httpError(w, http.StatusBadRequest, err)
+				return
+			}
+			img, _, err := image.Decode(f)
+			f.Close()
+			if err != nil {
+				httpError(w, http.StatusBadRequest, fmt.Errorf("第 %d 张图像解码失败: %w", i+1, err))
+				return
+			}
+			imgs = append(imgs, img)
 		}
-		img, _, err := image.Decode(f)
-		f.Close()
-		if err != nil {
-			httpError(w, http.StatusBadRequest, fmt.Errorf("第 %d 张图像解码失败: %w", i+1, err))
-			return
-		}
-		imgs = append(imgs, img)
 	}
-	if pageCount > 1 && len(imgs)%pageCount != 0 {
+	if pageCount > 1 && len(imgs) > 0 && len(imgs)%pageCount != 0 {
 		httpError(w, http.StatusUnprocessableEntity,
 			fmt.Errorf("版式共 %d 页:每名学生的整卷需连续上传 %d 页(当前 %d 张,须为 %d 的整数倍;扫描时按份出纸即可)", pageCount, pageCount, len(imgs), pageCount))
 		return
@@ -427,6 +443,16 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		pageGroups = append(pageGroups, rects)
 	}
 
+	var st []roster.Student
+	if rb := r.FormValue("roster"); rb != "" {
+		parsed, err := roster.Load([]byte(rb))
+		if err != nil {
+			httpError(w, http.StatusBadRequest, err)
+			return
+		}
+		st = parsed
+	}
+
 	markDuplicateRegs(nil, results) // 批内重答检测(同考号二次上传 → 告警进异常清单)
 	ex, err := store.Create(NewExam{
 		Layout: sheet.Layout, Key: key, Results: results, Slices: slicesByStudent,
@@ -449,6 +475,7 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 			}
 		}
 	}
+	stage := examStage(ex)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id":              ex.ID,
 		"students":        len(results),
@@ -457,6 +484,8 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		"pages":           pageCount,
 		"threshold":       opt.Threshold,
 		"roster":          len(st),
+		"stage":           stage.Stage,
+		"stageLabel":      stage.Label,
 	})
 }
 
@@ -495,17 +524,26 @@ func handleListExams(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		Subjective int    `json:"subjective"`
 		Published  bool   `json:"published"`
 		Mine       bool   `json:"mine"` // 是否为当前账号创建的
+		Stage      string `json:"stage"`
+		StageLabel string `json:"stageLabel"`
+		Expected   int    `json:"expected"`
+		Warnings   int    `json:"warnings"`
+		Ungraded   int    `json:"ungraded"`
+		Total      int    `json:"total"`
 	}
 	out := []summary{} // 空列表也返回 [],避免 null 使前端 .map/.forOf 崩溃
 	for _, ex := range store.List() {
-		if !canOpenExam(u, ex) {
+		if !canOpenExam(u, ex, store.School) {
 			continue // 学科教师只看任教班级+学科的考试
 		}
+		stage := examStage(ex)
 		out = append(out, summary{
 			ID: ex.ID, CreatedAt: ex.CreatedAt.Format("2006-01-02 15:04"), CreatedBy: ex.CreatedBy,
 			Subject: ex.Subject, Students: len(ex.Results),
 			Objective: len(ex.Layout.Questions), Subjective: len(ex.Layout.Subjectives),
 			Published: ex.Published, Mine: ex.CreatedBy == u.Username,
+			Stage: stage.Stage, StageLabel: stage.Label,
+			Expected: stage.Expected, Warnings: stage.Warnings, Ungraded: stage.Ungraded, Total: stage.Total,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -533,13 +571,25 @@ type examDetail struct {
 	Absent     []absentInfo          `json:"absent"`     // 缺考名单(卷号+考号)
 	Manual     int                   `json:"manual"`     // 手工补录卷数
 	Warnings   []sheetWarning        `json:"warnings"`   // 异常卷告警汇总(重答/空白卡/漏涂等)
+	Stage      stageView             `json:"stage"`      // 阶段状态机(待扫描/扫描中/异常/阅卷中/待发布/已发布)
+	Flagged    []flaggedView         `json:"flagged"`    // ⚑ 待复核队列(组长复核出口)
+	ScannedReg map[string]bool       `json:"scannedReg"` // 已扫到卷的考号集合(缺扫名单前端推导)
+	Roster     []rosterRow           `json:"roster"`     // 名册(缺扫名单/班级口径展示)
+}
+
+// rosterRow 是详情里的名册行(缺扫名单推导用,只带展示必需字段)。
+type rosterRow struct {
+	Reg     string   `json:"reg"`
+	Name    string   `json:"name,omitempty"`
+	Classes []string `json:"classes,omitempty"`
 }
 
 // sheetWarning 是一张卷的告警汇总(考试详情异常清单)。
 type sheetWarning struct {
-	Student int      `json:"student"` // 卷号(1-based)
-	Reg     string   `json:"reg,omitempty"`
-	Texts   []string `json:"texts"`
+	Student  int      `json:"student"` // 卷号(1-based)
+	Reg      string   `json:"reg,omitempty"`
+	Texts    []string `json:"texts"`
+	Resolved bool     `json:"resolved"` // 已人工裁决(考号指派/缺考),前端置灰归档
 }
 
 type absentInfo struct {
@@ -610,8 +660,20 @@ func handleExamDetail(w http.ResponseWriter, r *http.Request, store *Store, u *a
 			d.Absent = append(d.Absent, absentInfo{Student: si + 1, Reg: ex.AssignedReg(si + 1)})
 		}
 		if len(res.Warnings) > 0 {
-			d.Warnings = append(d.Warnings, sheetWarning{Student: si + 1, Reg: ex.AssignedReg(si + 1), Texts: res.Warnings})
+			d.Warnings = append(d.Warnings, sheetWarning{Student: si + 1, Reg: ex.AssignedReg(si + 1), Texts: res.Warnings, Resolved: sheetResolved(ex, si+1)})
 		}
+	}
+	d.Stage = examStage(ex)
+	d.Flagged = flaggedQueue(ex)
+	d.ScannedReg = map[string]bool{}
+	for i := range ex.Results {
+		if reg := ex.AssignedReg(i + 1); reg != "" {
+			d.ScannedReg[reg] = true
+		}
+	}
+	d.Roster = []rosterRow{} // 空态给 [],前端可安全 map
+	for _, st := range ex.Roster {
+		d.Roster = append(d.Roster, rosterRow{Reg: st.Reg, Name: st.Name, Classes: st.AllClasses()})
 	}
 	writeJSON(w, http.StatusOK, d)
 }
@@ -727,7 +789,7 @@ func handleSlices(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 func handleSliceImage(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	id := r.PathValue("id")
 	ex, ok := store.Get(id)
-	if !ok || !canOpenExam(u, ex) {
+	if !ok || !canOpenExam(u, ex, store.School) {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
@@ -766,7 +828,7 @@ func handleSetGrade(w http.ResponseWriter, r *http.Request, store *Store, u *aut
 		graded = *req.Graded
 	}
 	// 阅卷走可见性门禁(全量,不按班级过滤)
-	if ex, ok := store.Get(req.ExamID); !ok || !canOpenExam(u, ex) {
+	if ex, ok := store.Get(req.ExamID); !ok || !canOpenExam(u, ex, store.School) {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}

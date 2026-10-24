@@ -56,10 +56,19 @@ func overlaps(a, b []string) bool {
 	return false
 }
 
-// teacherSees 判定教师能否看到该考试(列表/打开)。
+// teacherSees 判定教师能否看到该考试(列表/打开)。常规产品的三口径:
+//   - 学科组长(SubjectLead 命中考试学科):本学科跨班全看,支撑同科多师协作;
+//   - 班主任(HeadClasses 与考试班级有交集):本班全学科可见,不受任教学科限制;
+//   - 任课教师:学科匹配 ∧ 班级匹配(原有规则)。
 func teacherSees(u *auth.User, ex *Exam) bool {
 	if ex.CreatedBy == u.Username {
 		return true
+	}
+	if ex.Subject != "" && containsStr(u.SubjectLead, ex.Subject) {
+		return true // 学科组长:本学科跨班
+	}
+	if overlaps(u.HeadClasses, examClasses(ex)) {
+		return true // 班主任:本班全科
 	}
 	myClasses := u.AllClasses()
 	if len(u.Subjects) == 0 && len(myClasses) == 0 {
@@ -71,11 +80,30 @@ func teacherSees(u *auth.User, ex *Exam) bool {
 	return subjectOK && classOK
 }
 
-// canOpenExam 统一入口:管理员/年级组长全看;教师按上述规则;其余角色不可。
-func canOpenExam(u *auth.User, ex *Exam) bool {
+// canOpenExam 统一入口:管理员全看;年级组长按组织架构年级收敛
+// (未配置管辖年级、或学校未维护年级归属时保持全看,兼容小校);
+// 教师按 teacherSees;其余角色不可。
+func canOpenExam(u *auth.User, ex *Exam, sch *School) bool {
 	switch u.Role {
-	case auth.RoleAdmin, auth.RoleLeader:
+	case auth.RoleAdmin:
 		return true
+	case auth.RoleLeader:
+		if ex.CreatedBy == u.Username || len(u.Grades) == 0 {
+			return true
+		}
+		if sch == nil || len(sch.Snapshot()) == 0 {
+			return true // 组织架构未配置:组长保持全看(老行为)
+		}
+		classes := examClasses(ex)
+		if len(classes) == 0 {
+			return true // 校级卷(无名册班级)不设防
+		}
+		for _, g := range sch.GradesOfClasses(classes) {
+			if containsStr(u.Grades, g) {
+				return true
+			}
+		}
+		return false
 	case auth.RoleTeacher:
 		return teacherSees(u, ex)
 	default:
@@ -83,12 +111,17 @@ func canOpenExam(u *auth.User, ex *Exam) bool {
 	}
 }
 
-// scopeExamForTeacher 返回按任教班级过滤后的考试视图(学生属于任一任教班级即可见)。
+// scopeExamForTeacher 返回按任教班级过滤后的考试视图
+// (学生属于任一任教班级或班主任班级即可见)。
 func scopeExamForTeacher(ex *Exam, u *auth.User) *Exam {
-	if u == nil || u.Role != auth.RoleTeacher || len(u.AllClasses()) == 0 {
+	if u == nil || u.Role != auth.RoleTeacher {
 		return ex
 	}
-	return scopeExamToClasses(ex, u.AllClasses())
+	classes := append(append([]string(nil), u.AllClasses()...), u.HeadClasses...)
+	if len(classes) == 0 {
+		return ex
+	}
+	return scopeExamToClasses(ex, classes)
 }
 
 // scopeExamToClasses 返回按班级集合过滤后的考试视图:
@@ -132,25 +165,31 @@ func scopeExamToClasses(ex *Exam, classes []string) *Exam {
 
 // openExamFor 取考试并做可见性与数据范围裁剪:
 //   - 不可见(不存在)→ (nil,false),对外一律 404,不泄露考试存在性;
+//   - 年级组长按组织架构收敛到管辖年级的班级(未配置年级=全量);
 //   - grading=true 时教师获得全量视图(跨班阅卷职责),否则按任教班级过滤;
 //   - 按班分配模式(TaskMode=class)下,被分到某班(含教学班)的教师,
 //     阅卷流只看到所分班级学生的卷(多班教师不再按全部任教班放行);
-//   - 管理员/年级组长恒为全量。
+//   - 管理员恒为全量。
 func (s *Store) openExamFor(r *http.Request, u *auth.User, grading bool) (*Exam, bool) {
 	ex, ok := s.Get(r.PathValue("id"))
-	if !ok || !canOpenExam(u, ex) {
+	if !ok || !canOpenExam(u, ex, s.School) {
 		return nil, false
 	}
-	if u.Role != auth.RoleTeacher {
-		return ex, true
-	}
-	if grading {
-		if c := assignedClassFor(ex, u); c != "" {
-			return scopeExamToClasses(ex, []string{c}), true
+	if u.Role == auth.RoleTeacher {
+		if grading {
+			if c := assignedClassFor(ex, u); c != "" {
+				return scopeExamToClasses(ex, []string{c}), true
+			}
+			return ex, true
 		}
-		return ex, true
+		return scopeExamForTeacher(ex, u), true
 	}
-	return scopeExamForTeacher(ex, u), true
+	if u.Role == auth.RoleLeader && !grading {
+		if classes := s.School.ClassesOfGrades(u.Grades); len(classes) > 0 {
+			return scopeExamToClasses(ex, classes), true
+		}
+	}
+	return ex, true
 }
 
 // classAssigned 判定教师是否处于"按班分配"任务模式且被分到了班级

@@ -33,7 +33,13 @@
 </header>
 <main>
   <div class="panel">
-    <b>新建账号</b>
+    <b>组织架构(年级 → 班级)</b>
+    <p class="hint" style="margin:8px 0">常规权限分组的地基:年级组长按年级收敛可见考试;建考/名册按班级分组呈现。班级来源是学生账号,这里只做归属归档 —— 一个班只属于一个年级。</p>
+    <div id="schoolBox"><span class="hint">加载中…</span></div>
+    <div class="err" id="schoolMsg" style="margin-top:6px"></div>
+  </div>
+  <div class="panel">
+    <b id="userFormTitle">新建账号</b>
     <div class="grid" style="margin-top:10px">
       <input id="nu_username" placeholder="用户名(如 t03 / s20250011)">
       <input id="nu_display" placeholder="姓名/显示名">
@@ -48,12 +54,14 @@
       <input id="nu_reg" placeholder="考号(学生必填)">
       <input id="nu_class" placeholder="班级(如 三年二班,走班多班用 | 分隔)">
       <input id="nu_subjects" placeholder="任教学科(教师,逗号分隔)">
-      <input id="nu_grades" placeholder="管辖年级(组长,逗号分隔)">
+      <input id="nu_head" placeholder="班主任班级(本班全学科可见,| 分隔)">
+      <input id="nu_lead" placeholder="学科组长学科(本学科跨班可见,逗号分隔)">
+      <input id="nu_grades" placeholder="管辖年级(组长,逗号分隔;配合组织架构)">
       <input id="nu_children" placeholder="子女考号(家长,逗号分隔)">
-      <button class="primary" onclick="createUser()">创建账号</button>
+      <button class="primary" id="userFormBtn" onclick="submitUser()">创建账号</button>
     </div>
     <div class="err" id="msg"></div>
-    <p class="hint">学生账号绑定考号后,可在「学生端」免费查分、看错题本与答卷回溯;家长账号绑定子女考号后,只能查看已发布成绩的子女数据。教师班级字段用于报告参照。</p>
+    <p class="hint">学生账号绑定考号后,可在「学生端」免费查分、看错题本与答卷回溯;家长账号绑定子女考号后,只能查看已发布成绩的子女数据。班主任/学科组长字段决定教师跨学科、跨班级的可见范围(常规"班主任看本班全科、组长看本学科")。</p>
   </div>
   <div class="panel">
     <b>批量导入(CSV)</b>
@@ -81,21 +89,70 @@ async function main() {
   if (!await OG.init()) return;
   if (!OG.is("admin")) { document.body.innerHTML = "<p style='padding:40px'>仅管理员可访问本页。<a href='/teacher.html'>返回</a></p>"; return; }
   refresh();
+  loadSchool();
 }
 async function refresh() {
   const users = await OG.jget("/api/v1/users");
-  let html = `<table><tr><th>用户名</th><th>姓名</th><th>角色</th><th>考号/子女</th><th>班级</th><th>任教学科</th><th>管辖年级</th><th>操作</th></tr>`;
+  let html = `<table><tr><th>用户名</th><th>姓名</th><th>角色</th><th>考号/子女</th><th>班级</th><th>任教学科</th><th>班主任/组长</th><th>管辖年级</th><th>操作</th></tr>`;
   for (const u of users) {
     const regCol = u.role === "parent" ? ((u.children || []).join(",") || "-") : (u.reg || "-");
+    const headLead = [(u.headClasses || []).length ? "班主任:" + (u.headClasses || []).join(",") : "",
+                      (u.subjectLead || []).length ? "组长:" + (u.subjectLead || []).join(",") : ""].filter(Boolean).join("<br>") || "-";
     html += `<tr><td>${u.username}</td><td>${u.displayName}</td><td>${OG.roleName(u.role)}</td>
-      <td>${regCol}</td><td>${u.class || "-"}</td><td>${(u.subjects || []).join(",") || "-"}</td><td>${(u.grades || []).join(",") || "-"}</td>
+      <td>${regCol}</td><td>${u.class || "-"}</td><td>${(u.subjects || []).join(",") || "-"}</td><td>${headLead}</td><td>${(u.grades || []).join(",") || "-"}</td>
       <td style="display:flex;gap:8px">
+        <a href="#" onclick="editUser('${u.username}');return false">编辑</a>
         <a href="#" onclick="resetPwd('${u.username}');return false">重置密码</a>
         <a href="#" class="danger" onclick="delUser('${u.username}');return false">删除</a>
       </td></tr>`;
   }
   document.getElementById("userList").innerHTML = html + "</table>";
 }
+
+/* —— 组织架构:年级→班级归属(admin 维护,组长权限/名册分组的地基) —— */
+let schoolGrades = []; // [{name, classes[]}]
+let knownClasses = [];
+async function loadSchool() {
+  try {
+    const [sch, students] = await Promise.all([OG.jget("/api/v1/school"), OG.jget("/api/v1/students").catch(() => [])]);
+    schoolGrades = (sch.grades || []).map(g => ({ name: g.name, classes: [...(g.classes || [])] }));
+    const cs = new Set(schoolGrades.flatMap(g => g.classes));
+    for (const s of students) for (const c of (s.classes || [])) cs.add(c);
+    knownClasses = [...cs].sort();
+  } catch (e) { document.getElementById("schoolBox").innerHTML = `<span class="err">${e.message}</span>`; return; }
+  renderSchool();
+}
+function renderSchool() {
+  const box = document.getElementById("schoolBox");
+  if (!schoolGrades.length) {
+    box.innerHTML = `<span class="hint">尚未配置年级。已知班级(来自学生账号):${knownClasses.map(c => `<code>${c}</code>`).join(" ") || "无"}</span><br>
+      <button class="primary" style="margin-top:8px" onclick="addGradeRow()">+ 添加年级</button>`;
+    return;
+  }
+  box.innerHTML = schoolGrades.map((g, i) => `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <input value="${g.name}" placeholder="年级名(如 三年级)" style="width:130px" onchange="schoolGrades[${i}].name=this.value">
+      <input value="${g.classes.join(", ")}" placeholder="该年级班级(逗号分隔)" style="flex:1;min-width:260px" onchange="schoolGrades[${i}].classes=this.value.split(/[,，、]/).map(x=>x.trim()).filter(Boolean)">
+      <a href="#" class="danger" onclick="schoolGrades.splice(${i},1);renderSchool();return false">移除</a>
+    </div>`).join("") +
+    `<div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">
+      <button class="primary" onclick="saveSchool()">保存组织架构</button>
+      <a href="#" onclick="addGradeRow();return false">+ 添加年级</a>
+      <span class="hint">未归属班级(不进任何年级):${knownClasses.filter(c => !schoolGrades.some(g => g.classes.includes(c))).map(c => `<code>${c}</code>`).join(" ") || "无"}</span>
+    </div>`;
+}
+function addGradeRow() { schoolGrades.push({ name: "", classes: [] }); renderSchool(); }
+async function saveSchool() {
+  const msg = document.getElementById("schoolMsg");
+  try {
+    await OG.jpost("/api/v1/school", { grades: schoolGrades }, "PUT");
+    msg.textContent = ""; await loadSchool();
+  } catch (e) { msg.textContent = e.message; }
+}
+
+/* —— 账号新建/编辑共用一张表单:编辑时预填并走更新接口 —— */
+let editingUser = null;
+function submitUser() { editingUser ? updateUser() : createUser(); }
 async function createUser() {
   const g = id => document.getElementById(id).value.trim();
   const body = {
@@ -103,6 +160,8 @@ async function createUser() {
     role: g("nu_role"), reg: g("nu_reg"), class: g("nu_class"),
     classes: g("nu_class") ? g("nu_class").split("|").map(x => x.trim()).filter(Boolean) : [],
     subjects: g("nu_subjects") ? g("nu_subjects").split(",").map(s => s.trim()).filter(Boolean) : [],
+    headClasses: g("nu_head") ? g("nu_head").split("|").map(s => s.trim()).filter(Boolean) : [],
+    subjectLead: g("nu_lead") ? g("nu_lead").split(",").map(s => s.trim()).filter(Boolean) : [],
     grades: g("nu_grades") ? g("nu_grades").split(",").map(s => s.trim()).filter(Boolean) : [],
     children: g("nu_children") ? g("nu_children").split(",").map(s => s.trim()).filter(Boolean) : [],
   };
@@ -111,6 +170,48 @@ async function createUser() {
     document.getElementById("msg").textContent = "";
     refresh();
   } catch (e) { document.getElementById("msg").textContent = e.message; }
+}
+async function updateUser() {
+  const g = id => document.getElementById(id).value.trim();
+  const body = {
+    displayName: g("nu_display"), role: g("nu_role"), reg: g("nu_reg"), class: g("nu_class"),
+    classes: g("nu_class") ? g("nu_class").split("|").map(x => x.trim()).filter(Boolean) : [],
+    subjects: g("nu_subjects") ? g("nu_subjects").split(",").map(s => s.trim()).filter(Boolean) : [],
+    headClasses: g("nu_head") ? g("nu_head").split("|").map(s => s.trim()).filter(Boolean) : [],
+    subjectLead: g("nu_lead") ? g("nu_lead").split(",").map(s => s.trim()).filter(Boolean) : [],
+    grades: g("nu_grades") ? g("nu_grades").split(",").map(s => s.trim()).filter(Boolean) : [],
+    children: g("nu_children") ? g("nu_children").split(",").map(s => s.trim()).filter(Boolean) : [],
+  };
+  try {
+    await OG.jpost(`/api/v1/users/${editingUser}`, body);
+    document.getElementById("msg").textContent = "";
+    cancelEdit(); refresh();
+  } catch (e) { document.getElementById("msg").textContent = e.message; }
+}
+async function editUser(username) {
+  const users = await OG.jget("/api/v1/users");
+  const u = users.find(x => x.username === username);
+  if (!u) return;
+  editingUser = username;
+  const set = (id, v) => { document.getElementById(id).value = v; };
+  set("nu_username", u.username); set("nu_display", u.displayName || "");
+  set("nu_role", u.role); set("nu_reg", u.reg || "");
+  set("nu_class", (u.classes || []).join("|"));
+  set("nu_subjects", (u.subjects || []).join(","));
+  set("nu_head", (u.headClasses || []).join("|"));
+  set("nu_lead", (u.subjectLead || []).join(","));
+  set("nu_grades", (u.grades || []).join(","));
+  set("nu_children", (u.children || []).join(","));
+  document.getElementById("nu_username").disabled = true;
+  document.getElementById("userFormTitle").textContent = `编辑账号 ${username}`;
+  document.getElementById("userFormBtn").textContent = "保存修改";
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+function cancelEdit() {
+  editingUser = null;
+  document.getElementById("nu_username").disabled = false;
+  document.getElementById("userFormTitle").textContent = "新建账号";
+  document.getElementById("userFormBtn").textContent = "创建账号";
 }
 async function resetPwd(username) {
   const np = prompt(`为 ${username} 设置新密码(至少 5 位):`);

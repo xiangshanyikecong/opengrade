@@ -45,7 +45,7 @@ func knowledgeTags(ex *Exam) map[int]string {
 // {"tags":{"1":"函数","2":"函数、导数",...}};仅管理员/组长/建卷教师。
 func handleKnowledgeSet(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, ok := store.Get(r.PathValue("id"))
-	if !ok || !canOpenExam(u, ex) {
+	if !ok || !canOpenExam(u, ex, store.School) {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}

@@ -45,6 +45,9 @@ a.danger { color: var(--bad); }
 .pill { display: inline-block; padding: 1px 10px; border-radius: 10px; font-size: 12px; }
 .pill.on { background: var(--brand-light); color: var(--brand); }
 .pill.off { background: #fdeeee; color: var(--bad); }
+.pill.run { background: #eef2fd; color: #3b62d9; }   /* 进行中:扫描中/阅卷中 */
+.pill.warn { background: #fff3cd; color: #a16207; }  /* 异常待处理 */
+.pill.pub { background: #f0fdf4; color: #15803d; }   /* 已发布(终态) */
 .tag { display: inline-block; padding: 0 8px; border-radius: 4px; font-size: 12px; line-height: 20px; border: 1px solid; }
 .tag.brand { color: var(--brand); border-color: var(--brand); background: var(--brand-light); }
 .tag.warn { color: var(--warn); border-color: var(--warn); background: #fff8ef; }

@@ -27,7 +27,7 @@ func handleSetKey(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 		return
 	}
 	ex, ok := store.Get(r.PathValue("id"))
-	if !ok || !canOpenExam(u, ex) {
+	if !ok || !canOpenExam(u, ex, store.School) {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
@@ -54,7 +54,7 @@ func handlePublish(w http.ResponseWriter, r *http.Request, store *Store, u *auth
 		return
 	}
 	ex, ok := store.Get(r.PathValue("id"))
-	if !ok || !canOpenExam(u, ex) {
+	if !ok || !canOpenExam(u, ex, store.School) {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
@@ -72,7 +72,7 @@ func handlePublish(w http.ResponseWriter, r *http.Request, store *Store, u *auth
 // handleAudit 操作审计日志:GET /api/v1/exams/{id}/audit(管理员/年级组长)。
 func handleAudit(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, ok := store.Get(r.PathValue("id"))
-	if !ok || !canOpenExam(u, ex) {
+	if !ok || !canOpenExam(u, ex, store.School) {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}

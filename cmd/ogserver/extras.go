@@ -30,7 +30,7 @@ func handleAssign(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
-	if ex, ok := store.Get(req.ExamID); !ok || !canOpenExam(u, ex) {
+	if ex, ok := store.Get(req.ExamID); !ok || !canOpenExam(u, ex, store.School) {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}

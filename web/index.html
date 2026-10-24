@@ -318,6 +318,18 @@ function bankKey() {
   $("examKey").value = JSON.stringify(key);
   $("examMsg").className = "ok";
   $("examMsg").textContent = `已按题库带出 ${key.length} 道客观题答案(?处请手工补齐)。`;
+  stashLastKey();
+}
+// 答案随版式同步到教师工作台(og.lastKey):工作台「载入最近版式」时一并带出,建考零手填
+function stashLastKey() {
+  const raw = $("examKey").value.trim();
+  if (!raw) return;
+  try {
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr) && arr.every(v => typeof v === "string")) {
+      localStorage.setItem("og.lastKey", JSON.stringify(arr.map(v => v.toUpperCase())));
+    }
+  } catch (_) { /* 手填中的半成品不阻断 */ }
 }
 
 let currentSVG = null;

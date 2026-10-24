@@ -114,7 +114,7 @@
     <div class="row hint">
       <kbd>0</kbd>~<kbd>9</kbd> 打分 · <kbd>Space</kbd> 满分 · <kbd>Z</kbd> 零分 · <kbd>R</kbd> 同上分<br>
       <kbd>V</kbd> 对 · <kbd>B</kbd> 错 · <kbd>X</kbd> 待复核 · <kbd>P</kbd> 画笔<br>
-      <kbd>F</kbd> 跳到下一份未评 · <kbd>←</kbd> 上一卷(打分即保存,自动跳下一份未评卷)
+      <kbd>F</kbd> 下一份未评 · <kbd>G</kbd> 下一份待复核 · <kbd>←</kbd> 上一卷(打分即保存,自动跳下一份未评卷)
     </div>
     <div class="row" id="report" hidden></div>
   </aside>
@@ -160,8 +160,14 @@ async function init() {
     return `<option value="${i + 1}">第 ${meta.objective.length + i + 1} 题(${s.kind === "fillblank" ? "填空" : "解答"},满分 ${s.score}${parts}${elec}${t ? ",阅卷人 " + t : ""})</option>`;
   }).join("");
   sel.onchange = () => loadQuestion(+sel.value);
-  if (meta.subjective.length) loadQuestion(1);
-  else document.body.innerHTML = "<p style='padding:40px'>该考试没有主观题</p>";
+  // 深链:?q=N 直接落位到第 N 题(我的任务/逐题进度入口),?student=S 落位到该卷(待复核队列入口)
+  const params = new URLSearchParams(location.search);
+  const qDeep = +params.get("q") || 0;
+  const studentDeep = +params.get("student") || 0;
+  if (meta.subjective.length) {
+    loadQuestion(qDeep >= 1 && qDeep <= meta.subjective.length ? qDeep : 1);
+    if (studentDeep) focusStudent(studentDeep);
+  } else document.body.innerHTML = "<p style='padding:40px'>该考试没有主观题</p>";
   $("reportLink").onclick = async e => { e.preventDefault(); showReport(); };
   const saved = localStorage.getItem(AUTO_KEY);
   if (saved !== null) $("autoAdv").checked = saved === "1";
@@ -185,6 +191,12 @@ async function loadQuestion(q) {
   cur = Math.max(0, slices.findIndex(x => !x.graded));
   preload(Math.min(8, slices.length));
   render();
+}
+
+// 深链落位到指定卷(待复核队列入口):URL ?student=S 载入后直接切到该卷
+function focusStudent(student) {
+  const i = slices.findIndex(x => x.student === student);
+  if (i >= 0) { cur = i; partSel = 0; buildScoreBtns(); render(); toast(`已定位到卷 ${student}(${slices[i].mark === "flag" ? "⚑ 待复核" : "当前分 " + (slices[i].score ?? "-")})`); }
 }
 
 // 本题内跳下一份未评卷;没有则返回 false(全评完)
@@ -477,10 +489,24 @@ window.addEventListener("keydown", e => {
     if (!jumpNextUngraded()) toast("本题已全部阅完(打分会自动跨题)");
     e.preventDefault();
   }
+  else if (k === "g" || k === "G") { jumpNextFlagged(); e.preventDefault(); } // 待复核队列:⚑ 卷逐份复核
   else if (k === "Enter" || k === "ArrowRight") { next(); e.preventDefault(); }
   else if (k === "Backspace") { prev(); e.preventDefault(); } // 回看上一卷(改分/复查)
   else if (k === "ArrowLeft") { prev(); e.preventDefault(); }
 });
+
+// 待复核队列(⚑ 闭环):跳到本题下一份被标「待复核」的卷,复核打分后建议清标(X 再按一次或 V/B)
+function jumpNextFlagged() {
+  const idx = [...slices.keys()].filter(i => slices[i].mark === "flag" && i !== cur);
+  if (!idx.length) {
+    toast(cur.mark === "flag" ? "没有其他待复核卷(当前已是)— 复核后可打分覆盖,再按 X 清标" : "本题没有待复核卷");
+    return;
+  }
+  // 从当前位置环形找最近的一份
+  idx.sort((a, b) => (a > cur ? a - cur : a + slices.length - cur) - (b > cur ? b - cur : b + slices.length - cur));
+  cur = idx[0]; partSel = 0; buildScoreBtns(); render();
+  toast(`待复核:第 ${cur + 1} 号卷(⚑ ${idx.length} 份待复核)`);
+}
 
 init();
 </script>

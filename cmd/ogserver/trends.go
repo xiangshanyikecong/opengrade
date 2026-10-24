@@ -148,7 +148,7 @@ func classMeanOf(ex *Exam, rep *score.Report, class string) (mean float64, n int
 func visibleExamsAsc(store *Store, u *auth.User, subject string) []*Exam {
 	out := make([]*Exam, 0)
 	for _, ex := range store.List() { // List 为时间降序
-		if !canOpenExam(u, ex) {
+		if !canOpenExam(u, ex, store.School) {
 			continue
 		}
 		if subject != "" && ex.Subject != subject {

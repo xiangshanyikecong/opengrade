@@ -43,11 +43,13 @@ type User struct {
 	Salt        string   `json:"salt"` // hex
 	Hash        string   `json:"hash"` // hex, PBKDF2-HMAC-SHA256
 	Reg         string   `json:"reg,omitempty"`
-	Class       string   `json:"class,omitempty"`    // 学生所属班级(教师为任教班级);走班场景为行政班/主班
-	Classes     []string `json:"classes,omitempty"` // 全部班级(走班:学生双归属/教师多班任教);Classes[0]=Class
-	Subjects    []string `json:"subjects,omitempty"` // 教师任教学科(如 数学/语文)
-	Grades      []string `json:"grades,omitempty"`   // 年级组长管辖年级
-	Children    []string `json:"children,omitempty"` // 家长绑定的子女考号(家长角色)
+	Class       string   `json:"class,omitempty"`       // 学生所属班级(教师为任教班级);走班场景为行政班/主班
+	Classes     []string `json:"classes,omitempty"`     // 全部班级(走班:学生双归属/教师多班任教);Classes[0]=Class
+	Subjects    []string `json:"subjects,omitempty"`    // 教师任教学科(如 数学/语文)
+	HeadClasses []string `json:"headClasses,omitempty"` // 班主任所带班级(本班全学科可见;常规流程"班主任看本班全科")
+	SubjectLead []string `json:"subjectLead,omitempty"` // 学科组长牵头学科(本学科跨班可见;常规流程"学科组协作")
+	Grades      []string `json:"grades,omitempty"`      // 年级组长管辖年级(配合组织架构 data/school.json 收敛可见考试)
+	Children    []string `json:"children,omitempty"`    // 家长绑定的子女考号(家长角色)
 }
 
 // AllClasses 返回该账号的全部班级;只有 class 的老数据归一为单班。
@@ -370,6 +372,12 @@ func (s *Store) UpdateUser(username string, patch *User) error {
 	if patch.Subjects != nil {
 		u.Subjects = patch.Subjects
 	}
+	if patch.HeadClasses != nil {
+		u.HeadClasses = patch.HeadClasses
+	}
+	if patch.SubjectLead != nil {
+		u.SubjectLead = patch.SubjectLead
+	}
 	if patch.Grades != nil {
 		u.Grades = patch.Grades
 	}
@@ -442,6 +450,8 @@ type PublicUser struct {
 	Class       string   `json:"class,omitempty"`
 	Classes     []string `json:"classes,omitempty"`
 	Subjects    []string `json:"subjects,omitempty"`
+	HeadClasses []string `json:"headClasses,omitempty"`
+	SubjectLead []string `json:"subjectLead,omitempty"`
 	Grades      []string `json:"grades,omitempty"`
 	Children    []string `json:"children,omitempty"`
 }
@@ -454,7 +464,8 @@ func (s *Store) List() []*PublicUser {
 	for _, u := range s.Users {
 		out = append(out, &PublicUser{
 			Username: u.Username, DisplayName: u.DisplayName, Role: u.Role,
-			Reg: u.Reg, Class: u.Class, Classes: u.AllClasses(), Subjects: u.Subjects, Grades: u.Grades, Children: u.Children,
+			Reg: u.Reg, Class: u.Class, Classes: u.AllClasses(), Subjects: u.Subjects,
+			HeadClasses: u.HeadClasses, SubjectLead: u.SubjectLead, Grades: u.Grades, Children: u.Children,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

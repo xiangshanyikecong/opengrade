@@ -74,13 +74,15 @@
   <div id="tab-create" hidden></div>
     <div id="tab-bank" hidden></div>
     <div id="tab-tasks" hidden></div>
+    <div id="tab-exam" hidden></div>
+    <div id="tab-assign" hidden></div>
     <div id="tab-reports" hidden></div>
     <div id="tab-trends" hidden></div>
     <div id="tab-rooms" hidden></div>
     <div id="tab-me" hidden></div>
   </div>
 </div>
-<input type="file" id="scanFiles" multiple accept="image/*" hidden>
+
 <script src="/common.js"></script>
 <script>
 let exams = [];
@@ -88,12 +90,12 @@ let exams = [];
 // 侧栏手风琴分组(智学网式):低频分组默认收起
 const NAV_GROUPS = [
   { name: "考试", ico: "📋", open: true, items: [["exams", "考试列表"], ["create", "新建考试"], ["rooms", "考场编排"]] },
-  { name: "阅卷", ico: "✍️", open: false, items: [["tasks", "任务分配"]] },
+  { name: "阅卷", ico: "✍️", open: true, items: [["tasks", "我的任务"], ["assign", "任务分配"]] },
   { name: "学情", ico: "📈", open: true, items: [["reports", "学情分析"], ["trends", "纵向趋势"]] },
   { name: "资源", ico: "📚", open: false, items: [["bank", "校本题库"]] },
   { name: "账号", ico: "👤", open: false, items: [["me", "账号设置"]] },
 ];
-const PAGE_TITLES = { exams: "考试列表", create: "新建考试", rooms: "考场编排", tasks: "任务分配", reports: "学情分析", trends: "纵向趋势", bank: "校本题库", me: "账号设置" };
+const PAGE_TITLES = { exams: "考试列表", create: "新建考试", rooms: "考场编排", tasks: "我的任务", exam: "考试详情", assign: "任务分配", reports: "学情分析", trends: "纵向趋势", bank: "校本题库", me: "账号设置" };
 
 async function main() {
   if (!await OG.init()) return;
@@ -104,7 +106,7 @@ async function main() {
   const un = document.getElementById("sideUserName");
   if (un) un.textContent = me.displayName || me.username || "";
   const groups = NAV_GROUPS
-    .map(g => ({ ...g, items: g.items.filter(([id]) => id !== "tasks" || OG.is("admin", "leader")) }))
+    .map(g => ({ ...g, items: g.items.filter(([id]) => id !== "assign" || OG.is("admin", "leader")) }))
     .filter(g => g.items.length);
   document.getElementById("tabs").innerHTML = groups.map((g, gi) => `
     <div class="nav-group ${g.open ? 'open' : ''}" data-g="${gi}">
@@ -114,23 +116,25 @@ async function main() {
       <div class="nav-sub">${g.items.map(([id, name]) =>
         `<button data-t="${id}" onclick="showTab('${id}')">${name}</button>`).join("")}</div>
     </div>`).join("");
-  showTab("exams");
+  // 常规流程:教师登录落到「我的任务」(任务视角进入阅卷);管理端落考试列表
+  showTab(OG.is("admin", "leader") ? "exams" : "tasks");
 }
 
 function toggleSide() { document.body.classList.toggle("side-collapsed"); }
 
 function showTab(id) {
   document.querySelectorAll("#tabs .nav-sub button").forEach(b => b.classList.toggle("active", b.dataset.t === id));
-  ["exams", "create", "bank", "tasks", "reports", "trends", "rooms", "me"].forEach(t => document.getElementById(tab_(t)).hidden = t !== id);
+  ["exams", "create", "bank", "tasks", "exam", "assign", "reports", "trends", "rooms", "me"].forEach(t => document.getElementById(tab_(t)).hidden = t !== id);
   const title = document.getElementById("pageTitle");
-  if (title && PAGE_TITLES[id]) title.textContent = PAGE_TITLES[id];
+  if (title) title.textContent = PAGE_TITLES[id] || "考试";
   // 激活的子项若在收起分组里,自动展开该分组
   const btn = document.querySelector(`#tabs .nav-sub button[data-t="${id}"]`);
   if (btn) btn.closest(".nav-group").classList.add("open");
   if (id === "exams") loadExams();
   if (id === "create") loadCreate();
   if (id === "bank") loadBank();
-  if (id === "tasks") loadTasks();
+  if (id === "tasks") loadMyTasks();
+  if (id === "assign") loadAssign();
   if (id === "reports") loadReports();
   if (id === "trends") loadTrendInit();
   if (id === "rooms") loadRooms();
@@ -236,25 +240,41 @@ async function setProctor(room, teacher) {
 }
 
 /* —— 考试列表 —— */
+// 阶段徽标配色:常规流程状态机(待扫描/扫描中/异常/阅卷中/待发布/已发布)
+const STAGE_CLASS = {
+  awaiting_scan: "off", scanning: "run", anomalies: "warn", grading: "run", ready: "on", published: "pub",
+};
+function stagePill(e) {
+  const cls = STAGE_CLASS[e.stage] || "off";
+  return `<span class="pill ${cls}" title="${e.expected ? `应扫 ${e.expected} · ` : ""}未评 ${e.ungraded}/${e.total}${e.warnings ? ` · 异常 ${e.warnings}` : ""}">${e.stageLabel || (e.published ? "已发布" : "未发布")}</span>`;
+}
+
 async function loadExams() {
   exams = await OG.jget("/api/v1/exams");
   const box = document.getElementById("tab-exams");
   let html = `<div class="panel">
     <div style="display:flex;align-items:center;margin-bottom:10px">
-      <b>考试列表</b><span class="hint" style="margin-left:10px">共 ${exams.length} 场</span>
+      <b>考试列表</b><span class="hint" style="margin-left:10px">共 ${exams.length} 场 · 点考试号进入详情(扫描/异常/进度/发布)</span>
       <span style="flex:1"></span>
       <button class="primary" onclick="showTab('create')">+ 新建考试</button>
     </div>
     <table><tr><th>考试</th><th>时间</th><th>建卷人</th><th>学科</th><th>卷数</th><th>题型</th><th>状态</th><th>操作</th></tr>`;
   for (const e of exams) {
-    html += `<tr><td>${e.id}</td><td>${e.createdAt}</td><td>${e.createdBy || "-"}</td>
-      <td>${e.subject || "-"}</td><td>${e.students}</td><td>客观 ${e.objective} + 主观 ${e.subjective}</td>
-      <td><span class="pill ${e.published ? 'on' : 'off'}">${e.published ? '已发布' : '未发布'}</span></td>
+    // 主操作随阶段推进:待扫描→去扫描;扫描中→续传;异常→去处理;阅卷中→阅卷;待发布→发布;已发布→成绩册
+    let primary;
+    if (e.stage === "awaiting_scan" || e.stage === "scanning") primary = `<a href="#" onclick="openExam('${e.id}');return false"><b>去扫描</b></a>`;
+    else if (e.stage === "anomalies") primary = `<a href="#" onclick="openExam('${e.id}');return false"><b>处理异常</b></a>`;
+    else if (e.stage === "grading") primary = `<a href="/grader.html?exam=${e.id}"><b>阅卷</b></a>`;
+    else if (e.stage === "ready") primary = `<a href="#" onclick="pubExam('${e.id}',true).then(loadExams);return false"><b>发布成绩</b></a>`;
+    else primary = `<a href="/api/v1/exams/${e.id}/export.xlsx"><b>成绩册</b></a>`;
+    html += `<tr><td><a href="#" onclick="openExam('${e.id}');return false" title="打开考试详情">${e.id}</a></td><td>${e.createdAt}</td><td>${e.createdBy || "-"}</td>
+      <td>${e.subject || "-"}</td><td>${e.students}${e.expected ? "/" + e.expected : ""}</td><td>客观 ${e.objective} + 主观 ${e.subjective}</td>
+      <td>${stagePill(e)}</td>
       <td style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
-        <a href="/grader.html?exam=${e.id}">阅卷</a>
+        ${primary}
         <a href="/api/v1/exams/${e.id}/export.xlsx">成绩册</a>
         <details class="more"><summary>更多</summary><div class="menu">
-          <a href="#" onclick="pickScans('${e.id}');return false">补传扫描</a>
+          <a href="#" onclick="openExam('${e.id}');return false">考试详情(扫描/异常/进度)</a>
           <a href="#" onclick="pubExam('${e.id}',${!e.published}).then(loadExams);return false">${e.published ? '撤回发布' : '发布成绩'}</a>
           <a href="/api/v1/exams/${e.id}/review.pptx">讲评课件</a>
           <a href="/api/v1/exams/${e.id}/export.zip">数据包</a>
@@ -263,8 +283,209 @@ async function loadExams() {
       </td></tr>`;
   }
   html += "</table>";
-  if (!exams.length) html = `<div class="empty"><div class="pic">🗂️</div>当前暂无考试~ 点右上「+ 新建考试」开始(先到设计器出卡、扫描后上传)</div>`;
+  if (!exams.length) html = `<div class="empty"><div class="pic">🗂️</div>当前暂无考试~ 点右上「+ 新建考试」开始:建考(建档)→ 发卡 → 考后回详情传扫描件</div>`;
   box.innerHTML = exams.length ? html + "</div>" : `<div class="panel">${html}</div>`;
+}
+
+/* —— 考试详情枢纽(常规流程的"考试工作台"):扫描会话 → 异常裁决 → 进度 → 发布 —— */
+let hubExam = null; // 当前详情数据缓存(动作完成后局部刷新)
+
+async function openExam(id) {
+  showTab("exam");
+  const box = document.getElementById("tab-exam");
+  box.innerHTML = `<div class="panel">加载考试 ${id} …</div>`;
+  let d;
+  try { d = await OG.jget(`/api/v1/exams/${id}`); }
+  catch (e) { box.innerHTML = `<div class="panel"><div class="err">${e.message}</div></div>`; return; }
+  hubExam = d;
+  renderExamHub(d);
+}
+
+function hubStatNum(label, val, tone) {
+  return `<div style="flex:1;min-width:96px;background:var(--bg);border-radius:10px;padding:10px 14px">
+    <div style="font-size:12px;color:#8a94a3">${label}</div>
+    <div style="font-size:22px;font-weight:700;${tone ? `color:${tone}` : ""}">${val}</div></div>`;
+}
+
+function renderExamHub(d) {
+  const box = document.getElementById("tab-exam");
+  const st = d.stage || {};
+  const canEdit = !!d.canEdit || OG.is("admin", "leader");
+  const objN = (d.objective || []).length;
+  // 缺扫名单:名册里有、没扫到卷、也没登记缺考/补录的考号
+  const missing = (d.roster || []).filter(st_ => !d.scannedReg[st_.reg] && !(d.absent || []).some(a => a.reg === st_.reg));
+  const warnOpen = (d.warnings || []).filter(w => !w.resolved);
+  const warnDone = (d.warnings || []).filter(w => w.resolved);
+
+  let html = `<div class="panel">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <a href="#" onclick="showTab('exams');return false">← 考试列表</a>
+      <b style="font-size:16px">考试 ${d.id}</b>
+      ${stagePill({ stage: st.stage, stageLabel: st.label, expected: st.expected, ungraded: st.ungraded, total: st.total, warnings: st.warnings })}
+      <span class="hint">${d.createdAt} · 建卷 ${d.createdBy || "-"}${d.subject ? " · " + d.subject : ""}</span>
+      <span style="flex:1"></span>
+      <a href="/grader.html?exam=${d.id}">阅卷工作台 ↗</a>
+      ${canEdit ? `<a href="#" onclick="pubExam('${d.id}',${!d.published}).then(()=>openExam('${d.id}')).then(loadExams);return false">${d.published ? "撤回发布" : "发布成绩"}</a>` : ""}
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      ${hubStatNum("已扫 / 应扫", `${st.students}${st.expected ? "/" + st.expected : ""}`)}
+      ${hubStatNum("未评切片", st.ungraded + "/" + st.total, st.ungraded ? "#3b62d9" : "")}
+      ${hubStatNum("异常待裁决", warnOpen.length, warnOpen.length ? "var(--bad)" : "")}
+      ${hubStatNum("缺考", st.absent)}
+      ${hubStatNum("手工补录", st.manual)}
+      ${hubStatNum("⚑ 待复核", (d.flagged || []).length, (d.flagged || []).length ? "var(--warn)" : "")}
+    </div>`;
+
+  // —— ① 扫描会话:批量上传 + 内联反馈(常规流程:建考后在这里续传整批) ——
+  html += `<div class="group-title" style="margin-top:16px">① 扫描上传(多页版式按份连续上传全部页)</div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <input type="file" id="hubScanFiles" multiple accept="image/png,image/jpeg" style="max-width:340px">
+      <button class="primary" onclick="hubUpload('${d.id}')">上传本批扫描件</button>
+      <span class="hint">${st.expected && st.students < st.expected ? `名册 ${st.expected} 人,还差 ${st.expected - st.students} 份` : "已扫齐或名册未提供"}</span>
+    </div>
+    <div id="hubScanMsg" style="margin-top:8px"></div>`;
+
+  // —— ② 缺扫名单:名册有、卷没有 → 提示手工补录/缺考登记 ——
+  if (missing.length) {
+    html += `<div class="group-title" style="margin-top:14px">缺扫名单(${missing.length} 人 — 漏扫/缺考在此收口)</div>
+      <table><tr><th>考号</th><th>姓名</th><th>班级</th><th>处理</th></tr>
+      ${missing.map(m => `<tr><td>${m.reg}</td><td>${m.name || "-"}</td><td>${(m.classes || []).join("、") || "-"}</td>
+        <td style="display:flex;gap:10px">
+          <a href="#" onclick="hubManual('${d.id}','${m.reg}');return false">手工补录(缺考登记)</a>
+        </td></tr>`).join("")}</table>`;
+  }
+
+  // —— ③ 异常清单:重答/空白卡/考号异常,逐条裁决(采纳推荐考号/标缺考/去阅卷) ——
+  if ((d.warnings || []).length) {
+    const warnRow = w => {
+      const actions = w.resolved
+        ? `<span class="hint">已裁决 ✓</span>`
+        : `<a href="#" onclick="hubSuggest('${d.id}',${w.student});return false">推荐考号…</a>
+           <a href="#" onclick="hubAbsent('${d.id}',${w.student});return false">标记缺考</a>
+           <a href="/grader.html?exam=${d.id}">去阅卷裁决</a>`;
+      return `<tr style="${w.resolved ? "opacity:.55" : ""}"><td>${w.student}</td><td>${w.reg || "?"}</td>
+        <td>${(w.texts || []).join(";<br>")}</td>
+        <td style="display:flex;gap:10px;flex-wrap:wrap">${actions}</td></tr>`;
+    };
+    html += `<div class="group-title" style="margin-top:14px">③ 异常清单(待裁决 ${warnOpen.length}${warnDone.length ? ` · 已裁决 ${warnDone.length}` : ""})</div>
+      <table><tr><th>卷号</th><th>考号</th><th>告警</th><th>处理</th></tr>
+      ${warnOpen.map(warnRow).join("")}${warnDone.map(warnRow).join("")}</table>
+      <div id="hubSuggestBox" style="margin-top:8px"></div>`;
+  }
+
+  // —— ④ ⚑ 待复核队列:阅卷标记的出口 ——
+  if ((d.flagged || []).length) {
+    html += `<div class="group-title" style="margin-top:14px">⚑ 待复核队列(${d.flagged.length})</div>
+      <table><tr><th>题号</th><th>卷号</th><th>考号</th><th>当前分</th><th></th></tr>
+      ${d.flagged.map(f => `<tr><td>第 ${objN + f.question} 题</td><td>${f.student}</td><td>${f.reg || "?"}</td><td>${f.score}</td>
+        <td><a href="/grader.html?exam=${d.id}&q=${f.question}&student=${f.student}">复核改分 ↗</a></td></tr>`).join("")}</table>`;
+  }
+
+  // —— ⑤ 客观题参考答案(可修正,修正后全班重统) ——
+  if (objN) {
+    const keyArr = d.key || [];
+    html += `<div class="group-title" style="margin-top:14px">客观题参考答案${canEdit ? "(修正后全班客观题自动重统)" : ""}</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="hubKey" value="${keyArr.join("")}" placeholder="按题序连写,如 ABTTAC…(多选连写 AC;判断 T/F)" style="width:320px;font-family:monospace" ${canEdit ? "" : "disabled"}>
+        ${canEdit ? `<button class="ghost" onclick="hubSaveKey('${d.id}')">保存并重统</button>` : ""}
+        <span class="hint">空题不判分;共 ${objN} 题</span>
+      </div><div id="hubKeyMsg" style="margin-top:6px"></div>`;
+  }
+
+  // —— ⑥ 逐题阅卷进度(带阅卷人,一键进入本题) ——
+  if ((d.progress || []).length) {
+    html += `<div class="group-title" style="margin-top:14px">主观题阅卷进度</div>
+      <table><tr><th>题号</th><th>题型</th><th>满分</th><th>阅卷人</th><th>进度</th><th></th></tr>
+      ${d.progress.map(p => {
+        const pctv = p.total ? Math.round(p.graded * 100 / p.total) : 100;
+        return `<tr><td>第 ${objN + p.question} 题</td><td>${p.kind === "fillblank" ? "填空" : "解答"}${p.elective ? "(选做)" : ""}</td><td>${p.max}</td>
+          <td>${p.teacher || "-"}</td>
+          <td><div class="progress" style="width:120px;display:inline-block;vertical-align:middle"><div style="width:${pctv}%"></div></div> ${p.graded}/${p.total}</td>
+          <td><a href="/grader.html?exam=${d.id}&q=${p.question}">阅本题 ↗</a></td></tr>`;
+      }).join("")}</table>
+      <p class="hint">${OG.is("admin", "leader") ? `分配阅卷人到「<a href="#" onclick="showTab('assign');return false">任务分配</a>」` : "任务由管理员/年级组长分配"}</p>`;
+  }
+
+  html += `</div>`;
+  box.innerHTML = html;
+}
+
+// 扫描上传(详情页内联反馈,替代从前的 alert;multipart 用原生 fetch,不走 JSON 封装)
+async function hubUpload(id) {
+  const files = [...(document.getElementById("hubScanFiles").files || [])];
+  const msg = document.getElementById("hubScanMsg");
+  if (!files.length) { msg.innerHTML = `<span class="err">请先选择扫描件</span>`; return; }
+  msg.innerHTML = `<span class="hint">上传识别中(${files.length} 张)…</span>`;
+  const fd = new FormData();
+  for (const f of files) fd.append("images", f);
+  let inner;
+  try {
+    const r = await fetch(`/api/v1/exams/${id}/scans`, { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || "上传失败");
+    inner = `✓ 本批入库 ${d.added} 卷,考试现有 ${d.students} 卷。`;
+    if ((d.failed || []).length) inner += `<br>失败 ${d.failed.length} 张(未计入):<br>` + d.failed.map(f => `第 ${f.index} 张:${f.error}`).join("<br>");
+  } catch (e) { msg.innerHTML = `<span class="err">${e.message}</span>`; return; }
+  await openExam(id); await loadExams();
+  const m2 = document.getElementById("hubScanMsg");
+  if (m2) m2.innerHTML = `<span class="hint">${inner}</span>`;
+}
+
+// 推荐考号:逐位判涂 + 名册匹配 → 一键采纳
+async function hubSuggest(id, student) {
+  const boxEl = document.getElementById("hubSuggestBox");
+  boxEl.innerHTML = `<span class="hint">读取推荐…</span>`;
+  try {
+    const s = await OG.jget(`/api/v1/exams/${id}/suggest/${student}`);
+    const regs = (s.suggestions || []).map(x => x.reg);
+    let html = `卷 ${student} 当前考号 <b>${s.reg || "?"}</b>(涂位 ${s.regValid ? "有效" : "异常"})`;
+    if (regs.length) {
+      html += ` ,推荐:` + regs.map(r =>
+        `<button class="ghost" style="margin:2px 4px;padding:3px 10px" onclick="hubAdopt('${id}',${student},'${r}')">${r}</button>`).join("");
+    } else {
+      html += ` ,名册无可信推荐,可人工指派:<input id="hubAdoptReg" placeholder="考号" style="width:110px;padding:3px 8px">` +
+        `<button class="ghost" style="margin-left:6px;padding:3px 10px" onclick="hubAdopt('${id}',${student},document.getElementById('hubAdoptReg').value)">指派</button>`;
+    }
+    boxEl.innerHTML = html;
+  } catch (e) { boxEl.innerHTML = `<span class="err">${e.message}</span>`; }
+}
+async function hubAdopt(id, student, reg) {
+  if (!reg) return;
+  try {
+    await OG.jpost("/api/v1/assign", { examId: id, student, reg });
+    await openExam(id); await loadExams();
+  } catch (e) { alert(e.message); }
+}
+
+// 标记缺考(再点一次恢复)
+async function hubAbsent(id, student) {
+  try {
+    const cur = (hubExam.absent || []).some(a => a.student === student);
+    await OG.jpost(`/api/v1/exams/${id}/absent`, { student, absent: !cur });
+    await openExam(id); await loadExams();
+  } catch (e) { alert(e.message); }
+}
+
+// 手工补录(缺扫名单收口:登记缺考卷,卷号续排,客观题可后补)
+async function hubManual(id, reg) {
+  if (!confirm(`为考号 ${reg} 登记缺考补录?(生成缺考卷占位,统计自动剔除;若实考可稍后改回)`)) return;
+  try {
+    await OG.jpost(`/api/v1/exams/${id}/manual`, { reg, absent: true });
+    await openExam(id); await loadExams();
+  } catch (e) { alert(e.message); }
+}
+
+// 修正参考答案:整串连写(如 ABTTAC;多选 AC)→ 数组 → /key
+async function hubSaveKey(id) {
+  const raw = document.getElementById("hubKey").value.trim().toUpperCase();
+  const msg = document.getElementById("hubKeyMsg");
+  const n = (hubExam.objective || []).length;
+  if (!/^[A-F]*$/.test(raw) || raw.length !== n) { msg.innerHTML = `<span class="err">需 ${n} 个字母(判断题用 T/F,多选连写如 AC),当前「${raw}」</span>`; return; }
+  try {
+    await OG.jpost(`/api/v1/exams/${id}/key`, { key: raw.split("") });
+    msg.innerHTML = `<span class="hint">✓ 已保存并重统</span>`;
+    await openExam(id); await loadExams();
+  } catch (e) { msg.innerHTML = `<span class="err">${e.message}</span>`; }
 }
 
 /* —— 新建考试(从设计器页搬到工作台,成为主入口) —— */
@@ -273,7 +494,7 @@ function loadCreate() {
   if (box.dataset.ready) return; // 表单只渲染一次
   box.dataset.ready = "1";
   box.innerHTML = `<div class="panel" style="max-width:760px">
-    <div class="group-title">创建考试:版式 → 参考答案 → 名册(可选)→ 上传扫描件</div>
+    <div class="group-title">创建考试:版式 → 参考答案 → 名册(可选)。<b>扫描件考后另传</b>(创建即建档,考后到考试详情批量上传)</div>
     <div style="display:flex;gap:10px;margin-bottom:10px">
       <button class="secondary" onclick="loadLastLayout()">⇩ 载入设计器最近生成的版式</button>
       <a class="ghost" style="padding:6px 12px;border:1px solid var(--line);border-radius:8px;font-size:13px" href="/" target="_blank">打开设计器出卡 ↗</a>
@@ -301,13 +522,18 @@ function loadCreate() {
         <select id="threshold"><option value="otsu">全局 Otsu(常规扫描)</option><option value="adaptive">局部自适应(阴影/翻拍)</option></select>
       </label>
     </div>
-    <label>学生名册(可选;JSON 数组或 CSV「考号,姓名,班级」,走班多班用 班A|班B;用于异常卷考号推荐与班级统计)
+    <label>学生名册(可选;用于异常卷考号推荐、缺扫名单与班级统计)
+      <div style="display:flex;gap:8px;align-items:center;margin:4px 0 6px;flex-wrap:wrap">
+        <button class="ghost" onclick="toggleRosterPicker()">从班级选名册(学生账号带出)</button>
+        <span class="hint">或手填 JSON / CSV「考号,姓名,班级」(走班多班用 班A|班B)</span>
+      </div>
+      <div id="rosterPicker" hidden style="background:var(--bg);border-radius:8px;padding:10px 12px;margin-bottom:6px"></div>
       <textarea id="examRoster" rows="3" placeholder='[{"reg":"20250001","name":"李雷","classes":["三年二班","物理走班A"]}] 或 20250001,李雷,三年二班|物理走班A'></textarea>
     </label>
-    <label>整卷扫描件(可多选;多页版式每名学生连续上传全部页,按份扫描的自然顺序即可)
+    <label>整卷扫描件(可选;现在不传=先建档,考后到「考试详情 → 扫描上传」续传;多页版式每生连续全部页)
       <input id="examImages" type="file" accept="image/png,image/jpeg" multiple>
     </label>
-    <button class="primary" id="createExamBtn" style="margin-top:12px">创建考试并切片</button>
+    <button class="primary" id="createExamBtn" style="margin-top:12px">创建考试</button>
     <div class="err" id="examMsg" style="margin-top:8px"></div>
   </div>`;
   document.getElementById("createExamBtn").onclick = submitCreateExam;
@@ -328,6 +554,58 @@ function loadLastLayout() {
   box.className = "hint";
   box.textContent = "已载入设计器最近生成的版式。";
   renderLayoutMeta();
+  // 设计器若已生成过答案(题库带出/手填),一并带出 —— 建考零手填
+  const savedKey = localStorage.getItem("og.lastKey");
+  if (savedKey) {
+    try {
+      const arr = JSON.parse(savedKey);
+      const cells = [...document.querySelectorAll("#keyGrid input[data-key]")];
+      let used = 0;
+      arr.forEach((v, i) => { if (cells[i] && v) { cells[i].value = v; used++; } });
+      if (used) box.textContent = `已载入设计器最近版式与 ${used} 题参考答案。`;
+      keyFilledCount();
+    } catch (_) { /* 忽略坏数据 */ }
+  }
+}
+
+// 从班级选名册:学生账号按班级汇总,勾选即生成 CSV 名册(常规流程"选班级带出名单")
+let rosterStudents = null;
+async function toggleRosterPicker() {
+  const panel = document.getElementById("rosterPicker");
+  if (!panel.hidden) { panel.hidden = true; return; }
+  panel.hidden = false;
+  if (!rosterStudents) {
+    panel.innerHTML = `<span class="hint">读取学生账号…</span>`;
+    try { rosterStudents = await OG.jget("/api/v1/students"); }
+    catch (e) { panel.innerHTML = `<span class="err">${e.message}</span>`; return; }
+  }
+  if (!rosterStudents.length) { panel.innerHTML = `<span class="hint">还没有学生账号 —— 让管理员在「用户管理」导入学生后再来。</span>`; return; }
+  const byClass = {};
+  for (const s of rosterStudents) for (const c of (s.classes || []).length ? s.classes : ["(未分班)"]) {
+    (byClass[c] = byClass[c] || []).push(s);
+  }
+  const classes = Object.keys(byClass).sort();
+  panel.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+      ${classes.map(c => `<label style="display:flex;gap:4px;align-items:center;font-size:13px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:3px 10px">
+        <input type="checkbox" value="${c}" onchange="rosterPickSum()"> ${c}(${byClass[c].length})</label>`).join("")}
+    </div>
+    <div><span class="hint" id="rosterPickSum">勾选要参加考试的班级</span>
+    <button class="ghost" style="margin-left:8px" onclick="rosterPickApply()">生成名册填入</button></div>`;
+}
+function rosterPickSum() {
+  const picked = [...document.querySelectorAll("#rosterPicker input:checked")].map(i => i.value);
+  const sum = document.getElementById("rosterPickSum");
+  if (!picked.length) { sum.textContent = "勾选要参加考试的班级"; return; }
+  const n = rosterStudents.filter(s => (s.classes || []).some(c => picked.includes(c))).length;
+  sum.textContent = `已选 ${picked.length} 个班,共 ${n} 名学生`;
+}
+function rosterPickApply() {
+  const picked = [...document.querySelectorAll("#rosterPicker input:checked")].map(i => i.value);
+  if (!picked.length) return;
+  const rows = rosterStudents
+    .filter(s => (s.classes || []).some(c => picked.includes(c)))
+    .map(s => [s.reg, s.name || "", (s.classes || []).join("|")].join(","));
+  document.getElementById("examRoster").value = rows.join("\n");
 }
 
 // 解析当前版式(失败返回 null 并提示)
@@ -437,14 +715,8 @@ async function submitCreateExam() {
   try {
     const layout = JSON.parse(document.getElementById("examLayout").value);
     const cells = [...document.querySelectorAll("#keyGrid input[data-key]")];
-    let key = [];
-    if (cells.length) {
-      key = cells.map(c => c.value.trim().toUpperCase());
-      const empty = key.findIndex(v => !v);
-      if (empty >= 0) throw new Error(`第 ${empty + 1} 题参考答案未填(判断题填 T/F,多选题填如 AC)`);
-    }
-    const files = document.getElementById("examImages").files;
-    if (!files.length) throw new Error("请选择至少一张整卷扫描件");
+    const key = cells.map(c => c.value.trim().toUpperCase()); // 允许留空:该题不判分,详情页可后补重统
+    const files = document.getElementById("examImages").files; // 可选:不传=先建档,考后到详情续传
     const fd = new FormData();
     fd.append("layout", JSON.stringify(layout));
     fd.append("key", JSON.stringify(key));
@@ -458,31 +730,12 @@ async function submitCreateExam() {
     const j = await r.json();
     if (!r.ok) throw new Error(j.error);
     msg.className = "hint";
-    msg.textContent = `考试 ${j.id} 已创建:${j.students} 卷,客观 ${j.objectiveCount} 题,主观 ${j.subjectiveCount} 题${j.pages > 1 ? `,版式共 ${j.pages} 页` : ""}。`;
-    setTimeout(() => showTab("exams"), 1200); // 创建成功回考试列表
+    msg.textContent = `考试 ${j.id} 已创建(${j.stageLabel}):${j.students} 卷,客观 ${j.objectiveCount} 题,主观 ${j.subjectiveCount} 题${j.pages > 1 ? `,版式共 ${j.pages} 页` : ""}。正在打开考试详情…`;
+    setTimeout(() => openExam(j.id), 600);
   } catch (e) { msg.textContent = e.message; }
 }
 
-/* —— 补传扫描件(批量扫描会话/断点续传):建考后中途扫完的一批卷续接进同一会话 —— */
-let scanExamId = null;
-function pickScans(id) {
-  scanExamId = id;
-  document.getElementById("scanFiles").click();
-}
-document.getElementById("scanFiles").addEventListener("change", async ev => {
-  const files = [...ev.target.files];
-  ev.target.value = "";
-  if (!scanExamId || !files.length) return;
-  const fd = new FormData();
-  for (const f of files) fd.append("images", f);
-  const r = await fetch(`/api/v1/exams/${scanExamId}/scans`, { method: "POST", body: fd });
-  const d = await r.json();
-  if (!r.ok) { alert(d.error || "补传失败"); return; }
-  let msg = `已补传 ${d.added} 卷,本考试现有 ${d.students} 卷。`;
-  if ((d.failed || []).length) msg += `\n失败 ${d.failed.length} 张(未计入):\n` + d.failed.map(f => `第 ${f.index} 张:${f.error}`).join("\n");
-  alert(msg);
-  loadExams();
-});
+/* —— 补传扫描已并入「考试详情 → 扫描上传」(内联反馈 + 异常清单闭环) —— */
 async function delExam(id) {
   if (!confirm(`删除考试 ${id} 及全部数据?不可恢复。`)) return;
   await OG.jpost(`/api/v1/exams/${id}`, {}, "DELETE");
@@ -575,7 +828,43 @@ async function delBankQuestion(id) {
 }
 
 /* —— 阅卷任务分配 —— */
-async function loadTasks() {
+/* —— 我的任务(常规流程:教师从任务进入阅卷,不在考试列表里找) —— */
+async function loadMyTasks() {
+  const box = document.getElementById("tab-tasks");
+  let items;
+  try { items = await OG.jget("/api/v1/my/tasks"); }
+  catch (e) { box.innerHTML = `<div class="panel"><div class="err">${e.message}</div></div>`; return; }
+  if (!items.length) {
+    box.innerHTML = `<div class="panel"><div class="empty"><div class="pic">☕️</div>当前没有分配给我的阅卷任务~<br>
+      <span class="hint">任务由管理员/年级组长在「任务分配」里指派;自己建的考试会出现在「我创建的考试」。</span></div></div>`;
+    return;
+  }
+  // 进行中的排前面(有剩余的优先),同组按时间倒序
+  const prio = it => (it.graded >= it.total ? 2 : it.kind === "mine" ? 1 : 0);
+  items.sort((a, b) => prio(a) - prio(b) || (a.createdAt < b.createdAt ? 1 : -1));
+  let totalLeft = 0, totalAll = 0;
+  for (const it of items) { totalLeft += it.total - it.graded; totalAll += it.total; }
+  let html = `<div class="panel">
+    <div style="display:flex;align-items:center;margin-bottom:10px;gap:10px">
+      <b>我的阅卷任务</b><span class="hint">共 ${items.length} 项 · 待评 ${totalLeft} 份(共 ${totalAll})</span>
+    </div>
+    <table><tr><th>考试</th><th>任务</th><th>类型</th><th>进度</th><th>考试阶段</th><th></th></tr>`;
+  for (const it of items) {
+    const left = it.total - it.graded;
+    const pctv = it.total ? Math.round(it.graded * 100 / it.total) : 100;
+    const kindTxt = { question: "按题", class: "按班", mine: "建卷人" }[it.kind] || it.kind;
+    const link = it.kind === "question" ? `/grader.html?exam=${it.exam}&q=${it.question}` : `/grader.html?exam=${it.exam}`;
+    html += `<tr><td><a href="#" onclick="openExam('${it.exam}');return false">${it.exam}</a><div class="hint">${it.createdAt}${it.subject ? " · " + it.subject : ""}</div></td>
+      <td>${it.label}</td><td>${kindTxt}</td>
+      <td><div class="progress" style="width:110px;display:inline-block;vertical-align:middle"><div style="width:${pctv}%"></div></div> ${it.graded}/${it.total}</td>
+      <td><span class="pill ${STAGE_CLASS[it.stage] || "off"}">${it.stageLabel}</span></td>
+      <td><a href="${link}">${left ? `<b>开始/继续(剩 ${left})</b>` : "查看"}</a></td></tr>`;
+  }
+  box.innerHTML = html + `</table></div>`;
+}
+
+/* —— 任务分配(管理员/年级组长) —— */
+async function loadAssign() {
   exams = await OG.jget("/api/v1/exams");
   const box = document.getElementById("tab-tasks");
   if (!exams.length) { box.innerHTML = `<div class="panel hint">暂无考试</div>`; return; }
