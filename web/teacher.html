@@ -38,6 +38,9 @@
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
   @media (max-width:820px){ .grid2 { grid-template-columns:1fr; } }
   .keyinput { width:52px; text-align:center; }
+  .acc-head { display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; padding:2px 0; }
+  .acc-head:hover { opacity:.75; }
+  .acc-arrow { display:inline-block; width:12px; color:#66707d; transition:transform .15s; }
   .room { border:1px solid var(--line); border-radius:8px; padding:10px; margin:10px 0; }
   .room-head { display:flex; gap:10px; align-items:center; margin-bottom:8px; }
   .seats { display:grid; grid-template-columns:repeat(auto-fill, minmax(92px,1fr)); gap:6px; }
@@ -494,9 +497,14 @@ async function renderReport() {
     </div>
     <div id="convBody" style="margin-top:12px"></div></div>`;
 
-  // 审计日志
+  // 审计日志:智学网式手风琴——标题栏一行常驻(默认收起),展开时才拉明细
   if (OG.is("admin", "leader")) {
-    html += `<div class="panel"><b>操作审计</b><div id="auditBody" style="margin-top:8px" class="hint">加载中…</div></div>`;
+    html += `<div class="panel">
+      <div class="acc-head" onclick="toggleAudit('${id}')">
+        <span class="acc-arrow" id="auditArrow">▸</span><b>操作审计</b>
+        <span class="hint" id="auditCount">改答案 / 改分 / 发布 / 指派留痕,点击展开</span>
+      </div>
+      <div id="auditBody" style="margin-top:8px" hidden></div></div>`;
   }
 
   // 补录与缺考:漏扫/答题卡作废的补救语义
@@ -519,7 +527,7 @@ async function renderReport() {
   renderKnowledge(id, a);
   renderPracticeStudents(id);
   renderAbsent(id, d);
-  if (OG.is("admin", "leader")) loadAudit(id);
+  auditLoadedFor = ""; // 切换考试:重置审计懒加载缓存
 }
 
 /* —— 错题重练卡(按学生) —— */
@@ -701,14 +709,26 @@ async function convert(id, fine) {
   document.getElementById("convBody").innerHTML = html;
 }
 
-async function loadAudit(id) {
+let auditLoadedFor = ""; // 已展开加载过的考试(切换考试后重新拉)
+
+async function toggleAudit(id) {
+  const body = document.getElementById("auditBody");
+  const arrow = document.getElementById("auditArrow");
+  const count = document.getElementById("auditCount");
+  if (!body.hidden) { body.hidden = true; arrow.textContent = "▸"; return; } // 收起
+  body.hidden = false;
+  arrow.textContent = "▾";
+  if (auditLoadedFor === id) return; // 同一场考试展开过,不重复拉取
+  body.innerHTML = `<span class="hint">加载中…</span>`;
   try {
     const a = await OG.jget(`/api/v1/exams/${id}/audit`);
-    if (!a.entries.length) { document.getElementById("auditBody").textContent = "暂无操作记录"; return; }
+    auditLoadedFor = id;
+    count.textContent = `共 ${a.entries.length} 条`;
+    if (!a.entries.length) { body.innerHTML = `<span class="hint">暂无操作记录</span>`; return; }
     let html = `<table><tr><th>时间</th><th>操作人</th><th>动作</th><th>说明</th></tr>`;
     for (const e of a.entries) html += `<tr><td>${e.time}</td><td>${e.by}</td><td>${e.action}</td><td>${e.detail}</td></tr>`;
-    document.getElementById("auditBody").innerHTML = html + "</table>";
-  } catch (e) { document.getElementById("auditBody").textContent = "无权查看审计"; }
+    body.innerHTML = html + "</table>";
+  } catch (e) { body.innerHTML = `<span class="hint">无权查看审计</span>`; }
 }
 
 /* —— 纵向趋势(跨考试按考号对齐) —— */
