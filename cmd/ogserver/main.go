@@ -98,6 +98,7 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	}
 	mux.HandleFunc("POST /api/v1/cards", staff(handleCards))
 	mux.HandleFunc("POST /api/v1/omr", staff(handleOMR))
+	mux.HandleFunc("POST /api/v1/layout/analyze", staff(handleLayoutAnalyze)) // 试卷版面分析(半自动出卡)
 	mux.HandleFunc("POST /api/v1/score", staff(handleScore))
 	mux.HandleFunc("POST /api/v1/exams", staff(withStore(func(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 		handleCreateExam(w, r, store, bank, u) // 建考后向校本题库回记「题目被本场使用」

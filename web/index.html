@@ -125,6 +125,17 @@
       </div>
       <div class="hint" id="abResult"></div>
     </div>
+    <button class="secondary" onclick="togglePaperScan()">⇩ 从试卷扫描识别版式(半自动)</button>
+    <div id="paperScan" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px;display:grid;gap:8px">
+      <p class="hint">上传试卷照片/扫描件(PNG/JPG/多页 PDF),自动检测题目构成(客观题题型/选项数、留白作答区高度)并生成叠加标注图;<b>半自动</b>:「应用到表单」后请逐题核对题型/选项数/分值再出卡。适用:A4 单栏印刷体、倾斜 ≤±5°;双栏试卷请逐栏裁剪分次识别;多选与单选结构相同(默认按单选导入);判断题请印 A/B 选项;填空的下划线会当作文字行,需手工补题。</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="paperFile" type="file" accept="image/png,image/jpeg,application/pdf" multiple>
+        <button class="primary" id="paperAnalyzeBtn" onclick="analyzePaper()">开始识别</button>
+        <span class="hint">可分多次上传(逐页追加);PDF 自动拆页。</span>
+      </div>
+      <div class="err" id="paperMsg"></div>
+      <div id="paperResult" style="display:grid;gap:8px"></div>
+    </div>
     <button class="primary" id="gen">生成 / 刷新预览</button>
     <button class="secondary" id="download" disabled>下载 SVG(可打印)</button>
     <div class="err" id="designMsg"></div>
@@ -337,6 +348,162 @@ function insertBank() {
     n++;
   }
   $("pickMsg").textContent = `已插入 ${n} 题。客观题答案在「建考与阅卷」页用「从题库带出客观题答案」一键生成。`;
+}
+
+// —— 导入版式 JSON:反向回灌表单行(任何来源的版式都能回设计器继续编辑)——
+function toggleImportPanel() { $("importPanel").hidden = !$("importPanel").hidden; }
+function importLayoutJSON() {
+  const msg = $("importMsg");
+  msg.textContent = "";
+  let l;
+  try { l = JSON.parse($("importJSON").value); } catch (e) { msg.textContent = "JSON 无法解析:" + e.message; return; }
+  if (!l || typeof l !== "object" || (!l.questions && !l.subjectives)) { msg.textContent = "版式里没有题目(questions/subjectives 均为空)。"; return; }
+  try {
+    applyLayoutToForm(l);
+    msg.textContent = `已导入:客观 ${l.questions ? l.questions.length : 0} 题、主观 ${l.subjectives ? l.subjectives.length : 0} 题,点「生成 / 刷新预览」查看。`;
+  } catch (e) { msg.textContent = e.message; }
+}
+
+// applyLayoutToForm 把版式 JSON 重建为表单行(导入与「从试卷识别」共用;抛错则不落任何行)。
+function applyLayoutToForm(l) {
+  for (const q of (l.questions || [])) {
+    if (!["choice", "judge", "multiple"].includes(q.kind)) throw new Error(`客观题题型只能是 choice/judge/multiple(得到 ${JSON.stringify(q.kind)})`);
+    if (!Number.isFinite(+q.options) && q.kind !== "judge") throw new Error("客观题缺少选项数(options)");
+  }
+  for (const s of (l.subjectives || [])) {
+    if (!["fillblank", "subjective"].includes(s.kind)) throw new Error(`主观题题型只能是 fillblank/subjective(得到 ${JSON.stringify(s.kind)})`);
+  }
+  $("objSpecs").innerHTML = ""; $("subSpecs").innerHTML = "";
+  for (const q of (l.questions || [])) {
+    const div = addObj(q.kind, q.kind === "judge" ? 2 : (+q.options || 4), +q.score || 1, q.knowledge || "");
+    if (q.bankId) div.dataset.bankId = q.bankId;
+  }
+  for (const s of (l.subjectives || [])) {
+    const parts = (s.parts || []).map(p => +p.score || 0).filter(x => x > 0).join(",");
+    const div = addSub(s.kind, s.label || "", +s.score || (s.kind === "fillblank" ? 5 : 10),
+      +s.heightMM || (s.kind === "fillblank" ? 16 : 42), parts, s.elective || "", s.knowledge || "");
+    if (s.bankId) div.dataset.bankId = s.bankId;
+  }
+  if (typeof l.title === "string") $("title").value = l.title;
+  if (l.regDigits !== undefined && l.regDigits !== null && l.regDigits !== "") $("reg").value = l.regDigits;
+  if (l.regMode) $("regMode").value = l.regMode;
+  if (l.columns !== undefined && l.columns !== null && l.columns !== "") $("columns").value = l.columns;
+  $("variant").value = l.variant || "";
+  refreshQnos(); updateTotal();
+}
+
+// —— AB 卷助手:由当前客观题派生 B 卷版式(与建考服务端 abAuto 同口径:客观题错位排列,主观题不变)——
+function toggleABHelper() { $("abHelper").hidden = !$("abHelper").hidden; }
+function shuffledDerangement(n) { // Fisher-Yates 后验无固定点:B 卷题序必与 A 不同(128 次重抽兜底)
+  for (let t = 0; t < 128; t++) {
+    const p = [...Array(n).keys()];
+    for (let i = n - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [p[i], p[j]] = [p[j], p[i]];
+    }
+    if (p.every((v, i) => v !== i)) return p;
+  }
+  return [...Array(n).keys()].reverse();
+}
+function makeBV(mode) {
+  const out = $("abResult");
+  const layout = buildLayout();
+  const n = layout.questions.length;
+  if (n < 2) { out.textContent = "客观题不足 2 道,打乱题序没有意义(加题或直接用单卷)。"; return; }
+  let perm0; // 0-based:B 卡面第 i 题 = A 卷第 perm0[i]+1 题
+  if (mode === "shuffle") perm0 = shuffledDerangement(n);
+  else if (mode === "reverse") perm0 = [...Array(n).keys()].reverse();
+  else {
+    perm0 = ($("abOrder").value || "").split(/[,，\s]+/).filter(Boolean).map(x => parseInt(x, 10) - 1);
+    if (perm0.length !== n || new Set(perm0).size !== n || perm0.some(v => !(v >= 0 && v < n))) {
+      out.textContent = `自定义题序必须是 1~${n} 的排列(共 ${n} 个数)。`; return;
+    }
+  }
+  const a = JSON.parse(JSON.stringify(layout)); a.variant = "A";
+  const b = JSON.parse(JSON.stringify(layout)); b.variant = "B";
+  b.questions = perm0.map(src => layout.questions[src]);
+  const order = perm0.map(v => v + 1); // 题序对照:B 卡面第 i 题 → 规范题号
+  localStorage.setItem("og.lastLayoutAB", JSON.stringify({ a, b, order }));
+  out.innerHTML = `✓ 已生成 B 卷并写入本机(题序对照 <b style="font-family:monospace">${order.join(",")}</b>)。` +
+    `到「教师工作台 → 新建考试 → AB 卷(高级)」点「⇩ 载入设计器 B 卷版式」即可零手填建考;` +
+    `<a href="#" onclick="copyBJSON();return false">复制 B 卷版式 JSON</a>。`;
+}
+async function copyBJSON() {
+  const p = JSON.parse(localStorage.getItem("og.lastLayoutAB") || "null");
+  if (!p) return;
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(p.b));
+    $("abResult").innerHTML += ` <span class="ok">已复制到剪贴板。</span>`;
+  } catch (e) {
+    $("abResult").innerHTML += ` 复制失败(浏览器剪贴板限制),可在工作台一键载入。`;
+  }
+}
+
+// —— 从试卷扫描识别:半自动版面分析(服务端检测 + 叠加图 + 人工确认)——
+// 检测草稿逐页累计(可分多次上传);「应用到表单」复用 applyLayoutToForm 反向回灌,
+// 之后走既有 gen() 出卡 → 建考/AB 助手全链路,零新链路。
+function togglePaperScan() { $("paperScan").hidden = !$("paperScan").hidden; }
+let paperDraft = null; // {questions:[], subjectives:[], notes:[], overlays:[]}
+async function analyzePaper() {
+  const msg = $("paperMsg");
+  msg.className = "err"; msg.textContent = "";
+  const files = [...$("paperFile").files];
+  if (!files.length) { msg.textContent = "请先选择试卷照片/扫描件(PNG/JPG/PDF)。"; return; }
+  $("paperAnalyzeBtn").disabled = true;
+  const box = $("paperResult");
+  try {
+    if (!paperDraft) paperDraft = { questions: [], subjectives: [], notes: [], overlays: [] };
+    const images = await OG.collectScanFiles(files, box);
+    let page = 0;
+    for (const img of images) {
+      page++;
+      box.innerHTML = `<span class="hint">正在识别第 ${page}/${images.length} 页…</span>`;
+      const fd = new FormData();
+      fd.append("image", img);
+      const r = await fetch("/api/v1/layout/analyze", { method: "POST", body: fd });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      paperDraft.questions.push(...(j.questions || []));
+      paperDraft.subjectives.push(...(j.subjectives || []));
+      paperDraft.notes.push(...(j.notes || []));
+      if (j.overlay) paperDraft.overlays.push(j.overlay);
+    }
+    renderPaperDraft();
+  } catch (e) { msg.textContent = e.message; }
+  $("paperAnalyzeBtn").disabled = false;
+}
+function renderPaperDraft() {
+  const d = paperDraft;
+  const box = $("paperResult");
+  if (!d || (!d.questions.length && !d.subjectives.length)) {
+    box.innerHTML = `<span class="hint">未检测到题目构成。</span>`;
+    return;
+  }
+  const objTotal = d.questions.reduce((a, q) => a + (+q.score || 0), 0);
+  box.innerHTML = `
+    <div class="ok">累计检测:客观 ${d.questions.length} 题(${objTotal} 分,统一 1 分待改)、留白作答区 ${d.subjectives.length} 处。</div>
+    ${(d.notes || []).map(n => `<div class="hint">⚠ ${OG.esc(n)}</div>`).join("")}
+    ${(d.overlays || []).map((b64, i) => `<img src="data:image/jpeg;base64,${b64}" alt="第${i + 1}页标注" style="max-width:100%;border:1px solid var(--line);border-radius:6px">`).join("")}
+    <div style="display:flex;gap:8px">
+      <button class="primary" onclick="applyPaperDraft()">应用到表单(替换当前题目)</button>
+      <button class="secondary" onclick="paperDraft=null;document.getElementById('paperResult').innerHTML='';document.getElementById('paperFile').value=''">清空结果</button>
+    </div>`;
+}
+function applyPaperDraft() {
+  const d = paperDraft;
+  if (!d) return;
+  try {
+    applyLayoutToForm({
+      version: 2, title: $("title").value, regDigits: +$("reg").value,
+      regMode: $("regMode").value, columns: +$("columns").value,
+      questions: d.questions, subjectives: d.subjectives,
+    });
+    $("designMsg").className = "ok";
+    $("designMsg").textContent = `已按检测结果重建题目(客观 ${d.questions.length} + 主观 ${d.subjectives.length}):请逐题核对题型/选项数/分值,再「生成 / 刷新预览」出卡。`;
+  } catch (e) {
+    $("designMsg").className = "err";
+    $("designMsg").textContent = e.message;
+  }
 }
 
 // 按当前版式客观题题序从题库带出参考答案(dataset.answer 随题库插入记录;缺答案的题为 ?)

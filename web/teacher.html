@@ -972,6 +972,10 @@ function loadCreate() {
       <p class="hint" style="margin:6px 0">B 卷与 A 卷题目完全相同、客观题顺序打乱且保证与 A 卷不同;判分按规范题号自动归一,A/B 共用一份参考答案(无需单独录 B 卷答案)。创建后到「考试详情 → 打印 A/B 卷」按名册出个性化卡(卷头二维码含考试短号+卷种+考号)。需要至少 2 道客观题。</p>
       <details style="margin-left:14px">
         <summary style="font-size:12px;cursor:pointer" class="hint">高级:自定义 B 卷版式与题序(一般不用;需要指定 B 卷顺序如倒序时才用)</summary>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="ghost" onclick="loadDesignerB()">⇩ 载入设计器 B 卷版式</button>
+          <span class="hint">设计器「AB 卷助手」生成过 B 卷后,这里一键带出版式与题序对照,零手填。</span>
+        </div>
         <label style="margin-top:8px">B 卷版式 JSON(客观题序可与 A 卷不同;主观题区必须与 A 卷完全一致)
           <textarea id="examLayout2" rows="4" placeholder='{"version":2, ...}(留空 = 跟随上方「启用 AB 卷」开关)' style="font-family:monospace;font-size:12px"></textarea>
         </label>
@@ -1042,8 +1046,23 @@ function loadCreate() {
   loadLastLayout(); // 进入页面即尝试载入设计器最近版式
 }
 
-function loadLastLayout() {
-  const saved = localStorage.getItem("og.lastLayout");
+// loadDesignerB 载入设计器「AB 卷助手」生成的 B 卷(og.lastLayoutAB = {a,b,order}):
+// 一键填 B 版式 + 题序对照,答案格子按 B 版式重出(留空 = 建考时与 A 卷答案自动同步)。
+function loadDesignerB() {
+  const box = document.getElementById("examMsg");
+  const raw = localStorage.getItem("og.lastLayoutAB");
+  if (!raw) { box.className = "err"; box.textContent = "设计器还没有生成过 B 卷:到「设计器 → AB 卷助手」生成一次(打乱/倒序)。"; return; }
+  let p;
+  try { p = JSON.parse(raw); } catch (e) { box.className = "err"; box.textContent = "og.lastLayoutAB 无法解析,请到设计器重新生成 B 卷。"; return; }
+  if (!p || !p.b || !Array.isArray(p.order)) { box.className = "err"; box.textContent = "设计器 B 卷数据不完整,请到设计器重新生成。"; return; }
+  document.getElementById("examLayout2").value = JSON.stringify(p.b);
+  document.getElementById("examOrder2").value = p.order.join(",");
+  renderKeyGridB();
+  box.className = "hint";
+  box.textContent = `已载入设计器 B 卷版式(题序对照 ${p.order.join(",")});B 卷答案留空即建考时与 A 卷自动同步。`;
+}
+
+function loadLastLayout() {  const saved = localStorage.getItem("og.lastLayout");
   const box = document.getElementById("examMsg");
   box.className = "err";
   if (!saved) { box.textContent = "设计器还没有生成过版式:先点「打开设计器出卡」生成一次。"; return; }
