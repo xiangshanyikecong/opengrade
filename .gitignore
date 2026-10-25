@@ -21,3 +21,6 @@ esubj.txt
 
 # 运行日志
 ogserver-run.log
+
+# 会话工具状态
+.zcode/
