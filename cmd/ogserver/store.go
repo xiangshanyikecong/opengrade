@@ -52,10 +52,13 @@ type Exam struct {
 	Anonymous bool              `json:"anonymous,omitempty"` // 匿名阅卷:阅卷工作台不显示考号
 	TaskDue   map[string]string `json:"taskDue,omitempty"`   // 任务截止时间:"q{题号}" 或 "{班级}" → "2006-01-02"
 
-	ManualFull float64      `json:"manualFull,omitempty"` // >0 = 手工成绩考试(免版式建考):单科直录分数,满分即此值
-	Appeals    []Appeal     `json:"appeals,omitempty"`    // 学生/家长成绩复核申请(发布后)
-	Rooms      *RoomPlan    `json:"rooms,omitempty"`      // 考场编排方案(生成后落盘,可微调)
-	Audit      []AuditEntry `json:"audit,omitempty"`      // 关键操作留痕(改答案/改分/发布/指派)
+	ManualFull float64  `json:"manualFull,omitempty"` // >0 = 手工成绩考试(免版式建考):单科直录分数,满分即此值
+	Appeals    []Appeal `json:"appeals,omitempty"`    // 学生/家长成绩复核申请(发布后)
+	// AppealBlocked 本场复核申请拉黑:考号 → 原因(可空)。被拉黑考号不能再对本场发起申请,
+	// 只作用于这一场考试;屡教不改的恶意申请走全校黑名单(school.json 的 appealBans)。
+	AppealBlocked map[string]string `json:"appealBlocked,omitempty"`
+	Rooms         *RoomPlan         `json:"rooms,omitempty"` // 考场编排方案(生成后落盘,可微调)
+	Audit         []AuditEntry      `json:"audit,omitempty"` // 关键操作留痕(改答案/改分/发布/指派)
 
 	// AB 卷(版式 v3):A 卷即 Layout;B 卷客观题序可打乱,主观题区两版强制一致(建考校验)。
 	// 作答入库时按 OrderB 归一为规范题号,统分/导出/趋势与单卷考试完全同口径。
@@ -1173,6 +1176,7 @@ func (s *Store) SetTaskDue(id, key, due, by string) error {
 }
 
 // AddAppeal 学生/家长发起成绩复核申请(仅已发布考试)。返回申请序号(1-based)。
+// 拒绝口径:本场被拉黑/全校黑名单、已有待处理申请(防重复刷)、理由为空或超 200 字。
 func (s *Store) AddAppeal(id, reg, reason string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1189,12 +1193,58 @@ func (s *Store) AddAppeal(id, reg, reason string) (int, error) {
 	if idx := findIndex(ex, reg); idx == 0 {
 		return 0, fmt.Errorf("本次考试未找到与考号 %s 关联的答卷", reg)
 	}
-	if strings.TrimSpace(reason) == "" {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
 		return 0, fmt.Errorf("请填写复核理由")
 	}
-	ex.Appeals = append(ex.Appeals, Appeal{Time: time.Now(), By: reg, Reason: strings.TrimSpace(reason), Status: "open"})
-	ex.log("student:"+reg, "appeal", fmt.Sprintf("发起成绩复核申请:%s", strings.TrimSpace(reason)))
+	if n := len([]rune(reason)); n > 200 {
+		return 0, fmt.Errorf("复核理由请控制在 200 字以内(当前 %d 字)", n)
+	}
+	if _, blocked := ex.AppealBlocked[reg]; blocked {
+		return 0, fmt.Errorf("你已被限制提交本场复核申请,请联系老师")
+	}
+	if s.School.AppealBanned(reg) {
+		return 0, fmt.Errorf("你已被限制提交复核申请,请联系老师")
+	}
+	for _, a := range ex.Appeals {
+		if a.By == reg && a.Status == "open" {
+			return 0, fmt.Errorf("你已有一条待处理的复核申请,请等待老师处理后再发起")
+		}
+	}
+	ex.Appeals = append(ex.Appeals, Appeal{Time: time.Now(), By: reg, Reason: reason, Status: "open"})
+	ex.log("student:"+reg, "appeal", fmt.Sprintf("发起成绩复核申请:%s", reason))
 	return len(ex.Appeals), s.save(ex)
+}
+
+// SetAppealBlock 拉黑/解除某考号对本场考试的复核申请资格(原因可空,展示给教师用)。
+func (s *Store) SetAppealBlock(id, reg string, blocked bool, reason, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return fmt.Errorf("考试 %s 不存在", id)
+	}
+	reg = strings.TrimSpace(reg)
+	if reg == "" {
+		return fmt.Errorf("考号不能为空")
+	}
+	reason = strings.TrimSpace(reason)
+	if blocked {
+		if len([]rune(reason)) > 200 {
+			return fmt.Errorf("拉黑原因请控制在 200 字以内")
+		}
+		if ex.AppealBlocked == nil {
+			ex.AppealBlocked = map[string]string{}
+		}
+		ex.AppealBlocked[reg] = reason
+		ex.log(by, "appealBlock", fmt.Sprintf("限制考号 %s 的本场复核申请资格:%s", reg, nonEmptyStr(reason, "(无说明)")))
+	} else {
+		if ex.AppealBlocked != nil {
+			delete(ex.AppealBlocked, reg)
+		}
+		ex.log(by, "appealUnblock", fmt.Sprintf("恢复考号 %s 的本场复核申请资格", reg))
+	}
+	return s.save(ex)
 }
 
 // ResolveAppeal 教师裁决复核申请:回复处理结论(改分请走阅卷工作台,留痕更完整)。

@@ -131,3 +131,46 @@ details.more > .menu a.danger, details.more > .menu button.danger { color: var(-
   .sidebar .logo span, .sidebar .user .name, .sidebar .nav-head .txt, .sidebar .nav-sub, .sidebar .side-foot .txt { display: none; }
   .main-area, body.side-collapsed .main-area { margin-left: 54px; }
 }
+
+/* —— 轻提示 toast(全站,OG.toast) —— */
+#ogToasts { position: fixed; top: 64px; right: 20px; z-index: 220; display: flex; flex-direction: column; gap: 8px; }
+.og-toast { background: #1c2430; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13.5px;
+  box-shadow: 0 8px 24px rgba(16,24,40,.22); max-width: 400px; transition: opacity .25s, transform .25s; }
+.og-toast.out { opacity: 0; transform: translateY(-6px); }
+
+/* —— 列表套件(OG.listKit):chips + 搜索框 + 分页 —— */
+.list-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 4px 0 10px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { border: 1px solid var(--line); background: #fff; color: var(--text2); border-radius: 14px; padding: 2px 12px;
+  font-size: 12.5px; cursor: pointer; line-height: 20px; }
+.chip:hover { color: var(--brand); border-color: var(--brand); }
+.chip.on { background: var(--brand-light); color: var(--brand); border-color: var(--brand); font-weight: 600; }
+.chip b { font-weight: 600; }
+.list-search { position: relative; }
+.list-search input { border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px 5px 28px; font: inherit;
+  font-size: 13px; width: 230px; }
+.list-search input:focus { outline: none; border-color: var(--brand); }
+.list-search .s-ico { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--text2); font-size: 13px; }
+.pager { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.pg-btn { min-width: 28px; height: 28px; padding: 0 6px; border: 1px solid var(--line); background: #fff; border-radius: 6px;
+  font-size: 13px; color: var(--ink); cursor: pointer; }
+.pg-btn:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+.pg-btn.cur { background: var(--brand); border-color: var(--brand); color: #fff; }
+.pg-btn:disabled { opacity: .4; cursor: default; }
+.pg-ell { color: var(--text2); padding: 0 2px; }
+
+/* —— 折叠区块(details.fold:已作废卷/复核申请等次要清单) —— */
+details.fold > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 600; padding: 4px 0; user-select: none; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::before { content: "▸"; color: var(--text2); transition: transform .15s; }
+details.fold[open] > summary::before { transform: rotate(90deg); }
+details.fold > summary:hover { color: var(--brand); }
+details.fold > summary .cnt { font-weight: 500; color: var(--text2); }
+
+/* —— 全屏看图(OG.lightbox) —— */
+#ogLightbox { display: none; position: fixed; inset: 0; background: rgba(12,18,26,.84); z-index: 320; cursor: zoom-out;
+  flex-direction: column; align-items: center; justify-content: center; padding: 28px; }
+#ogLightbox.show { display: flex; }
+#ogLightbox img { max-width: 96vw; max-height: 84vh; border-radius: 6px; background: #fff; }
+#ogLightbox .lb-cap { color: #dfe6ee; font-size: 13px; margin-bottom: 10px; }

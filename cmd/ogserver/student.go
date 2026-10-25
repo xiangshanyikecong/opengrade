@@ -11,6 +11,7 @@ import (
 
 	"github.com/opengrade/opengrade/auth"
 	"github.com/opengrade/opengrade/export"
+	"github.com/opengrade/opengrade/omr"
 	"github.com/opengrade/opengrade/score"
 )
 
@@ -134,15 +135,18 @@ func computeClassStats(ex *Exam, rep *score.Report) []ClassStat {
 	return out
 }
 
-// handleStudentExams GET /api/v1/student/exams → 我的(或子女的)考试列表。
+// handleStudentExams GET /api/v1/student/exams[?child=] → 我的(或子女的)考试列表。
 // 未发布成绩的考试不出现在列表中(教师确认发布后才可见)。
-// 只列出找到关联答卷的考试;全校已发布但与我无关的考试不再逐条刷「未找到关联答卷」
-// (考号没绑定的学生此前看到的是满屏噪音,分不清"没考"和"账号没绑号"),改为一条汇总数。
+// 家长多孩:同一场考试每个参加的子女各一行(item.child 标注),不再只显示第一个命中的孩子;
+// 带 ?child= 时只列该子女(前端切换子女下拉时带参重拉,列表与详情口径一致)。
+// 已发布但无关联答卷的考试不逐条刷「未找到关联答卷」(考号没绑定的学生此前看到的是满屏噪音,
+// 分不清"没考"和"账号没绑号"),改为一条汇总数。
 func handleStudentExams(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	type item struct {
 		ID        string  `json:"id"`
 		CreatedAt string  `json:"createdAt"`
-		Child     string  `json:"child,omitempty"` // 家长视图下对应的子女考号
+		ExamDate  string  `json:"examDate,omitempty"` // 考试日期(教务口径;缺省回退扫描时间)
+		Child     string  `json:"child,omitempty"`    // 家长视图下对应的子女考号
 		Subject   string  `json:"subject,omitempty"`
 		Found     bool    `json:"found"`
 		Absent    bool    `json:"absent"` // 该场考试登记为缺考
@@ -154,26 +158,38 @@ func handleStudentExams(w http.ResponseWriter, r *http.Request, store *Store, u 
 		HasOpen   bool    `json:"hasOpen,omitempty"`  // 有待处理的复核申请
 	}
 	regs := myRegs(u)
+	if u.Role == auth.RoleParent {
+		if child := r.URL.Query().Get("child"); child != "" {
+			if !containsStr(u.Children, child) {
+				httpError(w, http.StatusForbidden, fmt.Errorf("考号 %s 不在已绑定子女范围内", child))
+				return
+			}
+			regs = []string{child}
+		}
+	}
 	out := []item{}
-	unmatched := 0 // 已发布但没有我(子女)答卷的场数:可能未参加,或考号未绑定
+	unmatched := 0 // 已发布但当前口径下没有关联答卷的场数:可能未参加,或考号未绑定
 	for _, ex := range store.List() {
 		if !ex.Published {
 			continue // 成绩发布控制:未发布不可查
 		}
-		it := item{ID: ex.ID, CreatedAt: ex.CreatedAt.Format("2006-01-02 15:04"), Subject: ex.Subject}
+		var rep *score.Report // 懒算:同场多孩只统分一次
 		found := false
 		for _, reg := range regs {
-			idx := findIndex(ex, reg)
-			if idx == 0 {
+			if findIndex(ex, reg) == 0 {
 				continue
 			}
-			rep := mergeReport(ex)
+			if rep == nil {
+				rep = mergeReport(ex)
+			}
 			line, ok := lineByReg(rep, reg)
 			if !ok {
 				continue
 			}
 			found = true
-			it.Found, it.Absent, it.Score, it.Total, it.Rank, it.Child = true, line.Absent, line.Score, line.Total, line.Rank, reg
+			it := item{ID: ex.ID, CreatedAt: ex.CreatedAt.Format("2006-01-02 15:04"), ExamDate: examDateOf(ex),
+				Subject: ex.Subject, Found: true, Absent: line.Absent, Score: line.Score, Total: line.Total,
+				Rank: line.Rank, Child: reg}
 			cls := u.Class
 			if cls == "" {
 				cls = classOfReg(ex, reg) // 家长无班级:取子女班级
@@ -193,15 +209,93 @@ func handleStudentExams(w http.ResponseWriter, r *http.Request, store *Store, u 
 					it.HasOpen = true
 				}
 			}
-			break
+			out = append(out, it)
 		}
 		if !found {
 			unmatched++
 			continue
 		}
-		out = append(out, it)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"exams": out, "unmatched": unmatched})
+}
+
+// studentQuestion 是逐题明细的一行:学生端"我的成绩单"与教师端复核页共用同一口径。
+type studentQuestion struct {
+	Index      int     `json:"index"`
+	Kind       string  `json:"kind"`
+	Max        float64 `json:"max"`
+	MyAnswer   string  `json:"myAnswer,omitempty"`
+	Correct    string  `json:"correct,omitempty"`
+	Right      bool    `json:"right,omitempty"`
+	MyScore    float64 `json:"myScore"`
+	Wrong      bool    `json:"wrong"`
+	Pending    bool    `json:"pending,omitempty"`    // 主观题评卷中(未评完不计错题,展示"评卷中")
+	Elective   string  `json:"elective,omitempty"`   // 选做组可选题号(如 "23/24");非空即选做题
+	NotCounted bool    `json:"notCounted,omitempty"` // 选做题未被所选:不计分、不进错题本
+}
+
+// buildStudentQuestions 构建某生本场的逐题明细:客观题"我的作答 vs 参考答案"(对错着色),
+// 主观题得分/评卷状态;返回 (明细, 错题全局题号列表)。
+func buildStudentQuestions(ex *Exam, res *omr.Result, idx int) ([]studentQuestion, []int) {
+	questions := make([]studentQuestion, 0, len(ex.ObjectiveKey)+len(ex.Layout.Subjectives))
+	var wrongs []int
+	for qi := range ex.ObjectiveKey {
+		spec := ex.Layout.Questions[qi]
+		max := spec.Score
+		if max == 0 {
+			max = 1
+		}
+		my := ""
+		if qi < len(res.Answers) {
+			my = res.Answers[qi]
+		}
+		if ex.ObjectiveKey[qi] == "" { // 答案未录(该题不判分):不判对错、不进错题本
+			questions = append(questions, studentQuestion{Index: qi + 1, Kind: spec.Kind, Max: max, MyAnswer: my})
+			continue
+		}
+		right := my == ex.ObjectiveKey[qi]
+		if !right {
+			wrongs = append(wrongs, qi+1)
+		}
+		questions = append(questions, studentQuestion{Index: qi + 1, Kind: spec.Kind, Max: max,
+			MyAnswer: my, Correct: ex.ObjectiveKey[qi], Right: right, Wrong: !right})
+	}
+	eGroups := score.ElectiveGroups(ex.Layout.Subjectives)
+	excluded := score.ElectiveExcluded(eGroups, ex.Layout.Subjectives, ex.Grades, res, idx)
+	for qi, spec := range ex.Layout.Subjectives {
+		max := score.SubjectiveMax(spec)
+		qNo := len(ex.ObjectiveKey) + qi + 1
+		elective := ""
+		if g := score.GroupOf(eGroups, qi+1); g != nil { // 组员按主观题序号索引,标签转全局题号
+			labels := make([]string, len(g.Members))
+			for mi, mq := range g.Members {
+				labels[mi] = fmt.Sprintf("%d", len(ex.ObjectiveKey)+mq)
+			}
+			elective = strings.Join(labels, "/")
+		}
+		if excluded[qi+1] { // 选做题未被所选:不计分,标注后跳过
+			questions = append(questions, studentQuestion{Index: qNo, Kind: spec.Kind, Max: max,
+				Elective: elective, NotCounted: true})
+			continue
+		}
+		myScore := 0.0
+		done := false
+		if s, d, _ := score.SubjectiveScore(spec, ex.Grades, idx, qi+1); d {
+			myScore, done = s, true
+		}
+		if !done {
+			// 未评完(复核改分窗口/撤回重阅):不按 0 分进错题本,明示「评卷中」
+			questions = append(questions, studentQuestion{Index: qNo, Kind: spec.Kind, Max: max,
+				Pending: true, Elective: elective})
+			continue
+		}
+		if myScore < max {
+			wrongs = append(wrongs, qNo)
+		}
+		questions = append(questions, studentQuestion{Index: qNo, Kind: spec.Kind,
+			Max: max, MyScore: myScore, Wrong: myScore < max, Elective: elective})
+	}
+	return questions, wrongs
 }
 
 // handleStudentExam GET /api/v1/student/exams/{id}?child=<reg>
@@ -242,77 +336,7 @@ func handleStudentExam(w http.ResponseWriter, r *http.Request, store *Store, u *
 		return
 	}
 
-	type qItem struct {
-		Index      int     `json:"index"`
-		Kind       string  `json:"kind"`
-		Max        float64 `json:"max"`
-		MyAnswer   string  `json:"myAnswer,omitempty"`
-		Correct    string  `json:"correct,omitempty"`
-		Right      bool    `json:"right,omitempty"`
-		MyScore    float64 `json:"myScore"`
-		Wrong      bool    `json:"wrong"`
-		Pending    bool    `json:"pending,omitempty"`    // 主观题评卷中(未评完不计错题,展示"评卷中")
-		Elective   string  `json:"elective,omitempty"`   // 选做组可选题号(如 "23/24");非空即选做题
-		NotCounted bool    `json:"notCounted,omitempty"` // 选做题未被所选:不计分、不进错题本
-	}
-	questions := make([]qItem, 0, len(ex.ObjectiveKey)+len(ex.Layout.Subjectives))
-	var wrongs []int
-	for qi := range ex.ObjectiveKey {
-		spec := ex.Layout.Questions[qi]
-		max := spec.Score
-		if max == 0 {
-			max = 1
-		}
-		my := ""
-		if qi < len(res.Answers) {
-			my = res.Answers[qi]
-		}
-		if ex.ObjectiveKey[qi] == "" { // 答案未录(该题不判分):不判对错、不进错题本
-			questions = append(questions, qItem{Index: qi + 1, Kind: spec.Kind, Max: max, MyAnswer: my})
-			continue
-		}
-		right := my == ex.ObjectiveKey[qi]
-		if !right {
-			wrongs = append(wrongs, qi+1)
-		}
-		questions = append(questions, qItem{Index: qi + 1, Kind: spec.Kind, Max: max,
-			MyAnswer: my, Correct: ex.ObjectiveKey[qi], Right: right, Wrong: !right})
-	}
-	eGroups := score.ElectiveGroups(ex.Layout.Subjectives)
-	excluded := score.ElectiveExcluded(eGroups, ex.Layout.Subjectives, ex.Grades, res, idx)
-	for qi, spec := range ex.Layout.Subjectives {
-		max := score.SubjectiveMax(spec)
-		qNo := len(ex.ObjectiveKey) + qi + 1
-		elective := ""
-		if g := score.GroupOf(eGroups, qi+1); g != nil { // 组员按主观题序号索引,标签转全局题号
-			labels := make([]string, len(g.Members))
-			for mi, mq := range g.Members {
-				labels[mi] = fmt.Sprintf("%d", len(ex.ObjectiveKey)+mq)
-			}
-			elective = strings.Join(labels, "/")
-		}
-		if excluded[qi+1] { // 选做题未被所选:不计分,标注后跳过
-			questions = append(questions, qItem{Index: qNo, Kind: spec.Kind, Max: max,
-				Elective: elective, NotCounted: true})
-			continue
-		}
-		myScore := 0.0
-		done := false
-		if s, d, _ := score.SubjectiveScore(spec, ex.Grades, idx, qi+1); d {
-			myScore, done = s, true
-		}
-		if !done {
-			// 未评完(复核改分窗口/撤回重阅):不按 0 分进错题本,明示「评卷中」
-			questions = append(questions, qItem{Index: qNo, Kind: spec.Kind, Max: max,
-				Pending: true, Elective: elective})
-			continue
-		}
-		if myScore < max {
-			wrongs = append(wrongs, qNo)
-		}
-		questions = append(questions, qItem{Index: qNo, Kind: spec.Kind,
-			Max: max, MyScore: myScore, Wrong: myScore < max, Elective: elective})
-	}
+	questions, wrongs := buildStudentQuestions(ex, res, idx)
 
 	classRates := map[string]float64{}
 	for _, q := range rep.PerQuestion {

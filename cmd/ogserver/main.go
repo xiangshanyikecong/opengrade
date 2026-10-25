@@ -138,6 +138,8 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	mux.HandleFunc("GET /api/v1/exams/{id}/cards.pdf", staff(withStore(handleExamCardsPDF)))             // AB 卷个性化出卡(卷种点+复合码)
 	mux.HandleFunc("POST /api/v1/exams/{id}/task-due", staff(withStore(handleTaskDue)))                  // 任务截止时间
 	mux.HandleFunc("POST /api/v1/exams/{id}/appeals/{n}/resolve", staff(withStore(handleResolveAppeal))) // 裁决复核申请
+	mux.HandleFunc("POST /api/v1/exams/{id}/appeals/block", staff(withStore(handleAppealBlock)))         // 复核申请资格:本场拉黑/解除
+	mux.HandleFunc("GET /api/v1/exams/{id}/students/{reg}", staff(withStore(handleStudentDetailStaff)))  // 学生个体复核视图(逐题作答+改分+整卷)
 	mux.HandleFunc("POST /api/v1/exams/{id}/results/{student}/ack", staff(withStore(handleSheetAck)))    // 残卷告警人工接受/撤销
 	mux.HandleFunc("POST /api/v1/exams/{id}/flags/clear", staff(withStore(handleClearFlag)))             // 清除 ⚑ 待复核标记
 	mux.HandleFunc("GET /api/v1/workload", staff(func(w http.ResponseWriter, r *http.Request, u *auth.User) {
@@ -199,6 +201,12 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	}))
 	mux.HandleFunc("PUT /api/v1/school/sessions", adminOnly(func(w http.ResponseWriter, r *http.Request, u *auth.User) {
 		handleSchoolSessionsSet(w, r, school, u)
+	}))
+	mux.HandleFunc("GET /api/v1/school/appeal-bans", staff(func(w http.ResponseWriter, r *http.Request, u *auth.User) {
+		handleAppealBansGet(w, school, u)
+	}))
+	mux.HandleFunc("PUT /api/v1/school/appeal-bans", adminOnly(func(w http.ResponseWriter, r *http.Request, u *auth.User) {
+		handleAppealBansSet(w, r, school, u)
 	}))
 	mux.HandleFunc("GET /api/v1/students", staff(func(w http.ResponseWriter, r *http.Request, u *auth.User) {
 		handleStudentsList(w, school, authStore, u)
@@ -808,34 +816,41 @@ type examDetail struct {
 	Roster     []rosterRow           `json:"roster"`     // 名册(缺扫名单/班级口径展示)
 
 	// 考试元数据 + 卷生命周期 + 复核申请
-	ExamDate   string            `json:"examDate,omitempty"`
-	Term       string            `json:"term,omitempty"`
-	ExamType   string            `json:"examType,omitempty"`
-	ExamGroup  string            `json:"examGroup,omitempty"`
-	Session    string            `json:"session,omitempty"`    // 场次(监考冲突检测依据)
-	Sessions   []SessionDef      `json:"sessions"`             // 全校场次表(详情页场次下拉选项)
-	Anonymous  bool              `json:"anonymous,omitempty"`  // 匿名阅卷开关
-	ManualMode bool              `json:"manualMode,omitempty"` // 手工成绩考试(免版式建考)
-	ManualFull float64           `json:"manualFull,omitempty"` // 手工成绩满分
-	Duplicates [][]int           `json:"duplicates"`           // 同考号多份卷(每组卷号列表,人工裁决保留哪份)
-	VoidedRows []absentInfo      `json:"voidedRows"`           // 已作废卷(可恢复)
-	Appeals    []appealView      `json:"appeals"`              // 成绩复核申请(发布后学生发起)
-	HasB       bool              `json:"hasB,omitempty"`       // AB 卷考试(配置了 B 卷版式)
-	ShortID    string            `json:"shortId,omitempty"`    // 考试短号(复合码前缀,个性化出卡用)
-	KeyB       []string          `json:"keyB,omitempty"`       // B 卷客观题参考答案(规范题号序;详情页后补出口)
-	OrderB     []int             `json:"orderB,omitempty"`     // B 卷题序对照(卡面第 i 题 → 规范题号)
-	RegOf      map[string]string `json:"regOf"`                // 卷号 → 考号(重复卷表头等前端推导用)
+	ExamDate   string       `json:"examDate,omitempty"`
+	Term       string       `json:"term,omitempty"`
+	ExamType   string       `json:"examType,omitempty"`
+	ExamGroup  string       `json:"examGroup,omitempty"`
+	Session    string       `json:"session,omitempty"`    // 场次(监考冲突检测依据)
+	Sessions   []SessionDef `json:"sessions"`             // 全校场次表(详情页场次下拉选项)
+	Anonymous  bool         `json:"anonymous,omitempty"`  // 匿名阅卷开关
+	ManualMode bool         `json:"manualMode,omitempty"` // 手工成绩考试(免版式建考)
+	ManualFull float64      `json:"manualFull,omitempty"` // 手工成绩满分
+	// ManualScores 手工科目已录分数回显:考号 → 分数(录入表核对"谁已录/录了多少")。
+	ManualScores map[string]float64 `json:"manualScores,omitempty"`
+	Duplicates   [][]int            `json:"duplicates"` // 同考号多份卷(每组卷号列表,人工裁决保留哪份)
+	VoidedRows   []absentInfo       `json:"voidedRows"` // 已作废卷(可恢复)
+	Appeals      []appealView       `json:"appeals"`    // 成绩复核申请(发布后学生发起)
+	// AppealBlocked 本场复核拉黑(考号→原因);AppealBanned 全校黑名单 ∩ 本场名册(考号→原因)。
+	AppealBlocked map[string]string `json:"appealBlocked,omitempty"`
+	AppealBanned  map[string]string `json:"appealBanned,omitempty"`
+	HasB          bool              `json:"hasB,omitempty"`    // AB 卷考试(配置了 B 卷版式)
+	ShortID       string            `json:"shortId,omitempty"` // 考试短号(复合码前缀,个性化出卡用)
+	KeyB          []string          `json:"keyB,omitempty"`    // B 卷客观题参考答案(规范题号序;详情页后补出口)
+	OrderB        []int             `json:"orderB,omitempty"`  // B 卷题序对照(卡面第 i 题 → 规范题号)
+	RegOf         map[string]string `json:"regOf"`             // 卷号 → 考号(重复卷表头等前端推导用)
 }
 
 // appealView 是复核申请的一行(n 为 1-based 序号,裁决接口用)。
 type appealView struct {
-	N      int    `json:"n"`
-	Time   string `json:"time"`
-	By     string `json:"by"`             // 考号
-	Name   string `json:"name,omitempty"` // 姓名(名册带出)
-	Reason string `json:"reason"`
-	Status string `json:"status"`
-	Reply  string `json:"reply,omitempty"`
+	N          int    `json:"n"`
+	Time       string `json:"time"`
+	By         string `json:"by"`             // 考号
+	Name       string `json:"name,omitempty"` // 姓名(名册带出)
+	Reason     string `json:"reason"`
+	Status     string `json:"status"`
+	Reply      string `json:"reply,omitempty"`
+	ResolvedBy string `json:"resolvedBy,omitempty"` // 裁决人账号
+	ResolvedAt string `json:"resolvedAt,omitempty"` // 裁决时间
 }
 
 // rosterRow 是详情里的名册行(缺扫名单推导用,只带展示必需字段)。
@@ -950,9 +965,50 @@ func handleExamDetail(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		}
 	}
 	for i, a := range ex.Appeals {
-		av := appealView{N: i + 1, Time: a.Time.Format("2006-01-02 15:04"), By: a.By, Reason: a.Reason, Status: a.Status, Reply: a.Reply}
+		av := appealView{N: i + 1, Time: a.Time.Format("2006-01-02 15:04"), By: a.By, Reason: a.Reason, Status: a.Status, Reply: a.Reply,
+			ResolvedBy: a.ResolvedBy}
+		if a.ResolvedAt != nil {
+			av.ResolvedAt = a.ResolvedAt.Format("2006-01-02 15:04")
+		}
 		av.Name = nameOfReg(ex, a.By)
 		d.Appeals = append(d.Appeals, av)
+	}
+	if len(ex.AppealBlocked) > 0 {
+		d.AppealBlocked = ex.AppealBlocked
+	}
+	// 全校复核黑名单 ∩ 本场名册:详情页在复核申请行上直接标注"全局拉黑"
+	if bans := store.School.AppealBansSnapshot(); len(bans) > 0 {
+		rosterRegs := map[string]bool{}
+		for _, st := range ex.Roster {
+			rosterRegs[st.Reg] = true
+		}
+		for i := range ex.Results {
+			if ex.Results[i] != nil {
+				rosterRegs[ex.AssignedReg(i+1)] = true
+			}
+		}
+		for _, b := range bans {
+			if rosterRegs[b.Reg] {
+				if d.AppealBanned == nil {
+					d.AppealBanned = map[string]string{}
+				}
+				d.AppealBanned[b.Reg] = b.Reason
+			}
+		}
+	}
+	// 手工科目已录分数回显:录入表区分"没录"与"录了但表单没回显导致重复录入"
+	if ex.ManualFull > 0 {
+		d.ManualScores = map[string]float64{}
+		for i := range ex.Results {
+			res := ex.Results[i]
+			if res == nil || res.Voided || res.Absent {
+				continue
+			}
+			reg := ex.AssignedReg(i + 1)
+			if g, ok := ex.Grades[score.GradeKey(i+1, manualScoreQuestion)]; ok && g.Graded && reg != "" {
+				d.ManualScores[reg] = g.Score
+			}
+		}
 	}
 	for i := range ex.Results {
 		if ex.Results[i] != nil {

@@ -119,6 +119,9 @@ async function main() {
     </div>`).join("");
   // 常规流程:教师登录落到「我的任务」(任务视角进入阅卷);管理端落考试列表
   showTab(OG.is("admin", "leader") ? "exams" : "tasks");
+  // 外页深链回详情(复核页「← 考试详情」/ grader 返回):#exam-{id}
+  const hm = location.hash.match(/^#exam-([0-9a-zA-Z]+)$/);
+  if (hm) openExam(hm[1]);
   // 首登强制改密(P2):未改初始密码前锁住其它功能
   if (OG.me.mustChangePassword) enforcePasswordChange();
 }
@@ -383,8 +386,11 @@ function renderExamTable() {
 let hubExam = null; // 当前详情数据缓存(动作完成后局部刷新)
 
 let openExamSeq = 0; // 竞态守卫:快速连点/切换考试时,旧响应不得覆盖新页面(会丢已填输入)
+let hubLastExamId = "", hubScrollY = 0; // 同一场考试内操作后整页重渲染:记住滚动位置,处理一条不跳回页顶
 async function openExam(id) {
   const seq = ++openExamSeq;
+  const keepScroll = id === hubLastExamId;
+  if (hubLastExamId === id) hubScrollY = window.scrollY;
   showTab("exam");
   const box = document.getElementById("tab-exam");
   box.innerHTML = `<div class="panel">加载考试 ${id} …</div>`;
@@ -393,7 +399,9 @@ async function openExam(id) {
   catch (e) { if (seq === openExamSeq) box.innerHTML = `<div class="panel"><div class="err">${OG.esc(e.message)}</div></div>`; return; }
   if (seq !== openExamSeq) return; // 已切换到其它考试:丢弃过期响应
   hubExam = d;
+  hubLastExamId = id;
   renderExamHub(d);
+  if (keepScroll) window.scrollTo({ top: hubScrollY });
 }
 
 function hubStatNum(label, val, tone) {
@@ -430,6 +438,7 @@ function renderExamHub(d) {
       ${hubStatNum("缺考", st.absent)}
       ${hubStatNum("手工补录", st.manual)}
       ${hubStatNum("⚑ 待复核", (d.flagged || []).length, (d.flagged || []).length ? "var(--warn)" : "")}
+      ${(d.appeals || []).some(a => a.status === "open") ? hubStatNum("复核待处理", (d.appeals || []).filter(a => a.status === "open").length, "var(--bad)") : ""}
       ${(d.voidedRows || []).length ? hubStatNum("已作废卷", (d.voidedRows || []).length, "#8a94a3") : ""}
     </div>`;
 
@@ -505,63 +514,34 @@ function renderExamHub(d) {
         <td><a href="#" onclick="hubAbsent('${d.id}',${a.student});return false">取消缺考</a></td></tr>`).join("")}</table>`;
   }
 
-  // —— ③ 异常清单:重答/空白卡/考号异常/缺页残卷,逐条裁决(采纳推荐考号/标缺考/作废/接受残卷) ——
+  // —— ③ 异常清单:chips(待裁决/已裁决/提示类)+ 搜索 + 每页 10 条;百卷级异常不再全量堆在一页 ——
   if ((d.warnings || []).length) {
-    const isResidual = w => (w.texts || []).some(t => t.includes("仅识别到") || t.includes("页点不可信") || t.includes("位置配对"));
-    const warnRow = w => {
-      let actions;
-      if (w.resolved) {
-        actions = `<span class="hint">已裁决 ✓</span>`;
-      } else {
-        actions = `<a href="#" onclick="hubSuggest('${d.id}',${w.student});return false">推荐考号…</a>
-           <a href="#" onclick="hubAbsent('${d.id}',${w.student});return false">标记缺考</a>
-           ${canEdit ? `<a href="#" onclick="hubVoid('${d.id}',${w.student},true);return false" title="重复卷/废卷:作废后不进报告与阅卷队列">作废此卷</a>` : ""}
-           ${d.hasB && canEdit ? `<a href="#" onclick="hubAssignVariant('${d.id}',${w.student},'A');return false" title="按 A 卷重读客观题作答">指派A卷</a>
-           <a href="#" onclick="hubAssignVariant('${d.id}',${w.student},'B');return false" title="按 B 卷重读客观题作答并归一题序">指派B卷</a>` : ""}
-           ${isResidual(w) ? `<a href="#" onclick="hubAck('${d.id}',${w.student},true);return false" title="已线下核对该生各页:接受残卷,不再阻塞异常阶段(继续补扫会自动合并成完整卷)">接受残卷</a>` : ""}
-           <a href="/grader.html?exam=${d.id}">去阅卷裁决</a>`;
-      }
-      return `<tr style="${w.resolved || w.soft ? "opacity:.55" : ""}"><td>${w.student}</td><td>${OG.esc(w.reg || "?")}${w.variant ? ` <span class="pill on">${w.variant}卷</span>` : ""}</td>
-        <td>${(w.texts || []).map(t => OG.esc(t)).join(";<br>")}</td>
-        <td style="display:flex;gap:10px;flex-wrap:wrap">${actions}</td></tr>`;
-    };
-    html += `<div class="group-title" style="margin-top:14px">③ 异常清单(待裁决 ${warnOpen.length}${warnDone.length ? ` · 已裁决 ${warnDone.length}` : ""})</div>
-      <table><tr><th>卷号</th><th>考号</th><th>告警</th><th>处理</th></tr>
-      ${warnOpen.map(warnRow).join("")}${warnDone.map(warnRow).join("")}</table>
+    html += `<div class="group-title" style="margin-top:14px">③ 异常清单(待裁决 ${warnOpen.length}${warnDone.length ? ` · 已裁决/提示 ${warnDone.length}` : ""})</div>
+      <div id="ogList-warn"></div>
       <p class="hint">缺页/页序类告警:把该生全部页<b>整份重扫上传</b>会自动合并成完整卷;确实无页可补时才「接受残卷」。</p>
       <div id="hubSuggestBox" style="margin-top:8px"></div>`;
   }
 
-  // —— 已作废卷(可恢复;恢复限建卷人/组长/管理员) ——
+  // —— 已作废卷:折叠收纳(默认收起)+ 搜索 + 分页;恢复限建卷人/组长/管理员 ——
   if ((d.voidedRows || []).length) {
-    html += `<div class="group-title" style="margin-top:14px">已作废卷(${d.voidedRows.length})</div>
-      <table><tr><th>卷号</th><th>考号</th><th></th></tr>
-      ${d.voidedRows.map(v => `<tr style="opacity:.6"><td>卷 ${v.student}</td><td>${v.reg || "?"}</td>
-        <td>${canEdit ? `<a href="#" onclick="hubVoid('${d.id}',${v.student},false);return false">恢复此卷</a>` : `<span class="hint">恢复需建卷人/年级组长/管理员</span>`}</td></tr>`).join("")}</table>`;
+    html += `<details class="fold" style="margin-top:12px"><summary>已作废卷 <span class="cnt">(${d.voidedRows.length} · 不进报告与阅卷,可恢复)</span></summary>
+      <div id="ogList-void" style="margin-top:6px"></div></details>`;
   }
 
-  // —— ④ ⚑ 待复核队列:阅卷标记的出口(改分后点「清除⚑」收口,队列才排空) ——
+  // —— ④ ⚑ 待复核队列:阅卷标记的出口(改分后点「清除⚑」收口,队列才排空)——
   if ((d.flagged || []).length) {
     html += `<div class="group-title" style="margin-top:14px">⚑ 待复核队列(${d.flagged.length})</div>
-      <table><tr><th>题号</th><th>卷号</th><th>考号</th><th>当前分</th><th></th></tr>
-      ${d.flagged.map(f => `<tr><td>第 ${objN + f.question} 题</td><td>${f.student}</td><td>${d.anonymous ? "已匿名" : (f.reg || "?")}</td><td>${f.score}</td>
-        <td style="display:flex;gap:10px;flex-wrap:wrap">
-          <a href="/grader.html?exam=${d.id}&q=${f.question}&student=${f.student}">复核改分 ↗</a>
-          <a href="#" onclick="hubClearFlag('${d.id}',${f.student},${f.question});return false" title="复核完成的收口:清除 ⚑,队列排空(分数不变)">清除⚑</a>
-        </td></tr>`).join("")}</table>`;
+      <div id="ogList-flag"></div>`;
   }
 
-  // —— 成绩复核申请(发布后学生/家长发起) ——
-  if ((d.appeals || []).length) {
-    html += `<div class="group-title" style="margin-top:14px">成绩复核申请(${d.appeals.filter(a => a.status === "open").length} 条待处理)</div>
-      <table><tr><th>#</th><th>时间</th><th>学生</th><th>理由</th><th>状态</th><th>处理</th></tr>
-      ${d.appeals.map(a => `<tr><td>${a.n}</td><td>${OG.esc(a.time)}</td><td>${OG.esc(a.name || a.by)}</td><td style="max-width:320px">${OG.esc(a.reason)}</td>
-        <td>${a.status === "open" ? '<span class="pill off">待处理</span>' : `<span class="pill on">已回复</span>`}</td>
-        <td>${a.status === "open"
-          ? `${canEdit ? `<input id="appealReply${a.n}" placeholder="回复结论(可空)" style="width:160px;padding:4px 8px">
-             <button class="ghost" onclick="resolveAppeal('${d.id}',${a.n})">标记已处理</button>` : `<span class="hint">裁决需建卷人/年级组长/管理员</span>`}
-             <a href="/grader.html?exam=${d.id}">去改分 ↗</a>`
-          : `<span class="hint">${OG.esc(a.reply || "(无回复)")}</span>`}</td></tr>`).join("")}</table>`;
+  // —— 成绩复核申请(发布后学生/家长发起):有待处理默认展开;已回复沉底 ——
+  const appeals = d.appeals || [];
+  const appealsOpen = appeals.filter(a => a.status === "open").length;
+  if (appeals.length) {
+    html += `<details class="fold" style="margin-top:12px" ${appealsOpen ? "open" : ""}>
+      <summary>成绩复核申请 <span class="cnt">待处理 ${appealsOpen} · 已回复 ${appeals.length - appealsOpen}</span></summary>
+      <div id="ogList-appeal" style="margin-top:6px"></div>
+      <div id="appealBlockBox" style="margin-top:8px"></div></details>`;
   }
 
   // —— ⑤ 客观题参考答案(逐格编辑,修正后全班重统;判断 T/F、多选连写) ——
@@ -611,6 +591,133 @@ function renderExamHub(d) {
   html += `</div>`;
   box.innerHTML = html;
   fillSessionOptions("metaSession", d.session);
+  mountHubLists(d, canEdit, objN); // 四个大列表(异常/作废/⚑/复核)挂分页搜索套件
+}
+
+// mountHubLists 给详情页四个大列表挂 OG.listKit(chips + 防抖搜索 + 每页 10 条)。
+// 状态(chips/搜索词/页码)存 OG.listState,操作后整页重渲染不丢上下文。
+function mountHubLists(d, canEdit, objN) {
+  const isResidual = w => (w.texts || []).some(t => t.includes("仅识别到") || t.includes("页点不可信") || t.includes("位置配对"));
+  // ③ 异常清单:待裁决在前,已裁决/提示类沉底
+  if (document.getElementById("ogList-warn")) {
+    const warnActions = w => `<a href="#" onclick="hubSuggest('${d.id}',${w.student});return false">推荐考号…</a>
+      <a href="#" onclick="hubAbsent('${d.id}',${w.student});return false">标记缺考</a>
+      ${canEdit ? `<a href="#" onclick="hubVoid('${d.id}',${w.student},true);return false" title="重复卷/废卷:作废后不进报告与阅卷队列">作废此卷</a>` : ""}
+      ${d.hasB && canEdit ? `<a href="#" onclick="hubAssignVariant('${d.id}',${w.student},'A');return false" title="按 A 卷重读客观题作答">指派A卷</a>
+      <a href="#" onclick="hubAssignVariant('${d.id}',${w.student},'B');return false" title="按 B 卷重读客观题作答并归一题序">指派B卷</a>` : ""}
+      ${isResidual(w) ? `<a href="#" onclick="hubAck('${d.id}',${w.student},true);return false" title="已线下核对该生各页:接受残卷,不再阻塞异常阶段(继续补扫会自动合并成完整卷)">接受残卷</a>` : ""}
+      <a href="/grader.html?exam=${d.id}">去阅卷裁决</a>`;
+    const warns = (d.warnings || []).slice().sort((a, b) =>
+      (a.resolved - b.resolved) || (a.soft - b.soft) || (a.student - b.student)); // 未决在前、人工裁决次之、提示类沉底
+    OG.listKit({
+      id: "ogList-warn", state: OG.listState("warn"), rows: () => warns,
+      chipOf: w => !w.resolved ? "open" : (w.soft ? "soft" : "done"),
+      chips: [
+        { k: "open", label: "待裁决", count: warns.filter(w => !w.resolved).length },
+        { k: "done", label: "已裁决", count: warns.filter(w => w.resolved && !w.soft).length },
+        { k: "soft", label: "提示类", count: warns.filter(w => w.soft).length },
+      ],
+      search: (w, q) => (w.reg || "").toLowerCase().includes(q) || String(w.student) === q ||
+        (w.texts || []).some(t => t.toLowerCase().includes(q)),
+      placeholder: "搜索卷号/考号/告警内容",
+      headHTML: () => "<tr><th>卷号</th><th>考号</th><th>告警</th><th>处理</th></tr>",
+      rowHTML: w => `<tr style="${w.resolved || w.soft ? "opacity:.55" : ""}"><td>${w.student}</td>
+        <td>${OG.esc(w.reg || "?")}${w.variant ? ` <span class="pill on">${w.variant}卷</span>` : ""}</td>
+        <td>${(w.texts || []).map(t => OG.esc(t)).join(";<br>")}</td>
+        <td style="display:flex;gap:10px;flex-wrap:wrap">${w.resolved ? `<span class="hint">已裁决 ✓</span>` : warnActions(w)}</td></tr>`,
+      empty: "没有符合条件的异常卷",
+    }).render();
+  }
+  // 已作废卷(折叠区)
+  if (document.getElementById("ogList-void")) {
+    OG.listKit({
+      id: "ogList-void", state: OG.listState("void"), rows: () => d.voidedRows || [], size: 10,
+      search: (v, q) => (v.reg || "").toLowerCase().includes(q) || String(v.student) === q,
+      placeholder: "搜索卷号/考号",
+      headHTML: () => "<tr><th>卷号</th><th>考号</th><th>操作</th></tr>",
+      rowHTML: v => `<tr style="opacity:.6"><td>卷 ${v.student}</td><td>${OG.esc(v.reg || "?")}</td>
+        <td>${canEdit ? `<a href="#" onclick="hubVoid('${d.id}',${v.student},false);return false">恢复此卷</a>` : `<span class="hint">恢复需建卷人/年级组长/管理员</span>`}</td></tr>`,
+      empty: "没有作废卷",
+    }).render();
+  }
+  // ⚑ 待复核队列
+  if (document.getElementById("ogList-flag")) {
+    OG.listKit({
+      id: "ogList-flag", state: OG.listState("flag"), rows: () => d.flagged || [],
+      search: (f, q) => (f.reg || "").toLowerCase().includes(q) || String(f.student) === q || String(objN + f.question) === q,
+      placeholder: "搜索题号/卷号/考号",
+      headHTML: () => "<tr><th>题号</th><th>卷号</th><th>考号</th><th>当前分</th><th>操作</th></tr>",
+      rowHTML: f => `<tr><td>第 ${objN + f.question} 题</td><td>${f.student}</td>
+        <td>${d.anonymous ? "已匿名" : OG.esc(f.reg || "?")}</td><td>${f.score}</td>
+        <td style="display:flex;gap:10px;flex-wrap:wrap">
+          <a href="/grader.html?exam=${d.id}&q=${f.question}&student=${f.student}">复核改分 ↗</a>
+          <a href="#" onclick="hubClearFlag('${d.id}',${f.student},${f.question});return false" title="复核完成的收口:清除 ⚑,队列排空(分数不变)">清除⚑</a>
+        </td></tr>`,
+      empty: "没有待复核切片",
+    }).render();
+  }
+  // 成绩复核申请:待处理在前、已回复沉底;深链到学生个体复核页改分
+  if (document.getElementById("ogList-appeal")) {
+    const blockedLocal = d.appealBlocked || {}, blockedGlobal = d.appealBanned || {};
+    const rows = (d.appeals || []).slice().sort((a, b) => {
+      const ao = a.status === "open" ? 0 : 1, bo = b.status === "open" ? 0 : 1;
+      return ao - bo || (a.time < b.time ? 1 : -1); // 已回复的按时间倒序沉底
+    });
+    const appealBadge = a => blockedGlobal[a.by] ? ` <span class="pill off" title="全校复核黑名单:${OG.esc(blockedGlobal[a.by] || "(无说明)")}">全局拉黑</span>`
+      : blockedLocal[a.by] ? ` <span class="pill warn" title="本场已拉黑:${OG.esc(blockedLocal[a.by] || "(无说明)")}">本场拉黑</span>` : "";
+    OG.listKit({
+      id: "ogList-appeal", state: OG.listState("appeal"), rows: () => rows,
+      chipOf: a => a.status === "open" ? "open" : "done",
+      chips: [
+        { k: "open", label: "待处理", count: rows.filter(a => a.status === "open").length },
+        { k: "done", label: "已回复", count: rows.filter(a => a.status !== "open").length },
+      ],
+      search: (a, q) => (a.by || "").toLowerCase().includes(q) || (a.name || "").toLowerCase().includes(q) ||
+        (a.reason || "").toLowerCase().includes(q) || (a.reply || "").toLowerCase().includes(q),
+      placeholder: "搜索考号/姓名/理由/回复",
+      headHTML: () => "<tr><th>#</th><th>时间</th><th>学生</th><th>理由</th><th>状态</th><th>处理</th></tr>",
+      rowHTML: a => `<tr><td>${a.n}</td><td>${OG.esc(a.time)}</td>
+        <td>${OG.esc(a.name || a.by)}${appealBadge(a)}</td>
+        <td style="max-width:320px">${OG.esc(a.reason)}</td>
+        <td>${a.status === "open" ? '<span class="pill off">待处理</span>' : `<span class="pill on">已回复</span>`}</td>
+        <td style="min-width:260px">${a.status === "open"
+          ? `${canEdit ? `<input id="appealReply${a.n}" placeholder="回复结论(可空)" style="width:150px;padding:4px 8px">
+             <button class="ghost" onclick="resolveAppeal('${d.id}',${a.n})">标记已处理</button>
+             <a href="#" class="danger" onclick="hubAppealBlock('${d.id}','${OG.esc(a.by)}');return false" title="拉黑后该生不能再对本场发起复核申请">拉黑本场</a>` : `<span class="hint">裁决需建卷人/年级组长/管理员</span>`}
+             <a href="/review.html?exam=${d.id}&reg=${encodeURIComponent(a.by)}&appeal=${a.n}"><b>查看答卷并改分 ↗</b></a>`
+          : `<span class="hint">${OG.esc(a.reply || "(无回复)")}<br>${OG.esc(a.resolvedBy || "")} ${OG.esc(a.resolvedAt || "")}</span>`}</td></tr>`,
+      empty: "没有复核申请",
+    }).render();
+  }
+}
+
+// hubAppealBlock 弹出本场拉黑小面板(管理员可同时拉黑全校)。
+function hubAppealBlock(id, reg) {
+  const box = document.getElementById("appealBlockBox");
+  if (!box) return;
+  box.innerHTML = `<div class="panel" style="padding:10px 12px;background:var(--bg)">
+    <b>限制复核申请资格 · 考号 ${OG.esc(reg)}</b>
+    <p class="hint" style="margin:4px 0">该生将不能再对本场考试发起复核申请(已有申请不受影响,可正常裁决);已发起的待处理申请建议先裁决。</p>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input id="blockReason" placeholder="原因(选填,仅教师可见)" maxlength="200" style="width:260px;padding:5px 8px">
+      ${OG.is("admin") ? `<label title="全校黑名单:该生对所有考试的复核申请一律拒绝(用户管理页可解除)"><input type="checkbox" id="blockGlobal"> 同时加入全校黑名单</label>` : ""}
+      <button class="ghost" style="color:var(--bad);border-color:var(--bad)" onclick="hubBlockSubmit('${OG.esc(id)}','${OG.esc(reg)}',true)">确认拉黑</button>
+      <button class="ghost" onclick="document.getElementById('appealBlockBox').innerHTML=''">取消</button>
+    </div></div>`;
+  document.getElementById("blockReason").focus();
+}
+
+// hubBlockSubmit 拉黑提交:本场必拉;勾了全局(仅管理员界面可见)再加 PUT school/appeal-bans。
+async function hubBlockSubmit(id, reg, blocked) {
+  const reason = (document.getElementById("blockReason") || {}).value || "";
+  const global = (document.getElementById("blockGlobal") || {}).checked;
+  try {
+    await OG.jpost(`/api/v1/exams/${id}/appeals/block`, { reg, blocked, reason });
+    if (global && OG.is("admin")) await OG.jpost(`/api/v1/school/appeal-bans`, { reg, blocked, reason }, "PUT");
+    OG.toast(blocked ? `已限制考号 ${reg} 的复核申请资格${global ? "(含全校)" : ""}` : `已恢复考号 ${reg} 的复核申请资格`);
+    document.getElementById("appealBlockBox").innerHTML = "";
+    await openExam(id);
+  } catch (e) { OG.toast("操作失败:" + e.message, 3600); }
 }
 
 // 填充场次下拉(选项来自全校场次表 /api/v1/school/sessions;selected 缺省保留当前值)。
@@ -684,22 +791,28 @@ async function resolveAppeal(id, n) {
   const reply = (document.getElementById("appealReply" + n) || {}).value || "";
   try {
     await OG.jpost(`/api/v1/exams/${id}/appeals/${n}/resolve`, { reply });
+    OG.toast("复核申请已标记处理");
     await openExam(id);
-  } catch (e) { alert(e.message); }
+  } catch (e) { OG.toast("裁决失败:" + e.message, 4200); }
 }
 
-// 手工成绩录入面板(免版式考试:逐格打分 + 整表粘贴)。
+// 手工成绩录入面板(免版式考试:逐格打分 + 整表粘贴)。已录分数回显(manualScores):
+// 此前保存成功后表格仍是全空,教师无法核对谁已录,误以为没保存会重复录入。
 function manualScorePanel(d) {
   const full = d.manualFull || 100;
+  const done = d.manualScores || {};
   const rows = (d.roster || []).map(r => {
     const absent = (d.absent || []).some(a => a.reg === r.reg);
-    return `<tr data-reg="${r.reg}" style="${absent ? "opacity:.5" : ""}">
-      <td>${r.reg}</td><td>${r.name || "-"}</td><td>${(r.classes || []).join("、") || "-"}</td>
-      <td><input class="msc" data-reg="${r.reg}" type="number" step="0.5" min="0" max="${full}" placeholder="成绩" style="width:90px;padding:5px 8px"></td>
-      <td><a href="#" onclick="manualAbsent('${d.id}','${r.reg}',${!absent});return false">${absent ? "取消缺考" : "标缺考"}</a></td>
+    const got = done[r.reg];
+    return `<tr data-reg="${OG.esc(r.reg)}" style="${absent ? "opacity:.5" : ""}">
+      <td>${OG.esc(r.reg)}</td><td>${OG.esc(r.name || "-")}</td><td>${OG.esc((r.classes || []).join("、") || "-")}</td>
+      <td><input class="msc" data-reg="${OG.esc(r.reg)}" type="number" step="0.5" min="0" max="${full}"
+        ${got != null ? `value="${got}" style="width:90px;padding:5px 8px;font-weight:600;color:var(--brand)"` : `placeholder="成绩" style="width:90px;padding:5px 8px"`}></td>
+      <td>${got != null ? `<span class="hint">已录</span> · ` : ""}<a href="#" onclick="manualAbsent('${d.id}','${OG.esc(r.reg)}',${!absent});return false">${absent ? "取消缺考" : "标缺考"}</a></td>
     </tr>`;
   }).join("");
-  return `<div class="group-title" style="margin-top:16px">① 成绩录入(手工成绩科目 · 满分 ${full};支持两位数与小数)</div>
+  const doneN = Object.keys(done).length;
+  return `<div class="group-title" style="margin-top:16px">① 成绩录入(手工成绩科目 · 满分 ${full};已录 ${doneN}/${(d.roster || []).length})</div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
       <button class="primary" onclick="saveManualScores('${d.id}')">保存全部已填成绩</button>
       <span class="hint">或把 Excel 两列(考号、成绩)复制到下面一键导入:</span>
@@ -1342,17 +1455,22 @@ async function submitCreateExam() {
 /* —— 补传扫描已并入「考试详情 → 扫描上传」(内联反馈 + 异常清单闭环) —— */
 async function delExam(id) {
   if (!confirm(`删除考试 ${id} 及全部数据?不可恢复。`)) return;
-  await OG.jpost(`/api/v1/exams/${id}`, {}, "DELETE");
-  loadExams();
+  try {
+    await OG.jpost(`/api/v1/exams/${id}`, {}, "DELETE");
+    OG.toast(`考试 ${id} 已删除`);
+    loadExams();
+  } catch (e) { OG.toast("删除失败:" + e.message, 4200); } // 403(删他人考试)/网络失败不再静默
 }
 async function pubExam(id, pub) {
+  // 撤回发布会让已查分的学生瞬间看不到成绩;重新发布会刷新发布时间 —— 高影响操作先确认
+  if (!pub && !confirm("撤回发布后,学生/家长端将立即看不到本场成绩。确认撤回?")) return;
   try {
     await OG.jpost(`/api/v1/exams/${id}/publish`, { published: pub });
+    OG.toast(pub ? "成绩已发布,学生/家长端可见" : "已撤回发布");
   } catch (e) {
-    alert(e.message); // 门禁拒绝(未评完/异常未裁决/答案未录)与权限问题都在这里说人话,不再无声失败
+    OG.toast(e.message, 4200); // 门禁拒绝(未评完/异常未裁决/答案未录)与权限问题都在这里说人话
     throw e;
   }
-  loadExams();
 }
 
 /* —— 校本题库:学校自录题(题干/答案/知识点/难度),设计器可从这里选题带出 —— */

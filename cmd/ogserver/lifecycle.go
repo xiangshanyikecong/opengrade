@@ -233,3 +233,36 @@ func handleResolveAppeal(w http.ResponseWriter, r *http.Request, store *Store, u
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// handleAppealBlock 拉黑/解除某考号对本场考试的复核申请资格:
+// POST /api/v1/exams/{id}/appeals/block {"reg":"00000001","blocked":true,"reason":"恶意刷申请"}
+// 权限口径同裁决(管理员/年级组长/建卷人);全场黑名单走 PUT /api/v1/school/appeal-bans(仅管理员)。
+func handleAppealBlock(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
+	ex, ok := store.Get(r.PathValue("id"))
+	if !ok {
+		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
+		return
+	}
+	if !canOpenExam(u, ex, store.School) {
+		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在或无权访问该考试(不在你的任教/管辖范围)"))
+		return
+	}
+	if !(u.Role == auth.RoleAdmin || u.Role == auth.RoleLeader || ex.CreatedBy == u.Username) {
+		httpError(w, http.StatusForbidden, fmt.Errorf("仅管理员/年级组长/建卷人可管理复核申请资格"))
+		return
+	}
+	var req struct {
+		Reg     string `json:"reg"`
+		Blocked *bool  `json:"blocked"`
+		Reason  string `json:"reason"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.Blocked == nil {
+		httpError(w, http.StatusBadRequest, fmt.Errorf("缺少 reg/blocked 字段"))
+		return
+	}
+	if err := store.SetAppealBlock(ex.ID, req.Reg, *req.Blocked, req.Reason, u.Username); err != nil {
+		httpError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}

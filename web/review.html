@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>学生个体复核 · OpenGrade</title>
+<link rel="stylesheet" href="/common.css">
+<style>
+  * { box-sizing: border-box; }
+  header { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 14px; padding: 0 24px;
+    height: 52px; background: #fff; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  header .who { font-size: 13.5px; }
+  header .who b { font-size: 15px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 18px 24px 40px; }
+  .score-strip { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .num { background: var(--bg); border-radius: 10px; padding: 10px 16px; min-width: 104px; }
+  .num span { display: block; font-size: 12px; color: var(--text2); }
+  .num b { font-size: 21px; }
+  .qrow-ok td { color: #15803d; }
+  .qrow-bad td { color: var(--bad); }
+  .score-cell { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .score-cell input { width: 76px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+  .score-cell input:focus { outline: none; border-color: var(--brand); }
+  .markbtn { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 3px 9px; cursor: pointer; font-size: 13px; color: var(--text2); }
+  .markbtn.on { background: var(--brand-light); border-color: var(--brand); color: var(--brand); font-weight: 600; }
+  .slice-wrap { position: relative; display: inline-block; max-width: 100%; }
+  .slice-wrap img { max-width: 100%; border: 1px solid var(--line); border-radius: 8px; display: block; cursor: zoom-in; background: #fff; }
+  .slice-wrap svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .page-tabs { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+  .page-tabs button { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 13px; }
+  .page-tabs button.cur { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .appeal-box { border: 1px solid #f3d9a8; background: #fffbee; border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; }
+  .appeal-box .meta { font-size: 12px; color: #a16207; }
+  textarea { border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; font: inherit; width: 100%; max-width: 560px; }
+  textarea:focus { outline: none; border-color: var(--brand); }
+  .err { color: var(--bad); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <a href="#" onclick="backToHub();return false">← 考试详情</a>
+  <h1>学生个体复核</h1>
+  <span class="who" id="who">加载中…</span>
+  <span style="flex:1"></span>
+  <span class="hint" id="ogUser"></span>
+</header>
+<main>
+  <div id="app"><div class="panel">加载中…</div></div>
+</main>
+
+<script src="/common.js"></script>
+<script>
+// 学生个体复核页:深链 ?exam=&reg=&appeal=(考号口径)。
+// 入口:考试详情复核申请「查看答卷并改分」/ 阅卷工作台「该生答卷」。
+// 数据:GET /api/v1/exams/{id}/students/{reg}(逐题明细 + 主观题 ver 乐观锁 + 整卷页数 + 复核申请 + 拉黑状态)。
+// 改分复用 POST /api/v1/grades(与阅卷工作台同一条留痕链路),改完可一键回复复核申请收口。
+const params = new URLSearchParams(location.search);
+const examId = params.get("exam") || "";
+const reg = params.get("reg") || "";
+let appealN = parseInt(params.get("appeal") || "0", 10) || 0;
+let D = null;            // 详情载荷
+let curPage = 1;         // 整卷当前页
+let autoResolve = false; // 改分保存后自动处理当前复核申请
+
+function backToHub() { location.href = examId ? `/teacher.html#exam-${examId}` : "/teacher.html"; }
+
+async function main() {
+  if (!await OG.init()) return;
+  if (!OG.is("admin", "leader", "teacher")) { location.href = "/login.html"; return; }
+  if (!examId || !reg) { document.getElementById("app").innerHTML = `<div class="panel"><div class="err">缺少 exam/reg 参数</div></div>`; return; }
+  await load();
+}
+
+async function load(keepScroll) {
+  const y = keepScroll ? window.scrollY : 0;
+  let d;
+  try { d = await OG.jget(`/api/v1/exams/${examId}/students/${encodeURIComponent(reg)}`); }
+  catch (e) { document.getElementById("app").innerHTML = `<div class="panel"><div class="err">${OG.esc(e.message)}</div></div>`; return; }
+  D = d;
+  renderHeader();
+  render();
+  if (keepScroll) window.scrollTo({ top: y });
+}
+
+function renderHeader() {
+  const d = D;
+  document.title = `复核 · ${d.name || d.reg} · OpenGrade`;
+  document.getElementById("who").innerHTML =
+    `<b>${OG.esc(d.name || d.reg)}</b> ${OG.esc(d.reg)}${(d.classes || []).length ? " · " + OG.esc(d.classes.join("、")) : ""} · 卷 ${d.student}` +
+    (d.subject ? ` · ${OG.esc(d.subject)}` : "") + (d.examDate ? ` · ${OG.esc(d.examDate)}` : "");
+}
+
+function render() {
+  const d = D;
+  const canEdit = !!d.canEdit;
+  const prevReply = (document.getElementById("appealReply") || {}).value || ""; // 重渲染不丢已输入的回复草稿
+  let html = "";
+
+  // —— 复核申请横幅(深链指定的那条突出显示;该生其它申请一并列出)——
+  const appeals = d.appeals || [];
+  if (appeals.length) {
+    const cur = appeals.find((_, i) => i + 1 === appealN) || null;
+    const openN = appeals.filter(a => a.status === "open").length;
+    html += `<div class="appeal-box">
+      <b>🙋 该生的复核申请</b> <span class="meta">${openN ? `${openN} 条待处理` : "全部已处理"}</span>
+      ${appeals.map((a, i) => {
+        const isCur = cur && i + 1 === appealN;
+        return `<div style="margin-top:8px;${isCur ? "font-weight:600" : "opacity:.85"}">
+          ${isCur ? "▶ " : ""}${OG.esc(a.time)} — ${OG.esc(a.reason)}
+          ${a.status === "open" ? ' <span class="pill off">待处理</span>' : ` <span class="pill on">已回复</span>
+          <span class="meta">${OG.esc(a.reply || "(无回复)")} · ${OG.esc(a.resolvedBy || "")} ${OG.esc(a.resolvedAt || "")}</span>`}
+        </div>`;
+      }).join("")}`;
+    if (cur && cur.status === "open") {
+      html += `<div style="margin-top:10px;display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+        <textarea id="appealReply" rows="2" maxlength="200" placeholder="回复结论(学生可见),如:已复核,第 3 题按步骤分调整 +1 分">${OG.esc(prevReply)}</textarea>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          ${canEdit ? `<button class="primary" onclick="resolveCur()">回复并标记已处理</button>
+          <label class="hint" style="display:flex;gap:5px;align-items:center"><input type="checkbox" id="autoResolve" ${autoResolve ? "checked" : ""} onchange="autoResolve=this.checked"> 改分保存后自动处理该申请</label>
+          <button class="ghost" style="color:var(--bad);border-color:var(--bad)" onclick="blockCur()">拉黑该生本场申请</button>`
+          : `<span class="hint">裁决/拉黑需建卷人、年级组长或管理员</span>`}
+        </div></div>`;
+    }
+    html += `</div>`;
+  }
+
+  // —— 成绩概览 ——
+  html += `<div class="score-strip">
+    <div class="num"><span>总分 / 满分</span><b>${d.score} / ${d.total}</b></div>
+    <div class="num"><span>客观 / 主观</span><b>${d.objective} / ${d.subjective}</b></div>
+    <div class="num"><span>年级排名</span><b>第 ${d.rank} 名<span style="font-size:12px;color:var(--text2)"> / ${d.count} 人</span></b></div>
+    <div class="num"><span>年级均分</span><b>${d.mean}</b></div>
+    ${d.dirty ? `<div class="num" style="background:#fdeeee"><span>状态</span><b style="color:var(--bad);font-size:14px">发布后有改分,需重新发布</b></div>` : ""}
+  </div>`;
+
+  if (d.absent) {
+    document.getElementById("app").innerHTML = html + `<div class="panel"><div class="empty"><div class="pic">🈳</div>该生本场登记为缺考,无作答明细。</div></div>`;
+    return;
+  }
+
+  // —— 逐题明细:客观只读(答案键统分),主观可改分(ver 乐观锁)——
+  const qs = d.questions || [];
+  const kindName = { choice: "单选", judge: "判断", multiple: "多选", fillblank: "填空", subjective: "解答" };
+  html += `<div class="panel">
+    <div class="group-title">逐题明细(${qs.length} 题 · 客观题按参考答案统分,改答案请到考试详情;主观题可直接改分)</div>
+    <table><tr><th style="width:52px">题号</th><th style="width:64px">题型</th><th style="width:64px">满分</th>
+      <th>我的作答 / 参考答案</th><th style="width:190px">得分(主观可改)</th><th style="width:120px">标记</th></tr>`;
+  const subs = d.subjectives || [];
+  let subSeen = 0;
+  for (const q of qs) {
+    const isSub = q.index > d.objN;
+    let mine = "", scoreCell = "-", markCell = "";
+    if (!isSub) {
+      mine = `${q.myAnswer ? `<b>${OG.esc(q.myAnswer)}</b>` : '<span class="hint">(未答)</span>'}` +
+        (q.correct ? ` / <span class="hint">答案 ${OG.esc(q.correct)}</span>` : " / <span class=\"hint\">(不判分)</span>");
+      scoreCell = q.correct ? (q.right ? `<span class="pill on">✓</span> ${q.max}` : `<span class="pill off">✗</span> 0`) : "-";
+    } else {
+      const st = subs[subSeen++];
+      mine = `<span class="hint">${st.elective ? `选做 ${OG.esc(st.elective)} · ` : ""}${st.label ? OG.esc(st.label) + " · " : ""}卷面第 ${st.question} 主观题</span>`;
+      if (q.notCounted) { scoreCell = `<span class="hint">(未选做,不计分)</span>`; }
+      else if (q.pending) { scoreCell = scoreEditor(st); } // 评卷中也可在此补评(复核改分窗口)
+      else scoreCell = scoreEditor(st);
+      markCell = st.graded ? markButtons(st) : "";
+    }
+    const rowCls = q.wrong ? "qrow-bad" : q.right ? "qrow-ok" : "";
+    html += `<tr class="${rowCls}"><td>${q.index}</td><td>${kindName[q.kind] || q.kind}</td><td>${q.max}</td>
+      <td>${mine}</td><td>${scoreCell}</td><td>${markCell}</td></tr>`;
+    if (isSub && !q.notCounted) html += sliceRow(subs[subSeen - 1], q);
+  }
+  html += `</table></div>`;
+
+  // —— 整卷原图(多页可切换,点击放大)——
+  if (d.pages > 0) {
+    html += `<div class="panel">
+      <div class="group-title">整卷原图(矫正后扫描件 · 点击放大)</div>
+      <div class="page-tabs">${Array.from({ length: d.pages }, (_, i) =>
+        `<button class="${curPage === i + 1 ? "cur" : ""}" onclick="curPage=${i + 1};render()">${d.pages > 1 ? "第 " + (i + 1) + " 页" : "整卷"}</button>`).join("")}</div>
+      <div class="slice-wrap"><img src="${d.pageURL}${d.pages > 1 ? "?p=" + curPage : ""}" alt="整卷第${curPage}页"
+        onclick='OG.lightbox(this.src, "整卷 · 第 ${curPage} 页")' onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'hint',textContent:'整卷图缺失(手工补录卷无原图)'}))"></div>
+    </div>`;
+  }
+
+  document.getElementById("app").innerHTML = html;
+}
+
+// scoreEditor 主观题得分编辑(整题或逐小问),带 ver 乐观锁。
+function scoreEditor(st) {
+  if ((st.parts || []).length) {
+    return `<div class="score-cell" style="gap:6px">${st.parts.map(p =>
+      `<label class="hint" style="display:flex;align-items:center;gap:3px">(${p.part})
+        <input id="sc-${st.question}-${p.part}" type="number" step="0.5" min="0" max="${st.max}" value="${p.graded ? p.score : ""}">
+      </label>`).join("")}
+      <button class="ghost" onclick="saveScore(${st.question})">保存</button></div>`;
+  }
+  return `<div class="score-cell">
+    <input id="sc-${st.question}" type="number" step="0.5" min="0" max="${st.max}" value="${st.graded ? st.score : ""}">
+    <button class="ghost" onclick="saveScore(${st.question})">保存</button></div>`;
+}
+
+function markButtons(st) {
+  const b = (m, label, title) => `<button class="markbtn ${st.mark === m ? "on" : ""}" title="${title}"
+    onclick="toggleMark(${st.question},'${m}')">${label}</button>`;
+  return `<div class="score-cell">${b("check", "✓", "确认无误")}${b("cross", "✗", "判错无疑")}${b("flag", "⚑", "待复核(进入考试详情 ⚑ 队列)")}</div>`;
+}
+
+// sliceRow 主观题切片图行(含批注笔迹回显,坐标为归一化 0~1)。
+function sliceRow(st, q) {
+  if (st.missing) return "";
+  const ink = (st.ink || []).map(s => {
+    const pts = s.pts || [];
+    let str = "";
+    for (let i = 0; i + 1 < pts.length; i += 2) str += pts[i].toFixed(4) + "," + pts[i + 1].toFixed(4) + " ";
+    return `<polyline points="${str.trim()}" fill="none" stroke="${s.color === "green" ? "#00b389" : "#e34d59"}"
+      stroke-width="2" vector-effect="non-scaling-stroke" opacity=".85"/>`;
+  }).join("");
+  return `<tr><td colspan="6" style="background:#fafbfc;padding:6px 10px 10px">
+    <div class="slice-wrap"><img src="${st.sliceURL}" alt="第 ${q.index} 题作答切片" loading="lazy"
+      onclick='OG.lightbox(this.src, "第 ${q.index} 题作答切片")'
+      onerror="this.closest('div').innerHTML='<span class=hint>切片图缺失</span>'">
+      ${ink ? `<svg viewBox="0 0 1 1" preserveAspectRatio="none">${ink}</svg>` : ""}</div>
+  </td></tr>`;
+}
+
+// saveScore 保存主观题改分(小问逐问提交);发布后的考试会置 Dirty 提示重新发布。
+async function saveScore(question) {
+  const st = (D.subjectives || []).find(s => s.question === question);
+  if (!st) return;
+  try {
+    if ((st.parts || []).length) {
+      for (const p of st.parts) {
+        const v = parseFloat((document.getElementById(`sc-${question}-${p.part}`) || {}).value);
+        if (isNaN(v)) continue;
+        const r = await OG.jpost("/api/v1/grades", {
+          examId, student: D.student, question, part: p.part, score: v, graded: true,
+          mark: st.mark || "", ink: st.ink || [], ver: p.ver || 0,
+        });
+        p.ver = (r && r.ver) || (p.ver || 0) + 1;
+      }
+    } else {
+      const v = parseFloat((document.getElementById(`sc-${question}`) || {}).value);
+      if (isNaN(v)) { OG.toast("请输入分数"); return; }
+      if (v < 0 || v > st.max + 1e-9) { OG.toast(`分数须在 0~${st.max} 之间`); return; }
+      const r = await OG.jpost("/api/v1/grades", {
+        examId, student: D.student, question, score: v, graded: true,
+        mark: st.mark || "", ink: st.ink || [], ver: st.ver || 0,
+      });
+      st.ver = (r && r.ver) || (st.ver || 0) + 1;
+    }
+    OG.toast(D.published ? "已保存;考试已标记「待重新发布」,核对后在考试详情收口" : "已保存");
+    if (autoResolve && appealN) await resolveCur(true);
+    await load(true);
+  } catch (e) {
+    OG.toast("保存失败:" + e.message, 4200);
+    if (String(e.message).includes("刚被他人改过")) await load(true);
+  }
+}
+
+// toggleMark 切换 ✓/✗/⚑ 标记(评分内容原样带回,只动标记)。
+async function toggleMark(question, mark) {
+  const st = (D.subjectives || []).find(s => s.question === question);
+  if (!st) return;
+  const next = st.mark === mark ? "" : mark;
+  try {
+    if ((st.parts || []).length) {
+      for (const p of st.parts) {
+        const r = await OG.jpost("/api/v1/grades", {
+          examId, student: D.student, question, part: p.part, score: p.score, graded: p.graded,
+          mark: next, ink: st.ink || [], ver: p.ver || 0,
+        });
+        p.ver = (r && r.ver) || (p.ver || 0) + 1;
+      }
+    } else {
+      const r = await OG.jpost("/api/v1/grades", {
+        examId, student: D.student, question, score: st.score, graded: st.graded,
+        mark: next, ink: st.ink || [], ver: st.ver || 0,
+      });
+      st.ver = (r && r.ver) || (st.ver || 0) + 1;
+    }
+    OG.toast(next ? `已标记 ${next === "flag" ? "⚑ 待复核(考试详情 ⚑ 队列可见)" : next === "check" ? "✓" : "✗"}` : "已清除标记");
+    await load(true);
+  } catch (e) {
+    OG.toast("标记失败:" + e.message, 4200);
+    if (String(e.message).includes("刚被他人改过")) await load(true);
+  }
+}
+
+// resolveCur 回复并标记当前复核申请已处理。
+async function resolveCur(silent) {
+  const reply = (document.getElementById("appealReply") || {}).value || "";
+  try {
+    await OG.jpost(`/api/v1/exams/${examId}/appeals/${appealN}/resolve`, { reply });
+    OG.toast(silent ? "改分已保存,复核申请已同步标记处理 ✓" : "复核申请已标记处理 ✓");
+    autoResolve = false;
+    await load(true);
+  } catch (e) { OG.toast("处理失败:" + e.message, 4200); }
+}
+
+// blockCur 拉黑该生本场复核申请资格(管理员可同时全校拉黑)。
+async function blockCur() {
+  if (!confirm(`限制考号 ${reg} 对本场考试的复核申请资格?\n该生将不能再对本场发起申请(不影响其它考试)。`)) return;
+  const global = OG.is("admin") && confirm("是否同时加入全校黑名单?(该生对所有考试的复核申请都会被拒绝)\n点「取消」仅拉黑本场。");
+  try {
+    await OG.jpost(`/api/v1/exams/${examId}/appeals/block`, { reg, blocked: true });
+    if (global) await OG.jpost("/api/v1/school/appeal-bans", { reg, blocked: true }, "PUT");
+    OG.toast(`已限制考号 ${reg} 的复核申请资格${global ? "(含全校)" : ""}`);
+    await load(true);
+  } catch (e) { OG.toast("操作失败:" + e.message, 4200); }
+}
+
+main();
+</script>
+</body>
+</html>

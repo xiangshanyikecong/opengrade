@@ -82,7 +82,7 @@
 <header>
   <h1>Grader Studio <span class="meta" id="examMeta"></span></h1>
   <span style="flex:1"></span>
-  <span class="meta"><a href="/">设计器</a> · <a href="#" id="reportLink">统分报告</a></span>
+  <span class="meta"><a href="#" id="backHub">← 考试详情</a> · <a href="/">设计器</a> · <a href="#" id="reportLink">统分报告</a></span>
 </header>
 <main>
   <section class="stage" id="stage">
@@ -190,6 +190,7 @@ async function init() {
     return;
   }
   $("examMeta").textContent = `考试 ${examId} · ${meta.students} 份卷 · 客观 ${meta.objective.length} 题`;
+  $("backHub").href = `/teacher.html#exam-${examId}`; // 异常指派/阅卷做完回详情看清单是否清零
   const sel = $("questionSel");
   sel.innerHTML = meta.subjective.map((s, i) => {
     const t = meta.tasks && meta.tasks["q" + (i + 1)];
@@ -250,6 +251,7 @@ async function loadQuestion(q, keepCur) {
   let i = prevStudent ? slices.findIndex(x => x.student === prevStudent) : -1;
   if (i < 0) i = Math.max(0, slices.findIndex(x => !x.graded));
   cur = i;
+  $("questionSel").value = String(q); // 切题/跨题自动推进后同步下拉(否则下拉停在旧题,一点就跳回去)
   preload(Math.min(8, slices.length));
   render();
 }
@@ -411,7 +413,8 @@ function render() {
     elecNote = ` · 选做 ${s.elective.labels.join("/")}:${marksTxt},${chosenTxt}`;
   }
   $("studentInfo").innerHTML =
-    `学生 ${s.student}/${slices.length} · 考号 <b>${meta.anonymous ? "已匿名" : (s.reg || "?")}</b>${s.regValid || meta.anonymous ? "" : ' <span style="color:#c0392b">⚠ 无效,请指派</span>'} · 第 ${meta.objective.length + qIndex} 题(满分 ${qMax})${elecNote}`;
+    `学生 ${s.student}/${slices.length} · 考号 <b>${meta.anonymous ? "已匿名" : (s.reg || "?")}</b>${s.regValid || meta.anonymous ? "" : ' <span style="color:#c0392b">⚠ 无效,请指派</span>'} · 第 ${meta.objective.length + qIndex} 题(满分 ${qMax})${elecNote}` +
+    (!meta.anonymous && s.reg ? ` · <a href="/review.html?exam=${examId}&reg=${encodeURIComponent(s.reg)}" target="_blank" title="查看该生本场全部作答:逐题得分/切片/整卷,可直接改分">该生答卷 ↗</a>` : "");
   renderParts();
   clearBuf();
   highlightScoreBtns();
@@ -750,7 +753,7 @@ window.addEventListener("keydown", e => {
 function jumpNextFlagged() {
   const idx = [...slices.keys()].filter(i => slices[i].mark === "flag" && i !== cur);
   if (!idx.length) {
-    toast(cur.mark === "flag" ? "没有其他待复核卷(当前已是)— 复核后可打分覆盖,再按 X 清标" : "本题没有待复核卷");
+    toast(slices[cur] && slices[cur].mark === "flag" ? "没有其他待复核卷(当前已是)— 复核后可打分覆盖,再按 X 清标" : "本题没有待复核卷");
     return;
   }
   // 从当前位置环形找最近的一份

@@ -80,6 +80,17 @@ t03,王老师,教师,,三年三班,数学|物理'></textarea>
     <div class="err" id="impMsg" style="white-space:pre-wrap"></div>
   </div>
   <div class="panel">
+    <b>复核黑名单(全校)</b>
+    <p class="hint" style="margin:8px 0">名单内考号对<b>所有考试</b>的成绩复核申请一律拒绝;只限制单场请到考试详情的复核申请列表操作「拉黑本场」。误拉黑在此解除即恢复。</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:8px 0">
+      <input id="banReg" placeholder="考号(如 00000001)" style="width:170px">
+      <input id="banReason" placeholder="原因(选填,仅教师可见)" style="width:280px" maxlength="200">
+      <button class="primary" onclick="addAppealBan()">加入黑名单</button>
+      <span class="err" id="banMsg"></span>
+    </div>
+    <div id="banList"><span class="hint">加载中…</span></div>
+  </div>
+  <div class="panel">
     <b>全部账号</b>
     <div id="userList" style="margin-top:10px"></div>
   </div>
@@ -91,6 +102,40 @@ async function main() {
   if (!OG.is("admin")) { document.body.innerHTML = "<p style='padding:40px'>仅管理员可访问本页。<a href='/teacher.html'>返回</a></p>"; return; }
   refresh();
   loadSchool();
+  loadAppealBans();
+}
+
+/* —— 全校复核黑名单:屡次恶意刷申请的学生;单场拉黑在考试详情 —— */
+async function loadAppealBans() {
+  let bans;
+  try { bans = await OG.jget("/api/v1/school/appeal-bans"); }
+  catch (e) { document.getElementById("banList").innerHTML = `<span class="err">${OG.esc(e.message)}</span>`; return; }
+  const box = document.getElementById("banList");
+  if (!bans.length) { box.innerHTML = `<span class="hint">名单为空:所有学生均可正常发起复核申请。</span>`; return; }
+  box.innerHTML = `<table><tr><th>考号</th><th>原因</th><th>操作人</th><th>时间</th><th></th></tr>` +
+    bans.map(b => {
+      let when = b.time || "";
+      const d = new Date(when); // 后端为 RFC3339:显示转成本地时间,不再裸串
+      if (!isNaN(d)) when = d.toLocaleString("zh-CN", { hour12: false });
+      return `<tr><td>${OG.esc(b.reg)}</td><td>${OG.esc(b.reason || "-")}</td><td>${OG.esc(b.by || "-")}</td>
+      <td>${OG.esc(when)}</td>
+      <td><a href="#" class="danger" onclick="removeAppealBan('${OG.esc(b.reg)}');return false">解除</a></td></tr>`;
+    }).join("") + "</table>";
+}
+async function addAppealBan() {
+  const msg = document.getElementById("banMsg");
+  const reg = document.getElementById("banReg").value.trim();
+  if (!reg) { msg.textContent = "请填写考号"; return; }
+  try {
+    await OG.jpost("/api/v1/school/appeal-bans", { reg, blocked: true, reason: document.getElementById("banReason").value.trim() }, "PUT");
+    msg.textContent = ""; document.getElementById("banReg").value = ""; document.getElementById("banReason").value = "";
+    loadAppealBans();
+  } catch (e) { msg.textContent = e.message; }
+}
+async function removeAppealBan(reg) {
+  if (!confirm(`解除考号 ${reg} 的全校复核黑名单?解除后该生可正常发起复核申请。`)) return;
+  try { await OG.jpost("/api/v1/school/appeal-bans", { reg, blocked: false }, "PUT"); loadAppealBans(); }
+  catch (e) { OG.toast("解除失败:" + e.message, 4200); }
 }
 async function refresh() {
   const users = await OG.jget("/api/v1/users");
@@ -134,28 +179,28 @@ function renderSchool() {
   const box = document.getElementById("schoolBox");
   let html;
   if (!schoolGrades.length) {
-    html = `<span class="hint">尚未配置年级。已知班级(来自学生账号):${knownClasses.map(c => `<code>${c}</code>`).join(" ") || "无"}</span><br>
+    html = `<span class="hint">尚未配置年级。已知班级(来自学生账号):${knownClasses.map(c => `<code>${OG.esc(c)}</code>`).join(" ") || "无"}</span><br>
       <button class="primary" style="margin-top:8px" onclick="addGradeRow()">+ 添加年级</button>`;
   } else {
     html = schoolGrades.map((g, i) => `
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
-      <input value="${g.name}" placeholder="年级名(如 三年级)" style="width:130px" onchange="schoolGrades[${i}].name=this.value">
-      <input value="${g.classes.join(", ")}" placeholder="该年级班级(逗号分隔)" style="flex:1;min-width:260px" onchange="schoolGrades[${i}].classes=this.value.split(/[,，、]/).map(x=>x.trim()).filter(Boolean)">
+      <input value="${OG.esc(g.name)}" placeholder="年级名(如 三年级)" style="width:130px" onchange="schoolGrades[${i}].name=this.value">
+      <input value="${OG.esc(g.classes.join(", "))}" placeholder="该年级班级(逗号分隔)" style="flex:1;min-width:260px" onchange="schoolGrades[${i}].classes=this.value.split(/[,，、]/).map(x=>x.trim()).filter(Boolean)">
       <a href="#" class="danger" onclick="schoolGrades.splice(${i},1);renderSchool();return false">移除</a>
     </div>`).join("") +
     `<div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">
       <button class="primary" onclick="saveSchool()">保存组织架构</button>
       <a href="#" onclick="addGradeRow();return false">+ 添加年级</a>
-      <span class="hint">未归属班级(不进任何年级):${knownClasses.filter(c => !schoolGrades.some(g => g.classes.includes(c))).map(c => `<code>${c}</code>`).join(" ") || "无"}</span>
+      <span class="hint">未归属班级(不进任何年级):${knownClasses.filter(c => !schoolGrades.some(g => g.classes.includes(c))).map(c => `<code>${OG.esc(c)}</code>`).join(" ") || "无"}</span>
     </div>`;
   }
   // 全校场次表(教务时间颗粒):考试挂场次后,同日同场次的不同考试指派同一监考会被标冲突
   html += `<div style="margin-top:18px"><b>全校场次表</b> <span class="hint">(考试挂场次后用于监考冲突检测;为空 = 不启用)</span></div>` +
     (schoolSessions.length ? schoolSessions.map((s, i) => `
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
-      <input value="${s.name}" placeholder="场次名(如 第1节)" style="width:130px" onchange="schoolSessions[${i}].name=this.value">
-      <input value="${s.start}" type="time" style="width:100px" onchange="schoolSessions[${i}].start=this.value">
-      ~ <input value="${s.end}" type="time" style="width:100px" onchange="schoolSessions[${i}].end=this.value">
+      <input value="${OG.esc(s.name)}" placeholder="场次名(如 第1节)" style="width:130px" onchange="schoolSessions[${i}].name=this.value">
+      <input value="${OG.esc(s.start)}" type="time" style="width:100px" onchange="schoolSessions[${i}].start=this.value">
+      ~ <input value="${OG.esc(s.end)}" type="time" style="width:100px" onchange="schoolSessions[${i}].end=this.value">
       <a href="#" class="danger" onclick="schoolSessions.splice(${i},1);renderSchool();return false">移除</a>
     </div>`).join("") : `<p class="hint">暂无场次。</p>`) +
     `<div style="display:flex;gap:10px;align-items:center;margin-top:4px;flex-wrap:wrap">

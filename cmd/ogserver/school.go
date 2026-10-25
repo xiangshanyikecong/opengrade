@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,12 +34,22 @@ type SessionDef struct {
 	End   string `json:"end"`
 }
 
+// AppealBan 是全校复核黑名单的一条记录:被拉黑考号对所有考试的复核申请一律拒绝。
+// 与考试级拉黑(Exam.AppealBlocked)两级并存:本场拉黑粒度细、误伤面小,全局名单管屡教不改者。
+type AppealBan struct {
+	Reg    string    `json:"reg"`
+	Reason string    `json:"reason,omitempty"`
+	By     string    `json:"by"`
+	Time   time.Time `json:"time"`
+}
+
 // School 是组织架构存储(零依赖单文件,模式同 bank.json)。
 type School struct {
-	mu       sync.Mutex
-	path     string
-	Grades   []GradeDef   `json:"grades"`
-	Sessions []SessionDef `json:"sessions,omitempty"` // 场次表(可为空 = 不启用时段/冲突检测)
+	mu         sync.Mutex
+	path       string
+	Grades     []GradeDef   `json:"grades"`
+	Sessions   []SessionDef `json:"sessions,omitempty"` // 场次表(可为空 = 不启用时段/冲突检测)
+	AppealBans []AppealBan  `json:"appealBans,omitempty"`
 }
 
 // LoadSchool 从数据目录加载组织架构;文件不存在视为空(未配置)。
@@ -103,6 +114,68 @@ func (s *School) HasSession(name string) bool {
 		}
 	}
 	return false
+}
+
+// AppealBanned 报告考号是否在全校复核黑名单。
+func (s *School) AppealBanned(reg string) bool {
+	if s == nil || reg == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, b := range s.AppealBans {
+		if b.Reg == reg {
+			return true
+		}
+	}
+	return false
+}
+
+// AppealBansSnapshot 返回全校复核黑名单深拷贝(接口响应用)。
+func (s *School) AppealBansSnapshot() []AppealBan {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]AppealBan, len(s.AppealBans))
+	copy(out, s.AppealBans)
+	return out
+}
+
+// SetAppealBan 加入/移出全校复核黑名单(加入可带原因;移出幂等)。
+func (s *School) SetAppealBan(reg, reason, by string, banned bool) error {
+	if s == nil {
+		return fmt.Errorf("组织架构存储未初始化")
+	}
+	reg = strings.TrimSpace(reg)
+	if reg == "" {
+		return fmt.Errorf("考号不能为空")
+	}
+	reason = strings.TrimSpace(reason)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if banned {
+		if n := len([]rune(reason)); n > 200 {
+			return fmt.Errorf("拉黑原因请控制在 200 字以内(当前 %d 字)", n)
+		}
+		for i := range s.AppealBans {
+			if s.AppealBans[i].Reg == reg { // 已在名单:只更新原因与操作人
+				s.AppealBans[i].Reason, s.AppealBans[i].By, s.AppealBans[i].Time = reason, by, time.Now()
+				return s.save()
+			}
+		}
+		s.AppealBans = append(s.AppealBans, AppealBan{Reg: reg, Reason: reason, By: by, Time: time.Now()})
+		return s.save()
+	}
+	kept := s.AppealBans[:0]
+	for _, b := range s.AppealBans {
+		if b.Reg != reg {
+			kept = append(kept, b)
+		}
+	}
+	s.AppealBans = kept
+	return s.save()
 }
 
 // validateSessions 校验场次表:名称非空且不重复、HH:MM 可解析且开始早于结束。
@@ -257,6 +330,33 @@ func handleSchoolSessionsSet(w http.ResponseWriter, r *http.Request, school *Sch
 		return
 	}
 	if err := school.SetSessions(req.Sessions); err != nil {
+		httpError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleAppealBansGet GET /api/v1/school/appeal-bans → 全校复核黑名单(教职员可读)。
+func handleAppealBansGet(w http.ResponseWriter, school *School, _ *auth.User) {
+	bans := school.AppealBansSnapshot()
+	if bans == nil {
+		bans = []AppealBan{} // 空列表返回 [] 而非 null
+	}
+	writeJSON(w, http.StatusOK, bans)
+}
+
+// handleAppealBansSet PUT /api/v1/school/appeal-bans {"reg":"00000001","blocked":true,"reason":"..."}(仅管理员)。
+func handleAppealBansSet(w http.ResponseWriter, r *http.Request, school *School, u *auth.User) {
+	var req struct {
+		Reg     string `json:"reg"`
+		Blocked *bool  `json:"blocked"`
+		Reason  string `json:"reason"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.Blocked == nil {
+		httpError(w, http.StatusBadRequest, fmt.Errorf("缺少 reg/blocked 字段"))
+		return
+	}
+	if err := school.SetAppealBan(req.Reg, req.Reason, u.Username, *req.Blocked); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}

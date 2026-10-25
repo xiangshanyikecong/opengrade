@@ -138,4 +138,106 @@ const OG = {
     }
     return images;
   },
+
+  // —— 全站轻提示(抽自阅卷工作台的原地实现;页面不再各写一套)——
+  toast(msg, ms = 2600) {
+    let box = document.getElementById("ogToasts");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "ogToasts";
+      document.body.appendChild(box);
+    }
+    const t = document.createElement("div");
+    t.className = "og-toast";
+    t.textContent = msg;
+    box.appendChild(t);
+    setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 260); }, ms);
+  },
+
+  // —— 列表套件:chips 过滤 + 防抖搜索 + 分页(每页 10 条)——
+  // 大列表(异常清单/复核申请/作废卷…)全量渲染的通病:翻不到、找不着、已处理的插在待处理中间。
+  // 套件把"过滤条件 + 搜索词 + 页码"存进 _listStates(id 键),详情页整页重渲染后状态不丢。
+  _listStates: {},
+  _listKits: {},
+  _listTimers: {},
+  listState(id) { return this._listStates[id] || (this._listStates[id] = { chip: "", q: "", page: 1 }); },
+  // opts:{ id, state, rows:()=>[], chipOf:(row)=>k, chips:[{k,label,count}], search:(row,qLower)=>bool,
+  //        placeholder, headHTML:()=>`<tr>…`, rowHTML:(row)=>`<tr>…`, empty, size=10 }
+  listKit(opts) {
+    const st = opts.state, size = opts.size || 10;
+    const kit = {
+      filtered() {
+        const q = st.q.trim().toLowerCase();
+        return opts.rows().filter(r => (!st.chip || opts.chipOf(r) === st.chip) && (!q || opts.search(r, q)));
+      },
+      render() {
+        const host = document.getElementById(opts.id);
+        if (!host) return;
+        const rows = this.filtered();
+        const pages = Math.max(1, Math.ceil(rows.length / size));
+        if (st.page > pages) st.page = pages;
+        const pg = rows.slice((st.page - 1) * size, st.page * size);
+        const chips = (opts.chips || []).map(c =>
+          `<button class="chip ${st.chip === c.k && "on"}" onclick="OG._listChip('${opts.id}','${c.k}')">${OG.esc(c.label)}${c.count != null ? ` <b>${c.count}</b>` : ""}</button>`).join("");
+        const search = opts.placeholder ? `<div class="list-search"><input id="${opts.id}-q" placeholder="${OG.esc(opts.placeholder)}"
+          value="${OG.esc(st.q)}" oninput="OG._listQ('${opts.id}',this.value)"><span class="s-ico">⌕</span></div>` : "";
+        const body = pg.length
+          ? `<table>${opts.headHTML()}${pg.map(r => opts.rowHTML(r)).join("")}</table>`
+          : `<div class="empty" style="padding:24px 0"><div class="pic">🗒️</div>${OG.esc(opts.empty || "暂无数据")}</div>`;
+        host.innerHTML = `<div class="list-bar"><div class="chips">${chips}</div>${search}</div>${body}
+          ${rows.length > size ? OG.pagerHTML(opts.id, rows.length, st.page, size)
+            : `<div class="hint" style="padding:6px 2px">共 ${rows.length} 条</div>`}`;
+      },
+    };
+    this._listKits[opts.id] = kit;
+    return kit;
+  },
+  _listChip(id, k) {
+    const st = this.listState(id);
+    st.chip = st.chip === k ? "" : k;
+    st.page = 1;
+    this._listKits[id].render();
+  },
+  _listQ(id, v) {
+    const st = this.listState(id);
+    clearTimeout(this._listTimers[id]);
+    this._listTimers[id] = setTimeout(() => {
+      st.q = v; st.page = 1;
+      this._listKits[id].render();
+      const inp = document.getElementById(id + "-q");
+      if (inp) { inp.focus(); inp.setSelectionRange(v.length, v.length); } // 重渲染后光标回输入框末尾
+    }, 250);
+  },
+  pagerHTML(id, total, page, size) {
+    const pages = Math.max(1, Math.ceil(total / size));
+    const btn = (p, label, dis, cur) => `<button class="pg-btn ${cur ? "cur" : ""}" ${dis ? "disabled" : ""}
+      onclick="OG._listPage('${id}',${p})">${label}</button>`;
+    const ns = [];
+    for (let p = 1; p <= pages; p++) {
+      if (p === 1 || p === pages || Math.abs(p - page) <= 2) ns.push(p);
+      else if (ns[ns.length - 1] !== "…") ns.push("…");
+    }
+    return `<div class="pager"><span class="hint">共 ${total} 条 · 第 ${page}/${pages} 页</span>
+      ${btn(page - 1, "‹", page <= 1)}
+      ${ns.map(p => p === "…" ? `<span class="pg-ell">…</span>` : btn(p, p, false, p === page)).join("")}
+      ${btn(page + 1, "›", page >= pages)}</div>`;
+  },
+  _listPage(id, p) {
+    const st = this.listState(id);
+    st.page = p;
+    this._listKits[id].render();
+  },
+
+  // —— 全屏看图(切片/整卷点击放大)——
+  lightbox(src, caption) {
+    let ov = document.getElementById("ogLightbox");
+    if (!ov) {
+      ov = document.createElement("div");
+      ov.id = "ogLightbox";
+      ov.onclick = () => ov.classList.remove("show");
+      document.body.appendChild(ov);
+    }
+    ov.innerHTML = `<div class="lb-cap">${OG.esc(caption || "")} <span style="opacity:.6">点击任意处关闭</span></div><img src="${OG.esc(src)}" alt="">`;
+    ov.classList.add("show");
+  },
 };

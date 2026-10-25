@@ -61,13 +61,23 @@ async function main() {
     renderForcePwd();
     return;
   }
-  const r = await OG.jget("/api/v1/student/exams");
+  const r = await OG.jget("/api/v1/student/exams" + qs());
   list = r.exams || [];
   unmatched = r.unmatched || 0;
   renderList();
 }
 
 let unmatched = 0;
+
+// 子女切换/返回时重拉列表(与详情同一 child 口径,列表与详情不再各说各话)
+async function reloadList() {
+  try {
+    const r = await OG.jget("/api/v1/student/exams" + qs());
+    list = r.exams || [];
+    unmatched = r.unmatched || 0;
+  } catch (e) { OG.toast("列表刷新失败:" + e.message, 4200); return; }
+  renderList();
+}
 
 function renderForcePwd() {
   document.getElementById("app").innerHTML = `<div class="panel" style="max-width:440px">
@@ -97,15 +107,27 @@ function qs() { return childOf ? "?child=" + childOf : ""; }
 function renderList() {
   let html = "";
   if (childOf) {
-    const opts = OG.me.children.map(c => `<option value="${c}" ${c === childOf ? "selected" : ""}>${c}</option>`).join("");
-    html += `<div class="panel noprint">查看子女:<select onchange="childOf=this.value;renderList()">${opts}</select></div>`;
+    const opts = (OG.me.children || []).map(c => `<option value="${OG.esc(c)}" ${c === childOf ? "selected" : ""}>${OG.esc(c)}</option>`).join("");
+    html += `<div class="panel noprint">查看子女:<select onchange="childOf=this.value;reloadList()">${opts}</select></div>`;
   }
+  // 账号设置(学生端唯一的自主改密入口;此前除首登强制改密外无法改密码)
+  html += `<details class="fold noprint" style="margin-bottom:14px"><summary>账号设置</summary>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+      <input id="cpOld" type="password" placeholder="当前密码" style="padding:6px 10px;border:1px solid var(--line);border-radius:6px">
+      <input id="cpNew" type="password" placeholder="新密码(至少 5 位)" style="padding:6px 10px;border:1px solid var(--line);border-radius:6px">
+      <button class="ghost" style="padding:6px 14px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer" onclick="changeMyPwd()">修改密码</button>
+      <span class="hint" id="cpMsg"></span>
+    </div></details>`;
   html += `<div class="panel"><p class="free">基础查分与答卷回溯永久免费 —— 成绩属于你,不属于任何厂商。教师确认发布后即可查看。</p>
   ${unmatched ? `<p class="hint" style="margin:0 0 8px">另有 ${unmatched} 场已发布的考试没有你的答卷 —— 可能未参加,或账号未绑定考号(请联系管理员核对)。</p>` : ""}
-  <table><tr><th>考试</th><th>学科</th><th>时间</th><th>我的得分</th><th>排名</th><th>本班均分</th><th></th></tr>`;
-  if (!list.length) html += `<tr><td colspan="7" class="hint">暂无已发布的考试成绩。</td></tr>`;
+  <table><tr><th>考试</th><th>我的得分</th><th>排名</th><th>本班均分</th><th></th></tr>`;
+  if (!list.length) html += `<tr><td colspan="5" class="hint">暂无已发布的考试成绩。</td></tr>`;
   for (const e of list) {
-    html += `<tr><td>${OG.esc(e.id)}</td><td>${OG.esc(e.subject || "-")}${e.hasReply ? ' <span class="pill" style="background:#e7f5ef;color:var(--brand);border-radius:8px;padding:1px 6px;font-size:11px">复核已回复</span>' : (e.hasOpen ? ' <span class="pill" style="background:#fff3cd;color:#9a3412;border-radius:8px;padding:1px 6px;font-size:11px">复核待处理</span>' : "")}</td><td>${e.createdAt}</td>
+    const badge = e.hasReply ? ' <span class="pill" style="background:#e7f5ef;color:var(--brand);border-radius:8px;padding:1px 6px;font-size:11px">复核已回复</span>'
+      : (e.hasOpen ? ' <span class="pill" style="background:#fff3cd;color:#9a3412;border-radius:8px;padding:1px 6px;font-size:11px">复核待处理</span>' : "");
+    // 考试列用「学科 + 考试日期」识别,12 位随机 ID 降为悬停提示(此前学生只能靠扫描时间认考试)
+    const when = e.examDate || (e.createdAt || "").slice(0, 10);
+    html += `<tr><td title="考试编号 ${OG.esc(e.id)}"><b>${OG.esc(e.subject || "考试")}</b>${when ? ` <span class="hint">${OG.esc(when)}</span>` : ""}${badge}</td>
       <td>${e.absent ? `<span class="hint">缺考</span>` : `<b>${e.score}</b> / ${e.total}`}</td>
       <td>${e.rank && !e.absent ? `第 ${e.rank} 名` : "-"}</td>
       <td>${e.classMean ? e.classMean.toFixed(1) : "-"}</td>
@@ -114,6 +136,20 @@ function renderList() {
   html += "</table></div><div id='detail'></div><div id='trendPanel'></div>";
   document.getElementById("app").innerHTML = html;
   loadTrend();
+}
+
+// 自主改密(POST /api/v1/auth/password 对全体登录角色开放)
+async function changeMyPwd() {
+  const msg = document.getElementById("cpMsg");
+  const pw = document.getElementById("cpNew").value;
+  if (pw.length < 5) { msg.textContent = "新密码至少 5 位"; return; }
+  try {
+    await OG.jpost("/api/v1/auth/password", { oldPassword: document.getElementById("cpOld").value, newPassword: pw });
+    msg.textContent = "已修改 ✓";
+    document.getElementById("cpOld").value = "";
+    document.getElementById("cpNew").value = "";
+    OG.toast("密码已修改");
+  } catch (e) { msg.textContent = e.message; }
 }
 
 /* —— 历次成绩趋势(跨考试按考号对齐) —— */
@@ -160,7 +196,7 @@ async function showExam(id) {
   curExam = d;
   if (d.absent) { // 缺考:只有登记信息
     document.getElementById("detail").innerHTML = `<div class="panel">
-      本场考试(${d.subject || "未分学科"} · ${d.createdAt})登记为 <b>缺考</b>,无成绩明细。如有疑问请联系任课老师。</div>`;
+      本场考试(${OG.esc(d.subject || "未分学科")} · ${d.createdAt})登记为 <b>缺考</b>,无成绩明细。如有疑问请联系任课老师。</div>`;
     return;
   }
   const kindName = k => ({ choice: "单选", judge: "判断", multiple: "多选", fillblank: "填空", subjective: "解答" }[k] || k);
@@ -172,7 +208,7 @@ async function showExam(id) {
       <div><b>${d.mean.toFixed(1)}</b><span>年级均分</span></div>
       <div><b>${d.wrongQuestions.length}</b><span>待弄懂的错题</span></div>
     </div>
-    ${d.byClass.map(c => `<span class="hint">${c.class}:均分 ${c.mean.toFixed(1)}(${c.count}人)&nbsp;&nbsp;</span>`).join("")}
+    ${d.byClass.map(c => `<span class="hint">${OG.esc(c.class)}:均分 ${c.mean.toFixed(1)}(${c.count}人)&nbsp;&nbsp;</span>`).join("")}
     <div style="margin-top:10px;display:flex;gap:16px;flex-wrap:wrap" class="noprint">
       <a href="#" onclick="printReport();return false">🖨 打印成绩报告单</a>
       <a href="#" onclick="downloadPDF('${d.id}');return false">⬇ 下载 PDF 成绩单</a>
@@ -181,20 +217,22 @@ async function showExam(id) {
       ${d.pageURL ? `<a href="${d.pageURL}" target="_blank">查看我的整卷(答卷回溯)→</a>` : ""}
     </div>
     <div id="appealBox" class="noprint" style="margin-top:10px;background:var(--bg);border-radius:8px;padding:10px 12px" hidden>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <input id="appealReason" placeholder="请填写复核理由(哪一题、为什么有疑问)" style="flex:1;min-width:220px;padding:6px 10px">
-        <button class="ghost" onclick="submitAppeal('${d.id}')">提交申请</button>
+      <textarea id="appealReason" rows="2" maxlength="200" placeholder="请填写复核理由(哪一题、为什么有疑问),200 字以内"
+        style="width:100%;max-width:520px;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit" oninput="appealCount()"></textarea>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+        <button class="ghost" id="appealBtn" style="padding:6px 16px;border:1px solid var(--brand);color:var(--brand);border-radius:8px;background:#fff;cursor:pointer" onclick="submitAppeal('${d.id}')">提交申请</button>
         <span class="hint" id="appealMsg"></span>
+        <span class="hint" id="appealCnt" style="margin-left:auto">0/200</span>
       </div>
-      <p class="hint" style="margin:6px 0 0">提交后任课教师会核对你的答卷并回复;改分以教师复核结果为准。</p>
+      <p class="hint" style="margin:6px 0 0">提交后任课教师会核对你的答卷并回复;同一时间只能有一条待处理的申请;改分以教师复核结果为准。</p>
     </div>`;
   // 我的复核申请记录
   if ((d.appeals || []).length) {
     html += `<div class="panel"><b>我的复核申请</b>
       <table><tr><th>时间</th><th>理由</th><th>状态</th><th>教师回复</th></tr>
-      ${d.appeals.map(a => `<tr><td>${a.time}</td><td style="max-width:360px">${a.reason}</td>
+      ${d.appeals.map(a => `<tr><td>${OG.esc(a.time)}</td><td style="max-width:360px">${OG.esc(a.reason)}</td>
         <td>${a.status === "open" ? '<span class="hint">待处理</span>' : '<b style="color:var(--brand)">已回复</b>'}</td>
-        <td>${a.reply || "-"}</td></tr>`).join("")}</table></div>`;
+        <td>${OG.esc(a.reply || "-")}</td></tr>`).join("")}</table></div>`;
   }
   // 知识点掌握雷达(仅本人)
   if ((d.knowledge || []).length) {
@@ -202,7 +240,7 @@ async function showExam(id) {
       <span class="hint">掌握度 = 该知识点相关题目的得分率;掌握度低的排前面,可优先补。</span>
       <canvas id="myKnowChart" width="760" height="${Math.max(100, d.knowledge.length * 30 + 30)}" style="margin-top:10px"></canvas>
       <table style="margin-top:8px"><tr><th>知识点</th><th>掌握度</th><th>涉及总分</th></tr>
-      ${d.knowledge.map(k => `<tr><td>${k.name}</td><td><span class="bar" style="display:inline-block;width:120px;height:8px;background:#eef2f6;border-radius:4px;vertical-align:middle"><div style="height:100%;border-radius:4px;width:${Math.round(k.rate*100)}%;background:${k.rate<0.5?'#e34d59':k.rate<0.75?'#ff8c00':'#00b389'}"></div></span> ${(k.rate*100).toFixed(0)}%</td><td>${k.max}</td></tr>`).join("")}
+      ${d.knowledge.map(k => `<tr><td>${OG.esc(k.name)}</td><td><span class="bar" style="display:inline-block;width:120px;height:8px;background:#eef2f6;border-radius:4px;vertical-align:middle"><div style="height:100%;border-radius:4px;width:${Math.round(k.rate*100)}%;background:${k.rate<0.5?'#e34d59':k.rate<0.75?'#ff8c00':'#00b389'}"></div></span> ${(k.rate*100).toFixed(0)}%</td><td>${k.max}</td></tr>`).join("")}
       </table></div>`;
   }
   html += `<div class="panel"><b>逐题明细</b>(标红为错题/丢分题)
@@ -219,11 +257,11 @@ async function showExam(id) {
       continue;
     }
     const mine = q.myAnswer !== undefined && q.myAnswer !== ""
-      ? q.myAnswer + (q.right ? "" : "(错)")
+      ? OG.esc(q.myAnswer) + (q.right ? "" : "(错)")
       : (q.myScore !== undefined ? `${q.myScore} 分` : "-");
-    const kindTxt = q.elective ? `${kindName(q.kind)}<span class="hint">·选做${q.elective}</span>` : kindName(q.kind);
+    const kindTxt = q.elective ? `${kindName(q.kind)}<span class="hint">·选做${OG.esc(q.elective)}</span>` : kindName(q.kind);
     html += `<tr class="${q.wrong ? 'wrong' : ''}"><td>${q.index}</td><td>${kindTxt}</td><td>${q.max}</td>
-      <td>${mine}</td><td class="${q.right ? 'right' : ''}">${q.correct || "-"}</td></tr>`;
+      <td>${mine}</td><td class="${q.right ? 'right' : ''}">${OG.esc(q.correct || "-")}</td></tr>`;
   }
   html += `</table></div>`;
   if ((d.slices || []).length) {
@@ -268,12 +306,33 @@ function toggleAppeal() {
   const box = document.getElementById("appealBox");
   if (box) box.hidden = !box.hidden;
 }
+function appealCount() {
+  const n = (document.getElementById("appealReason") || {}).value.length || 0;
+  const el = document.getElementById("appealCnt");
+  if (el) el.textContent = `${n}/200`;
+}
 async function submitAppeal(id) {
   const msg = document.getElementById("appealMsg");
+  const btn = document.getElementById("appealBtn");
+  const reason = (document.getElementById("appealReason") || {}).value || "";
+  if (!reason.trim()) { if (msg) msg.textContent = "请先填写复核理由"; return; }
+  if (btn) { btn.disabled = true; btn.textContent = "提交中…"; } // 防双击重复提交
   try {
-    await OG.jpost(`/api/v1/student/exams/${id}/appeals${qs()}`, { reason: document.getElementById("appealReason").value });
+    await OG.jpost(`/api/v1/student/exams/${id}/appeals${qs()}`, { reason });
+    OG.toast("复核申请已提交,请等待老师处理");
     await showExam(id); // 重开详情:下方「我的复核申请」出现新记录(状态待处理)
-  } catch (e) { if (msg) msg.textContent = e.message; }
+    const box = document.getElementById("appealBox");
+    if (box) box.hidden = false; // 保持展开:让提交者立刻看到记录与状态
+  } catch (e) {
+    if (msg) msg.textContent = e.message; // 被拉黑/重复申请/未发布等拒绝原因在这里说清楚
+    OG.toast(e.message, 4200);
+  } finally {
+    if (btn && document.body.contains(btn)) { btn.disabled = false; btn.textContent = "提交申请"; }
+    else {
+      const nb = document.getElementById("appealBtn");
+      if (nb) { nb.disabled = false; nb.textContent = "提交申请"; }
+    }
+  }
 }
 
 // 错题重练卡:拉取错题重组概要 → 服务端直接出可打印 SVG → 新窗口打开
@@ -292,7 +351,7 @@ async function makePractice(id) {
       打印后可直接作答;保留知识点标签,便于针对性补弱。</p>
       <button onclick="print()">🖨 打印</button></div>${svg}`);
     w.document.close();
-  } catch (e) { alert(e.message); }
+  } catch (e) { OG.toast(e.message, 4200); }
 }
 
 /* 打印版个人成绩单 */

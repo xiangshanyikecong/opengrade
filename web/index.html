@@ -609,8 +609,8 @@ async function refreshExams() {
   t.innerHTML = "<tr><th>考试</th><th>时间</th><th>卷数</th><th>题型</th><th>操作</th></tr>";
   for (const e of list) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${e.id}</td><td>${e.createdAt}</td><td>${e.students}</td>
-      <td>${e.subject ? e.subject + " · " : ""}客观 ${e.objective} + 主观 ${e.subjective}</td>
+    tr.innerHTML = `<td>${OG.esc(e.id)}</td><td>${e.createdAt}</td><td>${e.students}</td>
+      <td>${e.subject ? OG.esc(e.subject) + " · " : ""}客观 ${e.objective} + 主观 ${e.subjective}</td>
       <td style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
         <a href="/grader.html?exam=${e.id}">阅卷</a>
         <a href="/api/v1/exams/${e.id}/export.xlsx">成绩册</a>
