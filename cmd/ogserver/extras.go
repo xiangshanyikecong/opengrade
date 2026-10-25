@@ -58,6 +58,11 @@ func handleSuggest(w http.ResponseWriter, r *http.Request, store *Store, u *auth
 		return
 	}
 	res := ex.Results[student-1]
+	if res == nil {
+		// 按班分配模式下该生不在视野内(裁剪视图置 nil):给可读错误而非空指针崩溃
+		httpError(w, http.StatusNotFound, fmt.Errorf("该卷不在你的阅卷视野内(按班分配),请找任务分配人"))
+		return
+	}
 	out := map[string]any{
 		"student":  student,
 		"reg":      ex.AssignedReg(student),
@@ -362,7 +367,8 @@ func handleReviewPPTX(w http.ResponseWriter, r *http.Request, store *Store, u *a
 			}
 		} else { // 主观题:典型满分 + 待改进切片
 			sq := q.Index - len(ex.Layout.Questions)
-			best, worst := pickTypicalSlices(ex, sq)
+			privileged := u.Role == auth.RoleAdmin || u.Role == auth.RoleLeader || ex.CreatedBy == u.Username
+			best, worst := pickTypicalSlices(ex, sq, ex.Anonymous && !privileged)
 			for _, p := range []struct {
 				student int
 				label   string
@@ -396,8 +402,10 @@ func handleReviewPPTX(w http.ResponseWriter, r *http.Request, store *Store, u *a
 }
 
 // pickTypicalSlices 选出某主观题的最高分与最低分已阅学生(讲评典型样本)。
-// 拆分小问的题目按小问之和计(全部小问已阅才进入样本)。
-func pickTypicalSlices(ex *Exam, question int) (best, worst struct {
+// 拆分小问的题按小问之和计(全部小问已阅才进入样本)。
+// anon=true(匿名阅卷且请求者非特权)时图注不带考号 —— xlsx/csv 已做的匿名口径
+// 不能被讲评课件这条出口击穿(切片图像本身就是笔迹,考号是唯一可抹的标识)。
+func pickTypicalSlices(ex *Exam, question int, anon bool) (best, worst struct {
 	student int
 	label   string
 }) {
@@ -416,10 +424,17 @@ func pickTypicalSlices(ex *Exam, question int) (best, worst struct {
 	}
 	sort.Slice(graded, func(i, j int) bool { return graded[i].s > graded[j].s })
 	best.student = graded[0].student
-	best.label = fmt.Sprintf("典型满分:考号 %s(%.1f 分)", ex.AssignedReg(graded[0].student), graded[0].s)
+	best.label = typicalLabel(ex, graded[0].student, graded[0].s, anon, "典型满分")
 	worst.student = graded[len(graded)-1].student
-	worst.label = fmt.Sprintf("待改进:考号 %s(%.1f 分)", ex.AssignedReg(graded[len(graded)-1].student), graded[len(graded)-1].s)
+	worst.label = typicalLabel(ex, graded[len(graded)-1].student, graded[len(graded)-1].s, anon, "待改进")
 	return
+}
+
+func typicalLabel(ex *Exam, student int, s float64, anon bool, kind string) string {
+	if anon {
+		return fmt.Sprintf("%s:第 %d 卷(%.1f 分)", kind, student, s)
+	}
+	return fmt.Sprintf("%s:考号 %s(%.1f 分)", kind, ex.AssignedReg(student), s)
 }
 
 func trimMax(f float64) string {

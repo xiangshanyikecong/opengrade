@@ -856,8 +856,10 @@ func TestFullSystemReview(t *testing.T) {
 		}
 		data, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Fatalf("重启后旧会话应 401,得到 %d(%s)", resp.StatusCode, data)
+		// 会话已随 sessions.json 落盘(A-7):重启不再全员掉线,旧令牌应继续有效。
+		// 改密/管理员重置口令才会吊销既有会话。
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("重启后旧会话应仍有效(会话持久化),得到 %d(%s)", resp.StatusCode, data)
 		}
 		admin2 := newClient(t, ts2.URL)
 		admin2.login("admin", "admin123")

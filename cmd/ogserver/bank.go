@@ -69,7 +69,7 @@ func (s *BankStore) save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, b, 0o644)
+	return writeFileAtomic(s.path, b, 0o644) // 原子落盘:防断电留下半截题库文件
 }
 
 // List 返回题库快照(可按学科/题型过滤,题干/答案/知识点模糊搜索),按创建时间倒序。

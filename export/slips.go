@@ -103,18 +103,23 @@ func RenderSlip(row SlipRow) *image.Gray {
 }
 
 // SlipsPDF 把成绩条逐张渲染并连排为多页 PDF:每页 2 张,条间留 6mm 裁切带。
+// 逐页即渲即弃(PagesPDFIter):全部页面位图同时驻留会随班级规模线性膨胀
+// (千人 ≈ 500 页 × ~2.2MB 位图)直至 OOM。
 func SlipsPDF(rows []SlipRow) ([]byte, error) {
 	if len(rows) == 0 {
 		rows = []SlipRow{}
 	}
-	var pages []image.Image
-	for i := 0; i < len(rows); i += slipsPerPg {
-		pages = append(pages, composeSlipPage(rows[i:min(i+slipsPerPg, len(rows))]))
+	n := (len(rows) + slipsPerPg - 1) / slipsPerPg
+	if n == 0 {
+		n = 1 // 空班也出一张空版,避免空 PDF 边界
 	}
-	if len(pages) == 0 { // 空班也出一张空版,避免空 PDF 边界
-		pages = append(pages, composeSlipPage(nil))
-	}
-	return PagesPDF(pages, slipsPageW, slipsPageH)
+	return PagesPDFIter(n, func(i int) (image.Image, error) {
+		lo := i * slipsPerPg
+		if lo >= len(rows) {
+			return composeSlipPage(nil), nil
+		}
+		return composeSlipPage(rows[lo:min(lo+slipsPerPg, len(rows))]), nil
+	}, slipsPageW, slipsPageH)
 }
 
 // composeSlipPage 把最多 2 张成绩条合成一页 A4(中间画裁切虚线)。

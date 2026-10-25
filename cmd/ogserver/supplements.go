@@ -12,7 +12,6 @@ import (
 	"image"
 	_ "image/jpeg"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -85,7 +84,7 @@ func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *
 
 	// —— 跨批残卷合并(多页版式)——
 	if len(book) > 1 {
-		mergedInfo := crossBatchMerge(store, ex, &ing, book, ab, opt, u.Username)
+		mergedInfo := crossBatchMerge(store, ex, &ing, book, ab, opt, u.Username, oldBase)
 		notes = append(notes, mergedInfo...)
 		results, slices, pageGroups, pageNos = ing.results, ing.slices, ing.pageGroups, ing.pageNos
 	}
@@ -119,7 +118,18 @@ func findScanStudentByReg(ex *Exam, reg string) int {
 
 // crossBatchMerge 把批内"考号与存量残卷相同"的学生页并入存量卷(原地替换),
 // 并从批次产物里剔除已合并的学生。返回给操作员的人话说明。
-func crossBatchMerge(store *Store, ex *Exam, ing *ingestResult, book []*card.Sheet, ab *abSupport, opt omr.Options, by string) []string {
+//
+// B-1 修复后的装配语义:
+//   - 存量已是完整卷(P 页)→ 不再合并:后扫到的该生页属于重扫,并入只会引入
+//     重复页号/顶掉已有页(旧代码可截出 [p1,p2,p2] 式假完整卷),走重复卷裁决;
+//   - 槽位装配:已知页号的页按页号入槽(同号时新批页优先 —— 重扫页更新鲜),
+//     未知页号(旧卡/页点不可信)按到达序填入剩余空槽,并把该页按槽位版式重读,
+//     消除"判读按到达位置、排序却垫底"的两义性(旧代码会让客观题整页错位判分);
+//   - 剔除已并入存量的学生后,剩余学生的切片卷号按新位置重编
+//     (旧代码烙着剔除前的卷号 → 阅卷端全 Missing、后续批次互相覆盖切片文件);
+//   - 曾人工指派过卷种的卷,合并重判后按原指派重放(AssignVariant 重读客观题),
+//     避免作答被暂扣(PendingVariant)却因残留指派被误判"已裁决"而静默消失。
+func crossBatchMerge(store *Store, ex *Exam, ing *ingestResult, book []*card.Sheet, ab *abSupport, opt omr.Options, by string, oldBase int) []string {
 	pageCount := len(book)
 	var notes []string
 	keep := make([]bool, len(ing.results))
@@ -140,43 +150,42 @@ func crossBatchMerge(store *Store, ex *Exam, ing *ingestResult, book []*card.She
 			continue // 存量是手工补录或没有矫正图:走重复卷裁决路径
 		}
 		newPages := ing.pages[i]
-		if len(oldRects) >= pageCount && len(newPages) >= pageCount {
-			continue // 两份都完整:真重扫,保留双卷交人工裁决(重复卷入口)
+		if len(oldRects) >= pageCount {
+			continue // 存量完整:真重扫(整份/残页皆然),保留双卷交人工裁决,不并入
 		}
-		// 重建存量各页:按入库时记录的真实页号选版式重读(无记录按位置)
-		oldNos := old.PageNos
-		var combined []pageScan
-		var nos []int
-		appendPage := func(rect *image.Gray, pageNo, pos int) bool {
-			k := pageNo - 1
-			if k < 0 || k >= pageCount {
-				k = pos // 页号未知/越界:按到达位置
-				pageNo = 0
-			}
-			r, _, err := omr.ReadRectified(book[k], rect, opt)
-			if err != nil {
-				return false
-			}
-			combined = append(combined, pageScan{res: r, dbg: &omr.Debug{Rectified: rect}, sheet: book[k], subOffset: subjectiveOffset(book, k)})
-			nos = append(nos, pageNo)
-			return true
+		// 卷种口径:人工指派 > 存量判读 > 新批判读
+		variant := ""
+		if ex.AssignVariant != nil {
+			variant = ex.AssignVariant[fmt.Sprintf("s%d", j)]
 		}
-		okAll := true
+		if variant == "" && old != nil {
+			variant = old.Variant
+		}
+		if variant == "" {
+			for _, ps := range newPages {
+				if ps.res != nil && ps.res.Variant != "" {
+					variant = ps.res.Variant
+					break
+				}
+			}
+		}
+		// 候选页:存量(矫正图 + 入库记录页号,0=未知)与新批(判读产物 + 页号,0=未知)
+		type cand struct {
+			rect  *image.Gray // 存量页矫正图(重读原料)
+			ps    *pageScan   // 新批页判读产物(几何一致时直接复用)
+			no    int
+			isNew bool
+		}
+		var cands []cand
 		for k, rect := range oldRects {
 			if rect == nil {
 				continue
 			}
 			pn := 0
-			if k < len(oldNos) {
-				pn = oldNos[k]
+			if old != nil && k < len(old.PageNos) {
+				pn = old.PageNos[k]
 			}
-			if !appendPage(rect, pn, k) {
-				okAll = false
-				break
-			}
-		}
-		if !okAll {
-			continue // 存量页重读失败:不动旧卷,走追加+重答告警的老路
+			cands = append(cands, cand{rect: rect, no: pn})
 		}
 		for k, ps := range newPages {
 			if ps.dbg == nil || ps.dbg.Rectified == nil {
@@ -186,51 +195,91 @@ func crossBatchMerge(store *Store, ex *Exam, ing *ingestResult, book []*card.She
 			if k < len(ing.pageNos[i]) {
 				pn = ing.pageNos[i][k]
 			}
-			combined = append(combined, ps)
-			nos = append(nos, pn)
+			c := cand{ps: &newPages[k], no: pn, isNew: true}
+			cands = append(cands, c)
 		}
-		// 按真实页号稳定排序(0=未知,保持相对顺序垫底);重扫凑出超页时截前 P 页
-		idx := make([]int, len(combined))
-		for k := range idx {
-			idx[k] = k
-		}
-		sort.SliceStable(idx, func(a, b int) bool {
-			na, nb := nos[idx[a]], nos[idx[b]]
-			if na == 0 {
-				na = pageCount + 1
+		// 槽位装配:已知页号新批优先 → 已知页号存量 → 未知页号按到达序填空槽
+		slots := make([]*cand, pageCount)
+		placed := 0
+		fill := func(c *cand) bool {
+			if c.no >= 1 && c.no <= pageCount && slots[c.no-1] == nil {
+				slots[c.no-1] = c
+				placed++
+				return true
 			}
-			if nb == 0 {
-				nb = pageCount + 1
+			return false
+		}
+		anyUnknown := false
+		for k := range cands {
+			if cands[k].isNew {
+				fill(&cands[k])
 			}
-			return na < nb
-		})
-		ordered := make([]pageScan, len(idx))
-		orderedNos := make([]int, len(idx))
-		for pos, k := range idx {
-			ordered[pos], orderedNos[pos] = combined[k], nos[k]
 		}
-		if len(ordered) > pageCount {
-			ordered, orderedNos = ordered[:pageCount], orderedNos[:pageCount]
+		for k := range cands {
+			if !cands[k].isNew {
+				fill(&cands[k])
+			}
 		}
-		// 告警:保留旧卷上仍然成立的告警,重算缺页
+		for k := range cands {
+			c := &cands[k]
+			if c.no >= 1 && c.no <= pageCount {
+				continue // 已按页号入槽(或与新批页同号被顶替,计入 dropped)
+			}
+			anyUnknown = true // 未知/越界页号:按到达序填入剩余空槽
+			for s := 0; s < pageCount; s++ {
+				if slots[s] == nil {
+					slots[s] = c
+					placed++
+					break
+				}
+			}
+		}
+		dropped := len(cands) - placed
+		// 逐槽判读:新批页几何与槽位一致则复用,否则(及全部存量页)按槽位版式重读
+		var ordered []pageScan
+		var orderedNos []int
+		okAll := true
+		for s := 0; s < pageCount; s++ {
+			c := slots[s]
+			if c == nil {
+				continue
+			}
+			sheet := ab.variantBook(book, variant, s)
+			if c.isNew && c.ps.sheet == sheet {
+				ordered = append(ordered, *c.ps)
+			} else if r, _, err := omr.ReadRectified(sheet, c.rect, opt); err == nil {
+				ordered = append(ordered, pageScan{res: r, dbg: &omr.Debug{Rectified: c.rect}, sheet: sheet, subOffset: subjectiveOffset(book, s)})
+			} else if c.isNew {
+				ordered = append(ordered, *c.ps) // 新页按槽位重读失败:退回原判读
+			} else {
+				okAll = false // 存量页重读失败:不动旧卷,走追加+重答告警的老路
+				break
+			}
+			orderedNos = append(orderedNos, s+1)
+		}
+		if !okAll {
+			continue
+		}
+		// 告警:保留旧卷上仍然成立的告警,页序/缺页/重答类由合并结果重新推导
 		var warns []string
 		for _, wn := range old.Warnings {
-			if strings.Contains(wn, "的卷仅识别到") || strings.Contains(wn, "疑似重答") || strings.Contains(wn, "疑似重扫或夹页") {
-				continue // 缺页/重答/夹页类告警由合并结果重新推导
+			if strings.Contains(wn, "的卷仅识别到") || strings.Contains(wn, "疑似重答") || strings.Contains(wn, "疑似重扫或夹页") ||
+				strings.Contains(wn, "页点不可信") || strings.Contains(wn, "合并后仍只有") {
+				continue
 			}
 			warns = append(warns, wn)
 		}
+		if anyUnknown {
+			warns = append(warns, "页点不可信(缺号/重复/旧卡),已按到达顺序合并——请人工核对该生各页顺序,确认无误可在异常清单「接受残卷」")
+		}
+		if dropped > 0 {
+			warns = append(warns, fmt.Sprintf("考号 %s 识别到 %d 页(版式共 %d 页),%d 页未并入(重复/多余)——请人工核对", res.RegNumber, len(cands), pageCount, dropped))
+		}
 		if len(ordered) < pageCount {
-			seen := map[int]bool{}
-			for _, n := range orderedNos {
-				if n >= 1 && n <= pageCount {
-					seen[n] = true
-				}
-			}
 			missing := []int{}
-			for p := 1; p <= pageCount; p++ {
-				if !seen[p] {
-					missing = append(missing, p)
+			for s := 1; s <= pageCount; s++ {
+				if slots[s-1] == nil {
+					missing = append(missing, s)
 				}
 			}
 			warns = append(warns, fmt.Sprintf("考号 %s 的卷合并后仍只有 %d/%d 页(缺第 %s 页)——继续补扫该生缺页,或核对后「接受残卷」",
@@ -250,27 +299,40 @@ func crossBatchMerge(store *Store, ex *Exam, ing *ingestResult, book []*card.She
 		}
 		keep[i] = false
 		ing.mergedStudents = append(ing.mergedStudents, j)
+		// 卷种指派重放:人工裁决过的卷种是最高优先级事实,合并重判与它相悖时按它重读客观题
+		if variant2 := ex.AssignVariant[fmt.Sprintf("s%d", j)]; variant2 != "" && (merged.PendingVariant || merged.Variant != variant2) {
+			if err := store.AssignVariant(ex.ID, j, variant2, by); err != nil {
+				notes = append(notes, fmt.Sprintf("考号 %s 合并后按原指派 %s 卷重读客观题失败:%v(该卷已回到异常清单,请重新指派)", res.RegNumber, variant2, err))
+			}
+		}
 		if len(ordered) >= pageCount {
 			notes = append(notes, fmt.Sprintf("考号 %s 的两批扫描页已自动合并为完整卷(第 %d 卷),已评分数保留", res.RegNumber, j))
 		} else {
-			notes = append(notes, fmt.Sprintf("考号 %s 的两批扫描页已合并为第 %d 卷(%d/%d 页),继续补扫缺页会自动并入", res.RegNumber, j, len(ordered), pageCount))
+			notes = append(notes, fmt.Sprintf("考号 %s 的两批页已合并为第 %d 卷(%d/%d 页),继续补扫缺页会自动并入", res.RegNumber, j, len(ordered), pageCount))
 		}
 	}
-	// 剔除已并入存量的学生,避免重复追加
+	// 剔除已并入存量的学生,避免重复追加;剩余学生的切片卷号按剔除后的新位置重编
+	// (切片文件名/评分键以卷号对齐,否则中间剔除后烙着旧卷号 → 阅卷端 Missing、互相覆盖)
 	outResults := ing.results[:0]
 	outSlices := ing.slices[:0]
 	outGroups := ing.pageGroups[:0]
 	outNos := ing.pageNos[:0]
 	outPages := ing.pages[:0]
+	outIdx := 0
 	for i, k := range keep {
 		if !k {
 			continue
+		}
+		want := oldBase + outIdx + 1
+		for si := range ing.slices[i] {
+			ing.slices[i][si].StudentIndex = want
 		}
 		outResults = append(outResults, ing.results[i])
 		outSlices = append(outSlices, ing.slices[i])
 		outGroups = append(outGroups, ing.pageGroups[i])
 		outNos = append(outNos, ing.pageNos[i])
 		outPages = append(outPages, ing.pages[i])
+		outIdx++
 	}
 	ing.results, ing.slices, ing.pageGroups, ing.pageNos, ing.pages = outResults, outSlices, outGroups, outNos, outPages
 	return notes

@@ -186,9 +186,29 @@ func NewStore(dir string) (*Store, error) {
 		if err := json.Unmarshal(b, &ex); err != nil {
 			continue // 损坏的会话不阻塞启动
 		}
+		migrateExam(&ex)
 		s.exams[ex.ID] = &ex
 	}
 	return s, nil
+}
+
+// migrateExam 旧版本数据升级(内存态,下次落盘自然固化):
+//   - AB 卷答案键统一(2026-10-25):KeyB 曾可独立录入,但 B 卷作答入库即归一规范题序、
+//     判分只看 ObjectiveKey —— 独立录入的 KeyB 对成绩从无影响。加载时对齐到共用答案键,
+//     消除历史分叉值,详情展示与后续保存口径一致。
+//   - 乐观锁版本号引入前的已评记录 Ver=0:按 SetGrade 的口径 ver<=0 一律拒绝,
+//     不补 1 的话存量考试的改分/复核改分/手工直录会永久 409(grader 拿回的 ver
+//     永远是 0,重试即死循环)。
+func migrateExam(ex *Exam) {
+	if ex.LayoutB != nil {
+		ex.KeyB = cloneStrSlice(ex.ObjectiveKey)
+	}
+	for k, g := range ex.Grades {
+		if g.Graded && g.Ver <= 0 {
+			g.Ver = 1
+			ex.Grades[k] = g
+		}
+	}
 }
 
 // Create 落盘一场新考试(切片 + 整卷回溯图)。
@@ -268,11 +288,17 @@ func (s *Store) Create(ne NewExam) (*Exam, error) {
 	return ex, nil
 }
 
+// Get 返回考试会话的快照(深拷贝):读路径锁外遍历与锁内写路径并发安全
+// (此前返回内部指针,锁外读 map 一旦撞上写入就是进程级致命错误,见 snapshot.go)。
+// 写入必须走 Store 的变更方法;对快照的修改不会落盘。
 func (s *Store) Get(id string) (*Exam, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ex, ok := s.exams[id]
-	return ex, ok
+	if !ok {
+		return nil, false
+	}
+	return ex.snapshot(), true
 }
 
 func (s *Store) List() []*Exam {
@@ -280,7 +306,7 @@ func (s *Store) List() []*Exam {
 	defer s.mu.Unlock()
 	out := make([]*Exam, 0, len(s.exams))
 	for _, ex := range s.exams {
-		out = append(out, ex)
+		out = append(out, ex.snapshot())
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
 	return out
@@ -410,7 +436,9 @@ func (s *Store) SetGradePart(id string, student, question, part int, g score.Gra
 }
 
 // SetObjectiveKey 修正客观题参考答案并落盘(答案键录错时的补救,自动触发全班重统)。
-// variant 为 "B" 时修正 B 卷答案(建考时留空的“后补”出口;规范题号序)。
+// AB 卷两卷判分共用规范题号答案键(B 卷作答入库时已按题序归一,判分只看 ObjectiveKey):
+// variant="B" 只是另一个录入视图,保存后与 A 卷同步生效并保持 KeyB ≡ ObjectiveKey;
+// 非 AB 考试传 "B" 报错。
 func (s *Store) SetObjectiveKey(id string, key []string, by string, variant string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -418,28 +446,29 @@ func (s *Store) SetObjectiveKey(id string, key []string, by string, variant stri
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
-	target := &ex.ObjectiveKey
+	if variant == "B" && ex.LayoutB == nil {
+		return fmt.Errorf("本场考试未配置 B 卷版式,无 B 卷答案可修正")
+	}
 	label := "客观题参考答案"
 	if variant == "B" {
-		if ex.LayoutB == nil {
-			return fmt.Errorf("本场考试未配置 B 卷版式,无 B 卷答案可修正")
-		}
-		target = &ex.KeyB
-		label = "B 卷客观题参考答案"
+		label = "B 卷客观题参考答案(与 A 卷共用规范答案键)"
 	}
-	if len(key) != len(*target) {
-		return fmt.Errorf("参考答案 %d 道,与本卷客观题 %d 道不一致", len(key), len(*target))
+	if len(key) != len(ex.ObjectiveKey) {
+		return fmt.Errorf("参考答案 %d 道,与本卷客观题 %d 道不一致", len(key), len(ex.ObjectiveKey))
 	}
 	changed := 0
 	for i := range key {
-		if key[i] != (*target)[i] {
+		if key[i] != ex.ObjectiveKey[i] {
 			changed++
 		}
 	}
 	if changed == 0 {
 		return fmt.Errorf("参考答案无变化")
 	}
-	*target = key
+	ex.ObjectiveKey = cloneStrSlice(key)
+	if ex.LayoutB != nil {
+		ex.KeyB = cloneStrSlice(key) // 两卷共用答案键:KeyB 恒等于 ObjectiveKey
+	}
 	markDirtyLocked(ex)
 	ex.log(by, "setKey", fmt.Sprintf("修正%s(%d 道变更),全班重统", label, changed))
 	return s.save(ex)
@@ -533,14 +562,20 @@ func (s *Store) SetAssignment(id string, student int, reg string, by string) err
 }
 
 // Delete 删除考试及其全部数据。
+// 先删盘再删内存:Windows 下文件被占用时 RemoveAll 半途失败,若内存先删,
+// 半残目录里的 exam.json 会在重启后让考试"复活"(可见但缺切片/缺卷)。
+// 删盘失败时保留内存条目并报错,操作员解除占用后重试即可。
 func (s *Store) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.exams[id]; !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
+	if err := os.RemoveAll(filepath.Join(s.dir, id)); err != nil {
+		return fmt.Errorf("删除考试数据失败(文件被其它程序占用?): %w", err)
+	}
 	delete(s.exams, id)
-	return os.RemoveAll(filepath.Join(s.dir, id))
+	return nil
 }
 
 // SetTask 分配阅卷任务:主观题 question(1-based)→ 教师账号(teacher 为空表示撤销)。
@@ -687,6 +722,9 @@ func (s *Store) AppendScans(id, by string, oldBase int, results []*omr.Result, s
 			}
 		}
 	}
+	// 落盘失败回滚:除卷列表与已写文件外,审计日志与 Dirty 标记一并还原,
+	// 否则内存态留着"补传成功"的痕迹(有变更提示/审计记录)而磁盘没有对应数据。
+	auditLen, dirtyBefore := len(ex.Audit), ex.Dirty
 	var written []string
 	cleanup := func() {
 		for _, p := range written {
@@ -736,6 +774,8 @@ func (s *Store) AppendScans(id, by string, oldBase int, results []*omr.Result, s
 	ex.log(by, "appendScans", fmt.Sprintf("补传扫描件 %d 卷,共 %d 卷", len(results), len(ex.Results)))
 	if err := s.save(ex); err != nil {
 		ex.Results = ex.Results[:base] // 回滚内存,避免与磁盘分叉
+		ex.Audit = ex.Audit[:auditLen]
+		ex.Dirty = dirtyBefore
 		cleanup()
 		return 0, err
 	}
@@ -1225,7 +1265,42 @@ func (s *Store) save(ex *Exam) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "exam.json"), b, 0o644)
+	return writeFileAtomic(filepath.Join(dir, "exam.json"), b, 0o644)
+}
+
+// writeFileAtomic 原子落盘:先写临时文件再 rename 顶替(A-2)。
+// 此前直接 os.WriteFile 覆盖,断电/崩溃在写半截时 exam.json/org.json 损坏 ——
+// exam.json 损坏该考试静默消失,org.json 损坏服务拒绝启动。
+// rename 在 Windows 上可能撞上备份协程正持有目标文件(共享冲突),短暂重试。
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-"+filepath.Base(path)+"-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // rename 成功后 Remove 报错,无碍
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return err
+	}
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		if lastErr = os.Rename(tmpName, path); lastErr == nil {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// rename 反复失败(极端:目标被长持有):退回直接覆盖,保可用性
+	if err := os.WriteFile(path, data, perm); err != nil {
+		return lastErr
+	}
+	return nil
 }
 
 func newID() (string, error) {

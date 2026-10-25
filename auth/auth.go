@@ -51,6 +51,7 @@ type User struct {
 	Grades             []string `json:"grades,omitempty"`             // 年级组长管辖年级(配合组织架构 data/school.json 收敛可见考试)
 	Children           []string `json:"children,omitempty"`           // 家长绑定的子女考号(家长角色)
 	MustChangePassword bool     `json:"mustChangePassword,omitempty"` // 首登强制改密(默认管理员账号/批量导入初始密码置位)
+	Iter               int      `json:"iter,omitempty"`               // PBKDF2 迭代次数;0=历史散列(60000)
 }
 
 // AllClasses 返回该账号的全部班级;只有 class 的老数据归一为单班。
@@ -108,9 +109,12 @@ func pbkdf2Key(password, salt []byte, iter, keyLen int) []byte {
 	return dk[:keyLen]
 }
 
-const pbkdf2Iter = 60000 // 自建局域网服务的合理强度;登录约 60ms
+const (
+	pbkdf2IterLegacy = 60000  // 历史强度:存量散列按此校验,登录成功后自动升级
+	pbkdf2Iter       = 210000 // 新散列口径(约 3.5 倍成本):暴力猜解同步变难,登录约 200ms 可接受
+)
 
-// SetPassword 生成新盐值并写入散列。
+// SetPassword 生成新盐值并写入散列(记录迭代次数,与旧散列兼容)。
 func (u *User) SetPassword(password string) error {
 	if len(password) < 5 {
 		return fmt.Errorf("密码长度至少 5 位")
@@ -120,11 +124,12 @@ func (u *User) SetPassword(password string) error {
 		return err
 	}
 	u.Salt = hex.EncodeToString(salt)
+	u.Iter = pbkdf2Iter
 	u.Hash = hex.EncodeToString(pbkdf2Key([]byte(password), salt, pbkdf2Iter, 32))
 	return nil
 }
 
-// CheckPassword 校验口令。
+// CheckPassword 校验口令(按散列记录的迭代次数;旧散列无记录按历史 60000 次)。
 func (u *User) CheckPassword(password string) bool {
 	salt, err := hex.DecodeString(u.Salt)
 	if err != nil {
@@ -134,7 +139,11 @@ func (u *User) CheckPassword(password string) bool {
 	if err != nil {
 		return false
 	}
-	got := pbkdf2Key([]byte(password), salt, pbkdf2Iter, len(want))
+	iter := u.Iter
+	if iter <= 0 {
+		iter = pbkdf2IterLegacy
+	}
+	got := pbkdf2Key([]byte(password), salt, iter, len(want))
 	return hmac.Equal(want, got)
 }
 
@@ -143,12 +152,29 @@ type session struct {
 	Expires  time.Time `json:"expires"`
 }
 
-// Store 是账号与会话存储(单文件 org.json + 内存)。
+// Store 是账号与会话存储(org.json 账号 + sessions.json 会话)。
+// 会话此前只活在内存里(重启全员掉线),现随变更落盘、启动恢复。
 type Store struct {
-	mu       sync.Mutex
-	path     string
-	Users    map[string]*User   `json:"users"`
-	Sessions map[string]session `json:"-"`
+	mu        sync.Mutex
+	path      string
+	sessPath  string
+	Users     map[string]*User   `json:"users"`
+	Sessions  map[string]session `json:"-"`
+}
+
+// UserPatch 是 UpdateUser 的增量语义:指针/非 nil 字段才生效,nil = 不变更
+// (此前整 struct 覆盖,部分提交会把未带的字段静默清空)。
+type UserPatch struct {
+	DisplayName *string  `json:"displayName,omitempty"`
+	Reg         *string  `json:"reg,omitempty"`
+	Class       *string  `json:"class,omitempty"`
+	Role        Role     `json:"role,omitempty"` // 空串 = 不变更
+	Classes     []string `json:"classes,omitempty"`
+	Subjects    []string `json:"subjects,omitempty"`
+	HeadClasses []string `json:"headClasses,omitempty"`
+	SubjectLead []string `json:"subjectLead,omitempty"`
+	Grades      []string `json:"grades,omitempty"`
+	Children    []string `json:"children,omitempty"`
 }
 
 type orgFile struct {
@@ -159,13 +185,14 @@ type orgFile struct {
 func Load(dir string) (*Store, error) {
 	s := &Store{
 		path:     filepath.Join(dir, "org.json"),
+		sessPath: filepath.Join(dir, "sessions.json"),
 		Users:    map[string]*User{},
 		Sessions: map[string]session{},
 	}
 	b, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return s, nil
+			return s.loadSessions()
 		}
 		return nil, err
 	}
@@ -175,6 +202,22 @@ func Load(dir string) (*Store, error) {
 	}
 	if f.Users != nil {
 		s.Users = f.Users
+	}
+	return s.loadSessions()
+}
+
+// loadSessions 恢复已落盘的会话;文件缺失/损坏按空会话处理(全员重新登录,不阻塞启动)。
+func (s *Store) loadSessions() (*Store, error) {
+	if b, err := os.ReadFile(s.sessPath); err == nil {
+		var sess map[string]session
+		if json.Unmarshal(b, &sess) == nil && sess != nil {
+			now := time.Now()
+			for tok, se := range sess {
+				if now.Before(se.Expires) {
+					s.Sessions[tok] = se
+				}
+			}
+		}
 	}
 	return s, nil
 }
@@ -187,7 +230,42 @@ func (s *Store) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, b, 0o600) // 含口令散列,收紧权限
+	return writeFileAtomic(s.path, b, 0o600) // 含口令散列,收紧权限
+}
+
+// saveSessionsLocked 会话落盘(调用方持锁);失败只影响重启后的会话延续,不影响当前请求。
+func (s *Store) saveSessionsLocked() error {
+	b, err := json.MarshalIndent(s.Sessions, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(s.sessPath, b, 0o600)
+}
+
+// writeFileAtomic 原子落盘:先写临时文件再 rename 顶替。
+// 直接 os.WriteFile 覆盖在断电/崩溃时会留下半截 org.json → 服务拒绝启动。
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-"+filepath.Base(path)+"-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		// Windows 上目标被并发持有(备份拷贝等)时 rename 可能共享冲突:退回直接覆盖
+		return os.WriteFile(path, data, perm)
+	}
+	return nil
 }
 
 // Bootstrap 确保至少存在一个管理员;首次初始化使用默认口令并返回提示。
@@ -208,6 +286,7 @@ func (s *Store) Bootstrap() (first bool, err error) {
 }
 
 // Login 校验口令并创建会话(有效期 7 天)。
+// 旧强度散列(无 Iter 记录)登录成功后顺手升级到新口径 —— 存量账号无感迁移。
 func (s *Store) Login(username, password string) (token string, u *User, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -215,13 +294,18 @@ func (s *Store) Login(username, password string) (token string, u *User, err err
 	if !ok || !u.CheckPassword(password) {
 		return "", nil, fmt.Errorf("用户名或密码错误")
 	}
+	if u.Iter != pbkdf2Iter {
+		if err := u.SetPassword(password); err == nil {
+			_ = s.saveLocked()
+		}
+	}
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", nil, err
 	}
 	token = hex.EncodeToString(raw)
 	s.Sessions[token] = session{Username: username, Expires: time.Now().Add(7 * 24 * time.Hour)}
-	return token, u, s.saveLocked()
+	return token, u, s.saveSessionsLocked()
 }
 
 // SessionUser 由令牌取当前用户(过期会话顺带清理)。
@@ -245,8 +329,24 @@ func (s *Store) SessionUser(token string) (*User, bool) {
 func (s *Store) Logout(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.Sessions[token]; !ok {
+		return
+	}
 	delete(s.Sessions, token)
-	_ = s.saveLocked()
+	_ = s.saveSessionsLocked()
+}
+
+// Lookup 返回账号副本(锁内读):处理器读账号信息一律走这里,
+// 不再直接索引 Users map —— 与管理员开号/导入的并发写撞上是进程级致命错误。
+func (s *Store) Lookup(username string) (User, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.Users[username]
+	if !ok {
+		return User{}, false
+	}
+	cp := *u
+	return cp, true
 }
 
 // CreateUser 创建账号(管理员)。
@@ -355,16 +455,25 @@ func (s *Store) ImportUpsert(u *User, password string) (created bool, err error)
 	return false, s.saveLocked()
 }
 
-// UpdateUser 更新显示名/角色/考号/班级/管辖年级(不改口令)。
-func (s *Store) UpdateUser(username string, patch *User) error {
+// UpdateUser 按增量补丁更新账号(不改口令)。
+// UserPatch 指针语义:nil = 不变更 —— 此前整 struct 覆盖,管理端只提交部分字段时
+// DisplayName/Reg/Class 等会被静默清空;要清空请显式传空串。
+func (s *Store) UpdateUser(username string, patch *UserPatch) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, ok := s.Users[username]
 	if !ok {
 		return fmt.Errorf("用户 %s 不存在", username)
 	}
-	u.DisplayName = patch.DisplayName
-	u.Reg, u.Class = patch.Reg, patch.Class
+	if patch.DisplayName != nil {
+		u.DisplayName = *patch.DisplayName
+	}
+	if patch.Reg != nil {
+		u.Reg = *patch.Reg
+	}
+	if patch.Class != nil {
+		u.Class = *patch.Class
+	}
 	if patch.Classes != nil {
 		u.Classes = patch.Classes
 		if len(u.Classes) > 0 && u.Class == "" {
@@ -386,27 +495,30 @@ func (s *Store) UpdateUser(username string, patch *User) error {
 	if patch.Children != nil {
 		u.Children = patch.Children
 	}
-	if patch.Role != "" {
-		if patch.Role != u.Role && username == "admin" && u.Role == RoleAdmin {
-			// 保留至少一名管理员
-			hasOther := false
-			for name, other := range s.Users {
-				if name != username && other.Role == RoleAdmin {
-					hasOther = true
-					break
-				}
-			}
-			if !hasOther {
-				return fmt.Errorf("系统必须保留至少一名管理员")
-			}
+	if patch.Role != "" && patch.Role != u.Role {
+		if u.Role == RoleAdmin && !s.hasOtherAdminLocked(username) {
+			// 通用不变量:降级的是"最后一个管理员"就拒绝 —— 不只保护内置 admin 账号
+			// (旧逻辑先降 admin 再降第二个管理员,系统会落到零管理员)
+			return fmt.Errorf("系统必须保留至少一名管理员")
 		}
 		u.Role = patch.Role
 	}
 	return s.saveLocked()
 }
 
+// hasOtherAdminLocked 报告除 exclude 外是否还有其他管理员(调用方持锁)。
+func (s *Store) hasOtherAdminLocked(exclude string) bool {
+	for name, other := range s.Users {
+		if name != exclude && other.Role == RoleAdmin {
+			return true
+		}
+	}
+	return false
+}
+
 // SetPassword 重置口令(管理员重置):重置出的是临时口令,置强制改密标记,
 // 下次使用前须本人改掉(guard 中间件拦截)。
+// 同时吊销该账号全部既有会话 —— 口令已泄露/被冒用时的止血出口,不能等 7 天自然过期。
 func (s *Store) SetPassword(username, password string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -418,11 +530,13 @@ func (s *Store) SetPassword(username, password string) error {
 		return err
 	}
 	u.MustChangePassword = true
+	s.revokeSessionsLocked(username, "")
 	return s.saveLocked()
 }
 
-// SetPasswordSelf 本人修改口令(需已通过原密码校验):成功后清除强制改密标记。
-func (s *Store) SetPasswordSelf(username, password string) error {
+// SetPasswordSelf 本人修改口令(需已通过原密码校验):成功后清除强制改密标记,
+// 并吊销除当前会话外的其它会话(改密通常意味着口令疑似泄露,异地旧会话一并下线)。
+func (s *Store) SetPasswordSelf(username, password, keepToken string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, ok := s.Users[username]
@@ -433,7 +547,22 @@ func (s *Store) SetPasswordSelf(username, password string) error {
 		return err
 	}
 	u.MustChangePassword = false
+	s.revokeSessionsLocked(username, keepToken)
 	return s.saveLocked()
+}
+
+// revokeSessionsLocked 吊销某账号全部会话(keepToken 保留,调用方持锁)。
+func (s *Store) revokeSessionsLocked(username, keepToken string) {
+	changed := false
+	for tok, sess := range s.Sessions {
+		if sess.Username == username && tok != keepToken {
+			delete(s.Sessions, tok)
+			changed = true
+		}
+	}
+	if changed {
+		_ = s.saveSessionsLocked()
+	}
 }
 
 // DeleteUser 删除账号(不可删除最后一个管理员)。

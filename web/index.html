@@ -104,6 +104,27 @@
     <button class="secondary" onclick="addSub()">+ 加一道主观题</button>
     <button class="secondary" id="bankPickBtn" onclick="pickBank()">⇩ 从题库选题</button>
     <div id="bankPick" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px;max-height:300px;overflow:auto"></div>
+    <button class="secondary" onclick="toggleImportPanel()">⇩ 导入版式 JSON</button>
+    <div id="importPanel" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px;display:grid;gap:8px">
+      <p class="hint">粘贴版式 JSON(version 2)回灌设计器逐题编辑——设计器生成的、他人分享的、试卷识别产出的版式都能导入;导入会<b>替换当前题目列表</b>(卷头一并带出)。</p>
+      <textarea id="importJSON" rows="6" placeholder='{"version":2,"title":"...","questions":[...],"subjectives":[...]}' style="font-family:monospace;font-size:12px"></textarea>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="primary" onclick="importLayoutJSON()">导入并重建题目</button>
+        <span class="hint" id="importMsg"></span>
+      </div>
+    </div>
+    <button class="secondary" onclick="toggleABHelper()">⇩ AB 卷助手(生成 B 卷版式)</button>
+    <div id="abHelper" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px;display:grid;gap:8px">
+      <p class="hint">由当前客观题一键派生 B 卷版式(主观题区不变):<b>打乱</b>=随机错位排列(题序必与 A 不同,与建考自动生成同口径)、<b>倒序</b>=题号倒排。B 卷参考答案在建考时自动与 A 卷同步,无需另填。生成后到「教师工作台 → 新建考试 → AB 卷(高级)」一键载入。</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="primary" onclick="makeBV('shuffle')">🎲 生成打乱 B 卷</button>
+        <button class="secondary" onclick="makeBV('reverse')">⇅ 生成倒序 B 卷</button>
+        <span class="hint">或自定义题序(B 卡面第 1、2、3…题分别是 A 卷第几题):</span>
+        <input id="abOrder" placeholder="如 3,1,4,2" style="width:130px;font-family:monospace">
+        <button class="secondary" onclick="makeBV('custom')">按此题序生成</button>
+      </div>
+      <div class="hint" id="abResult"></div>
+    </div>
     <button class="primary" id="gen">生成 / 刷新预览</button>
     <button class="secondary" id="download" disabled>下载 SVG(可打印)</button>
     <div class="err" id="designMsg"></div>
@@ -329,14 +350,18 @@ function bankKey() {
   $("examMsg").textContent = `已按题库带出 ${key.length} 道客观题答案(?处请手工补齐)。`;
   stashLastKey();
 }
-// 答案随版式同步到教师工作台(og.lastKey):工作台「载入最近版式」时一并带出,建考零手填
+// 答案随版式同步到教师工作台(og.lastKey):工作台「载入最近版式」时一并带出,建考零手填。
+// 存储带版式指纹与题数:工作台载入时校验,版式变更后不再把旧答案按下标套进新题序
+// (否则全班按错答案判分)。
 function stashLastKey() {
   const raw = $("examKey").value.trim();
   if (!raw) return;
   try {
     const arr = JSON.parse(raw);
+    const layout = $("examLayout").value.trim();
     if (Array.isArray(arr) && arr.every(v => typeof v === "string")) {
-      localStorage.setItem("og.lastKey", JSON.stringify(arr.map(v => v.toUpperCase())));
+      const payload = { sig: layout ? OG.strHash(layout) : "", n: arr.length, arr: arr.map(v => v.toUpperCase()) };
+      localStorage.setItem("og.lastKey", JSON.stringify(payload));
     }
   } catch (_) { /* 手填中的半成品不阻断 */ }
 }

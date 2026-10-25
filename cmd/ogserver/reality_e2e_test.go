@@ -309,12 +309,13 @@ func TestRealityAlignmentE2E(t *testing.T) {
 		t.Fatalf("工作量统计缺 admin:%v", wl)
 	}
 
-	// —— 强制改密闭环(服务端闸门,非仅前端引导):管理员重置 → 旧会话立即被锁
-	//    (仅放行 认证端点,业务 API 403)→ 本人改密后自动解锁 ——
+	// —— 强制改密闭环(服务端闸门,非仅前端引导):管理员重置 → 旧会话直接吊销(401,
+	//    A-6 会话吊销:被盗会话不能等 7 天自然过期)→ 重新登录新口令 → 改密后恢复 ——
 	admin.json("POST", "/api/v1/users/teacher1/password", map[string]any{"newPassword": "reset123"}, http.StatusOK)
-	if c := teacher.code("GET", "/api/v1/my/tasks", nil, ""); c != http.StatusForbidden {
-		t.Fatalf("重置后旧会话应被强制改密拦截(403),得到 %d", c)
+	if c := teacher.code("GET", "/api/v1/my/tasks", nil, ""); c != http.StatusUnauthorized {
+		t.Fatalf("重置后旧会话应被吊销(401),得到 %d", c)
 	}
+	teacher.login("teacher1", "reset123") // 新口令重登(带强制改密标记)
 	teacher.json("POST", "/api/v1/auth/password", map[string]string{"oldPassword": "reset123", "newPassword": "teach123"}, http.StatusOK)
 	teacher.json("GET", "/api/v1/my/tasks", nil, http.StatusOK)
 }

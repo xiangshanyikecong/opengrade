@@ -47,7 +47,12 @@ type stageView struct {
 // sheetResolved 判定一张异常卷是否已被人工裁决:
 // 考号人工指派过(采纳推荐/手工确认)、已标缺考、AB 卷种已人工指派,
 // 或缺页/页序类告警已被人工接受(残卷核对),视为处理完成,不再计入"异常待处理"。
+// 卷种仍待定(PendingVariant)时一律未裁决:合并重判会重新挂起客观题作答,
+// 残留的历史指派记录不是"已处理"的证据 —— 否则该生静默从报告/排名消失且无待办。
 func sheetResolved(ex *Exam, student int) bool {
+	if student >= 1 && student <= len(ex.Results) && ex.Results[student-1] != nil && ex.Results[student-1].PendingVariant {
+		return false
+	}
 	if ex.Results[student-1].Absent {
 		return true
 	}
@@ -67,8 +72,22 @@ func sheetResolved(ex *Exam, student int) bool {
 // 缺页/页序不可信/重答/卷种未识别/B 卡混入/考号无法定位/短号不符 等 → 阻断(进异常阶段、挡发布);
 // 系统已自愈或已有确定判分口径的提示(码修复考号、多涂按错判、涂写偏浅)→ 信息类,
 // 展示在异常清单但不驱动阶段机 —— 否则一张浅涂告警会把整场考试永远冻在「异常待处理」。
+//
+// 匹配必须是精确文案片段而非「已按」这样的宽泛子串(B-2 修复):
+// 「页点不可信…已按到达顺序合并」「B 卡…已按 A 版式判读」「页间考号不一致,已按后者」
+// 都含「已按」但都是必须人工裁决的阻断告警 —— 宽泛匹配曾把它们判成信息类,
+// 发布门禁放行可疑作答,且这些卷被连带标成「已裁决」后,文案里引导的
+// 「接受残卷」按钮反而不渲染(出口断了)。新增软告警文案时在此登记精确片段。
 func blockingWarning(w string) bool {
-	for _, soft := range []string{"已按", "涂写偏浅", "按错判处理", "判分按批阅结果计入"} {
+	for _, soft := range []string{
+		"涂写偏浅",                     // 浅涂提示(omr):建议复核但已有确定判读
+		"按错判处理",                    // 多涂(omr):判分口径明确
+		"判分按批阅结果计入",               // 选做题号区未唯一涂选(score):回退批阅结果
+		"已按填涂考号",                   // 码解码失败,回退填涂考号(omr/regcode)
+		"已按条码修复", "已按二维码修复",        // 填涂异常,以码为准(omr/regcode)
+		"不一致,已按条码", "不一致,已按二维码",     // 填涂与码不一致,以码为准(omr/regcode)
+		"已按卷种点判读",                   // 卷种点与码内卷种位不一致,以点为准(omr):确定口径
+	} {
 		if strings.Contains(w, soft) {
 			return false
 		}

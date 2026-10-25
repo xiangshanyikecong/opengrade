@@ -9,71 +9,68 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"strings"
 )
 
-// PagesPDF 把多张位图按指定页面尺寸(mm)生成多页 PDF。
-// 页面内容铺满整页(等比不变形由调用方负责);ImagePDF 的多页推广。
+// PagesPDF 把多张位图按指定页面尺寸(mm)生成多页 PDF(兼容包装,见 PagesPDFIter)。
 func PagesPDF(imgs []image.Image, pageWmm, pageHmm float64) ([]byte, error) {
-	type imgObj struct {
-		w, h  int
-		bytes []byte
-	}
-	objs := make([]imgObj, len(imgs))
-	for i, img := range imgs {
-		b := img.Bounds()
-		objs[i].w, objs[i].h = b.Dx(), b.Dy()
-		var jpg bytes.Buffer
-		if err := jpeg.Encode(&jpg, img, &jpeg.Options{Quality: 88}); err != nil {
-			return nil, err
-		}
-		objs[i].bytes = jpg.Bytes()
+	return PagesPDFIter(len(imgs), func(i int) (image.Image, error) { return imgs[i], nil }, pageWmm, pageHmm)
+}
+
+// PagesPDFIter 逐页生成多页 PDF(A-6 内存修复):每页位图即编即弃,
+// 峰值内存 = 输出缓冲 + 单页。此前全部页面位图同时驻留(千人成绩条 ≈ 500 页
+// A4@150DPI 灰度 ≈ 1GB+)再统一 JPEG 编码,班级多的学校一次导出即 OOM。
+// PDF 结构与 PagesPDF 相同(Catalog/Pages/逐页 Page+Content+Image),仅把
+// 对象写入顺序改为逐页交错 —— xref 按"对象号→偏移"记录,与写入顺序无关。
+func PagesPDFIter(pageCount int, pageAt func(i int) (image.Image, error), pageWmm, pageHmm float64) ([]byte, error) {
+	n := pageCount
+	total := 3*n + 2
+	offsets := make([]int, total)
+	var out bytes.Buffer
+	write := func(s string) { out.WriteString(s) }
+	obj := func(id int, body string) {
+		offsets[id-1] = out.Len()
+		write(body)
 	}
 
 	const mmToPt = 72.0 / 25.4
 	pw := pageWmm * mmToPt
 	ph := pageHmm * mmToPt
 
-	var out bytes.Buffer
-	var offsets []int
-	write := func(s string) { out.WriteString(s) }
-	obj := func(body string) {
-		offsets = append(offsets, out.Len())
-		write(body)
-	}
-
-	n := len(objs)
-	// 对象编号:1 Catalog,2 Pages,3..n+2 Page,n+3..n+2+n Contents,n+3+n.. Image XObjects
-	pageIDs := make([]int, n)
-	for i := range pageIDs {
-		pageIDs[i] = 3 + i
-	}
-	kids := ""
-	for _, id := range pageIDs {
-		kids += fmt.Sprintf("%d 0 R ", id)
-	}
-
 	write("%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
-	obj("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
-	obj(fmt.Sprintf("2 0 obj\n<< /Type /Pages /Kids [%s] /Count %d >>\nendobj\n", kids, n))
-	for i := 0; i < n; i++ {
-		contentID := n + 3 + i
-		imgID := n + 3 + n + i
-		obj(fmt.Sprintf("%d 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.2f %.2f] "+
-			"/Resources << /XObject << /Im0 %d 0 R >> >> /Contents %d 0 R >>\nendobj\n", pageIDs[i], pw, ph, imgID, contentID))
-		content := fmt.Sprintf("q\n%.2f 0 0 %.2f 0 0 cm\n/Im0 Do\nQ\n", pw, ph)
-		obj(fmt.Sprintf("%d 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\n", contentID, len(content), content))
+	obj(1, "<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+	kids := make([]string, n)
+	for i := range kids {
+		kids[i] = fmt.Sprintf("%d 0 R ", 3+i)
 	}
+	obj(2, fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>\nendobj\n", strings.Join(kids, ""), n))
+	content := fmt.Sprintf("q\n%.2f 0 0 %.2f 0 0 cm\n/Im0 Do\nQ\n", pw, ph)
 	for i := 0; i < n; i++ {
-		offsets = append(offsets, out.Len())
+		img, err := pageAt(i)
+		if err != nil {
+			return nil, err
+		}
+		if img == nil {
+			return nil, fmt.Errorf("第 %d 页位图为空", i+1)
+		}
+		b := img.Bounds()
+		var jpg bytes.Buffer
+		if err := jpeg.Encode(&jpg, img, &jpeg.Options{Quality: 88}); err != nil {
+			return nil, err
+		}
+		imgID := 2*n + 3 + i
+		obj(3+i, fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.2f %.2f] "+
+			"/Resources << /XObject << /Im0 %d 0 R >> >> /Contents %d 0 R >>\nendobj\n", pw, ph, imgID, n+3+i))
+		obj(n+3+i, fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream\nendobj\n", len(content), content))
+		offsets[imgID-1] = out.Len()
 		write(fmt.Sprintf("%d 0 obj\n<< /Type /XObject /Subtype /Image /Width %d /Height %d "+
 			"/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n",
-			n+3+n+i, objs[i].w, objs[i].h, len(objs[i].bytes)))
-		out.Write(objs[i].bytes)
+			imgID, b.Dx(), b.Dy(), jpg.Len()))
+		out.Write(jpg.Bytes())
 		write("\nendstream\nendobj\n")
 	}
 
 	xrefPos := out.Len()
-	total := n*2 + n + 2 // catalog + pages + n*(page+content) + n*img
 	write(fmt.Sprintf("xref\n0 %d\n", total+1))
 	write("0000000000 65535 f \n")
 	for _, off := range offsets {

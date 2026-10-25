@@ -222,7 +222,18 @@ func main() {
 	dataDir := flag.String("data", "data", "数据目录")
 	seed := flag.Bool("seed-demo", false, "播种示例组织(默认管理员/组长/教师/学生/班级),便于快速评估")
 	backupDir := flag.String("backup-dir", "", "备份目标目录(缺省 data/backups;建议指向 data/ 之外的物理盘;环境变量 OPENGRADE_BACKUP_DIR 兜底)")
+	restoreFrom := flag.String("restore-backup", "", "从备份快照目录恢复 JSON 状态到数据目录(覆盖现状)后退出;例:-restore-backup /mnt/backup/20260101-030000")
+	flagCookieSecure := flag.Bool("cookie-secure", false, "会话 Cookie 加 Secure 标记(HTTPS 部署时开启;局域网 HTTP 部署保持关闭,否则无法登录)")
 	flag.Parse()
+	if *restoreFrom != "" {
+		n, err := RestoreBackup(*restoreFrom, *dataDir)
+		if err != nil {
+			log.Fatalf("恢复失败: %v", err)
+		}
+		log.Printf("已从 %s 恢复 %d 个 JSON 文件到 %s(重启服务前请先停服,避免运行中写入覆盖恢复数据)", *restoreFrom, n, *dataDir)
+		return
+	}
+	cookieSecure = *flagCookieSecure || os.Getenv("OPENGRADE_COOKIE_SECURE") == "1"
 	srv, err := newServer(*dataDir, *seed)
 	if err != nil {
 		log.Fatalf("%v", err)
@@ -234,7 +245,17 @@ func main() {
 	}
 	StartBackupLoop(*dataDir, dest, 12*time.Hour, 10) // 启动即一次,此后每 12 小时,保留最近 10 份
 	log.Printf("OpenGrade API 监听 %s", *addr)
-	log.Fatal(http.ListenAndServe(*addr, srv.Handler))
+	// 无超时的 http.Server 会被慢连接/半开连接无限占住句柄(A-7):
+	// 读头要快(防护),读体放宽(多页 PDF 批量上传可达数百 MB),写放宽(成绩册/讲评 PDF 导出)。
+	httpSrv := &http.Server{
+		Addr:              *addr,
+		Handler:           srv.Handler,
+		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       10 * time.Minute,
+		WriteTimeout:      30 * time.Minute,
+		IdleTimeout:       120 * time.Second,
+	}
+	log.Fatal(httpSrv.ListenAndServe())
 }
 
 // authedHandler 是已通过鉴权(并可带角色约束)的处理器。
@@ -409,6 +430,10 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 	}
 	// 手工成绩科目:免版式建考(体音美/实验/听力等无答题卡的成绩直录)
 	if strings.TrimSpace(r.FormValue("manual")) == "1" {
+		if strings.TrimSpace(r.FormValue("abAuto")) == "1" {
+			httpError(w, http.StatusBadRequest, fmt.Errorf("手工成绩考试没有答题卡,无法启用 AB 卷"))
+			return
+		}
 		createManualExam(w, r, store, u)
 		return
 	}
@@ -434,8 +459,11 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		key = make([]string, len(sheet.Choice))
 	}
 
-	// AB 卷(可选 layout2/key2/order2):B 卷客观题序可打乱,主观题区必须与 A 一致;
-	// 卷种点 + 复合码(考试短号+卷种位+考号)自动识别,作答入库即归一为规范题号。
+	// AB 卷(可选,启用方式二选一):
+	//   abAuto=1 —— 自动生成 B 卷:A 卷客观题顺序随机打乱(错位排列),主观题区不变;
+	//   layout2/order2 —— 高级手填 B 卷版式与题序对照(B 只能打乱客观题序,校验强制与 A 集合一致)。
+	// 卷种点 + 复合码(考试短号+卷种位+考号)自动识别,作答入库即归一为规范题号;
+	// 判分按规范题号共用一份答案键(B 卷作答归一后与 A 同键判分)。
 	var (
 		layoutB   *card.Layout
 		keyBCanon []string
@@ -443,43 +471,92 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		ab        *abSupport
 		shortID   string
 	)
-	if lv2 := strings.TrimSpace(r.FormValue("layout2")); lv2 != "" {
-		var lb card.Layout
-		if err := json.Unmarshal([]byte(lv2), &lb); err != nil {
-			httpError(w, http.StatusBadRequest, fmt.Errorf("layout2 字段不是合法版式 JSON: %w", err))
-			return
-		}
-		la := sheet.Layout // 规范化后的 A 卷
-		la.Variant = "A"
-		lb.Variant = "B"
-		var key2 []string
-		if kv2 := strings.TrimSpace(r.FormValue("key2")); kv2 != "" {
-			if err := json.Unmarshal([]byte(kv2), &key2); err != nil {
-				httpError(w, http.StatusBadRequest, fmt.Errorf("key2 字段不是合法的答案数组: %w", err))
+	abAuto := strings.TrimSpace(r.FormValue("abAuto")) == "1"
+	lv2 := strings.TrimSpace(r.FormValue("layout2"))
+	if abAuto {
+		// 自动生成 B 卷与手填字段互斥:静默忽略旧字段会掩盖调用方的真实意图(如旧缓存页)
+		for name, v := range map[string]string{"layout2": lv2, "key2": strings.TrimSpace(r.FormValue("key2")), "order2": strings.TrimSpace(r.FormValue("order2"))} {
+			if v != "" {
+				httpError(w, http.StatusBadRequest, fmt.Errorf("已选择自动生成 B 卷(abAuto),请不要再传 %s", name))
 				return
 			}
-		} else {
-			key2 = make([]string, len(lb.Questions)) // 答案可后补,空串占位
 		}
-		orderB = nil
-		if ov := strings.TrimSpace(r.FormValue("order2")); ov != "" {
-			for _, part := range strings.Split(ov, ",") {
-				n, err := strconv.Atoi(strings.TrimSpace(part))
-				if err != nil {
-					httpError(w, http.StatusBadRequest, fmt.Errorf("order2 题序对照须为逗号分隔的数字(如 3,1,4,2)"))
+	}
+	if abAuto || lv2 != "" {
+		la := sheet.Layout // 规范化后的 A 卷
+		la.Variant = "A"
+		var lb card.Layout
+		if abAuto {
+			if len(la.Questions) < 2 {
+				httpError(w, http.StatusBadRequest, fmt.Errorf("自动生成 AB 卷需要至少 2 道客观题(打乱题序才有防抄袭意义)"))
+				return
+			}
+			lbp, ob := deriveAB(&la, nil)
+			lb, orderB = *lbp, ob
+		} else {
+			if err := json.Unmarshal([]byte(lv2), &lb); err != nil {
+				httpError(w, http.StatusBadRequest, fmt.Errorf("layout2 字段不是合法版式 JSON: %w", err))
+				return
+			}
+			orderB = nil
+			if ov := strings.TrimSpace(r.FormValue("order2")); ov != "" {
+				for _, part := range strings.Split(ov, ",") {
+					n, err := strconv.Atoi(strings.TrimSpace(part))
+					if err != nil {
+						httpError(w, http.StatusBadRequest, fmt.Errorf("order2 题序对照须为逗号分隔的数字(如 3,1,4,2)"))
+						return
+					}
+					orderB = append(orderB, n)
+				}
+			} else {
+				for i := 1; i <= len(lb.Questions); i++ { // 缺省恒等映射(B 与 A 同题序,仅卷种不同)
+					orderB = append(orderB, i)
+				}
+			}
+		}
+		lb.Variant = "B"
+		// B 卷答案键:两卷共用同一份参考答案(规范题号序)。key2 缺省/空 = 按 A 卷答案
+		// 依题序对照重排(自动同步);显式给出时必须与 A 卷一致,矛盾即 400 ——
+		// AB 卷只打乱题序,内容不一致的 B 答案键只会造成误导(判分实际只用规范键)。
+		var key2 []string
+		if !abAuto {
+			if kv2 := strings.TrimSpace(r.FormValue("key2")); kv2 != "" {
+				if err := json.Unmarshal([]byte(kv2), &key2); err != nil {
+					httpError(w, http.StatusBadRequest, fmt.Errorf("key2 字段不是合法的答案数组: %w", err))
 					return
 				}
-				orderB = append(orderB, n)
 			}
-		} else {
-			for i := 1; i <= len(lb.Questions); i++ { // 缺省恒等映射(B 与 A 同题序,仅卷种不同)
-				orderB = append(orderB, i)
+		}
+		nonEmpty := false
+		for _, k := range key2 { // 全空串视同缺省:前端网格一格没填(或旧客户端发 ["","",…])= 与 A 卷答案同步
+			if k != "" {
+				nonEmpty = true
+				break
+			}
+		}
+		if !nonEmpty {
+			key2 = nil
+		}
+		if len(key2) == 0 {
+			key2 = make([]string, len(orderB))
+			for i := range key2 {
+				if orderB[i] >= 1 && orderB[i] <= len(key) {
+					key2[i] = key[orderB[i]-1]
+				}
 			}
 		}
 		canon, err := validateAbLayouts(&la, &lb, key2, orderB)
 		if err != nil {
 			httpError(w, http.StatusBadRequest, err)
 			return
+		}
+		for i := range canon { // 规范序下两卷答案必须全等(自校验:AB 卷不允许异内容答案键)
+			if canon[i] != key[i] {
+				httpError(w, http.StatusBadRequest, fmt.Errorf(
+					"B 卷答案与 A 卷答案在规范题号下不一致(第 %d 题:A 卷 %q / B 卷 %q):AB 卷只打乱题序,两卷共用同一份参考答案;请留空 B 卷答案(自动与 A 卷同步)或修正",
+					i+1, key[i], canon[i]))
+				return
+			}
 		}
 		// 带卷种标记重建 A 卷(卷种点几何),并构造 AB 入库上下文
 		sheetA, err := la.Build()
@@ -1011,6 +1088,8 @@ func handleSlices(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 }
 
 // handleSliceImage 返回单张切片 PNG。
+// student/q 必须是纯数字:此前 pad2 对非数字原样放行,Windows 下 "..%5C.." 之类的
+// 路径段会借反斜杠越出 slices 目录读到任意 .png。
 func handleSliceImage(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	id := r.PathValue("id")
 	ex, ok := store.Get(id)
@@ -1018,18 +1097,15 @@ func handleSliceImage(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
-	p := filepath.Join(store.SliceDir(id),
-		fmt.Sprintf("s%02s_q%02s.png", pad2(r.PathValue("student")), pad2(r.PathValue("q"))))
+	student, err1 := strconv.Atoi(r.PathValue("student"))
+	q, err2 := strconv.Atoi(r.PathValue("q"))
+	if err1 != nil || err2 != nil || student < 1 || q < 1 || student > 9999 || q > 999 {
+		httpError(w, http.StatusBadRequest, fmt.Errorf("切片编号不合法"))
+		return
+	}
+	p := filepath.Join(store.SliceDir(id), fmt.Sprintf("s%02d_q%02d.png", student, q))
 	w.Header().Set("Content-Type", "image/png")
 	http.ServeFile(w, r, p)
-}
-
-func pad2(s string) string {
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return s
-	}
-	return fmt.Sprintf("%02d", n)
 }
 
 // handleSetGrade 写入一条主观题评分(含手写批注笔迹);part>0 时为小问评分(版式 v3)。

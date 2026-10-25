@@ -288,12 +288,22 @@ func (io *ingestResult) appendStudent(pages []pageScan, base int, ab *abSupport,
 	if ab != nil && ab.hasB && len(ab.booksB) > 0 && merged.Variant == "B" {
 		// B 卷页若仍以 A 版式判读(单页/位置分组回退路径),在同一矫正图上按 B 版式补读后重合并;
 		// 补读失败的页保持 A 几何结果并挂告警(作答可疑,交人工复核)。
+		// 对齐必须按真实页号(缺第 1 页的残卷 pages[0] 实为第 2 页):按组内下标对齐会用
+		// 错页几何重读且必然"成功",客观题作答被垃圾覆盖(2026-10-25 复查抓出)。页号未知
+		// (页点不可信,pageNos 全 0)时按到达位置回退,与入库选几何的口径一致。
 		swapped := false
 		fellBack := false
 		for k := range pages {
-			if k < len(ab.booksB) && pages[k].sheet != ab.booksB[k] && pages[k].dbg != nil && pages[k].dbg.Rectified != nil {
-				if r2, _, err2 := omr.ReadRectified(ab.booksB[k], pages[k].dbg.Rectified, opt); err2 == nil {
-					pages[k] = pageScan{res: r2, dbg: pages[k].dbg, sheet: ab.booksB[k], subOffset: pages[k].subOffset}
+			pageNo := k + 1
+			if len(pageNos) == len(pages) && pageNos[k] >= 1 {
+				pageNo = pageNos[k]
+			}
+			if pageNo > len(ab.booksB) {
+				continue
+			}
+			if pages[k].sheet != ab.booksB[pageNo-1] && pages[k].dbg != nil && pages[k].dbg.Rectified != nil {
+				if r2, _, err2 := omr.ReadRectified(ab.booksB[pageNo-1], pages[k].dbg.Rectified, opt); err2 == nil {
+					pages[k] = pageScan{res: r2, dbg: pages[k].dbg, sheet: ab.booksB[pageNo-1], subOffset: pages[k].subOffset}
 					swapped = true
 				} else {
 					fellBack = true

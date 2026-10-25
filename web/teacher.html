@@ -304,14 +304,33 @@ async function loadExams() {
     <div style="display:flex;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
       <b>考试列表</b><span class="hint">共 ${exams.length} 场 · 点考试号进入详情(扫描/异常/进度/发布)</span>
       <span style="flex:1"></span>
-      <select id="fltTerm" onchange="renderExamTable()"><option value="">全部学期</option>${terms.map(t => `<option>${t}</option>`).join("")}</select>
-      <select id="fltType" onchange="renderExamTable()"><option value="">全部类型</option>${types.map(t => `<option>${t}</option>`).join("")}</select>
-      <select id="fltGroup" onchange="renderExamTable()"><option value="">全部分组</option>${groups.map(t => `<option>${t}</option>`).join("")}</select>
+      <select id="fltTerm" onchange="saveExamFilters()"><option value="">全部学期</option>${terms.map(t => `<option>${OG.esc(t)}</option>`).join("")}</select>
+      <select id="fltType" onchange="saveExamFilters()"><option value="">全部类型</option>${types.map(t => `<option>${OG.esc(t)}</option>`).join("")}</select>
+      <select id="fltGroup" onchange="saveExamFilters()"><option value="">全部分组</option>${groups.map(t => `<option>${OG.esc(t)}</option>`).join("")}</select>
       <button class="primary" onclick="showTab('create')">+ 新建考试</button>
     </div>
     <div id="examTableBox"></div>`;
   box.innerHTML = exams.length ? html + "</div>" : `<div class="panel"><div class="empty"><div class="pic">🗂️</div>当前暂无考试~ 点右上「+ 新建考试」开始:建考(建档)→ 发卡 → 考后回详情传扫描件</div></div>`;
-  if (exams.length) renderExamTable();
+  if (exams.length) {
+    restoreExamFilters(); // 刷新/换页回来保持上次的筛选(C-4:此前每次重置成"全部")
+    renderExamTable();
+  }
+}
+
+// 筛选状态持久化:学期/类型/分组选择存 sessionStorage,重进页面回填
+function restoreExamFilters() {
+  let f = {};
+  try { f = JSON.parse(sessionStorage.getItem("og.examFilters") || "{}"); } catch (_) { }
+  for (const [id, v] of [["fltTerm", f.term], ["fltType", f.type], ["fltGroup", f.group]]) {
+    const sel = document.getElementById(id);
+    if (sel && v && [...sel.options].some(o => o.value === v || o.text === v)) sel.value = v;
+  }
+}
+
+function saveExamFilters() {
+  const v = id => (document.getElementById(id) || {}).value || "";
+  sessionStorage.setItem("og.examFilters", JSON.stringify({ term: v("fltTerm"), type: v("fltType"), group: v("fltGroup") }));
+  renderExamTable();
 }
 
 function renderExamTable() {
@@ -320,9 +339,9 @@ function renderExamTable() {
   const list = exams.filter(e => (!term || e.term === term) && (!type || e.examType === type) && (!group || e.examGroup === group));
   const metaTxt = e => {
     const bits = [];
-    if (e.examType) bits.push(e.examType);
-    if (e.term) bits.push(e.term);
-    if (e.examGroup) bits.push(`<span class="hint" title="同场分组,可在「年级总表」聚合查看">⧉ ${e.examGroup}</span>`);
+    if (e.examType) bits.push(OG.esc(e.examType));
+    if (e.term) bits.push(OG.esc(e.term));
+    if (e.examGroup) bits.push(`<span class="hint" title="同场分组,可在「年级总表」聚合查看">⧉ ${OG.esc(e.examGroup)}</span>`);
     return bits.join(" · ");
   };
   let html = `<table><tr><th>考试</th><th>日期</th><th>类型/学期</th><th>建卷人</th><th>学科</th><th>卷数</th><th>题型</th><th>状态</th><th>操作</th></tr>`;
@@ -363,13 +382,16 @@ function renderExamTable() {
 /* —— 考试详情枢纽(常规流程的"考试工作台"):扫描会话 → 异常裁决 → 进度 → 发布 —— */
 let hubExam = null; // 当前详情数据缓存(动作完成后局部刷新)
 
+let openExamSeq = 0; // 竞态守卫:快速连点/切换考试时,旧响应不得覆盖新页面(会丢已填输入)
 async function openExam(id) {
+  const seq = ++openExamSeq;
   showTab("exam");
   const box = document.getElementById("tab-exam");
   box.innerHTML = `<div class="panel">加载考试 ${id} …</div>`;
   let d;
   try { d = await OG.jget(`/api/v1/exams/${id}`); }
-  catch (e) { box.innerHTML = `<div class="panel"><div class="err">${e.message}</div></div>`; return; }
+  catch (e) { if (seq === openExamSeq) box.innerHTML = `<div class="panel"><div class="err">${OG.esc(e.message)}</div></div>`; return; }
+  if (seq !== openExamSeq) return; // 已切换到其它考试:丢弃过期响应
   hubExam = d;
   renderExamHub(d);
 }
@@ -437,10 +459,13 @@ function renderExamHub(d) {
     html += `<div class="group-title" style="margin-top:16px">① 扫描上传(支持 PNG/JPG/多页 PDF;按每页考号自动归组,卡纸跳页只告警不连坐;同一学生分两批扫,系统会把页自动合并成一份卷)</div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <input type="file" id="hubScanFiles" multiple accept="image/png,image/jpeg,application/pdf" style="max-width:340px">
-      <button class="primary" onclick="hubUpload('${d.id}')">上传本批扫描件</button>
+      <button class="primary" id="hubScanBtn" onclick="hubUpload('${d.id}')">上传本批扫描件</button>
       <span class="hint">${st.expected && st.students < st.expected ? `名册 ${st.expected} 人,还差 ${st.expected - st.students} 份 —— 全部补扫或登记缺考后,阶段才会离开「扫描中」` : "已扫齐或名册未提供"}</span>
     </div>
-    <div id="hubScanMsg" style="margin-top:8px"></div>`;
+    <div id="hubScanMsg" style="margin-top:8px">${hubUploadState && hubUploadState.id === d.id
+      ? `<div class="panel" style="padding:8px"><span class="err">上次上传在第 ${hubUploadState.nextBatch + 1} 批中断(已入库 ${hubUploadState.addedTotal} 卷不受影响)。</span>
+         <button class="ghost" style="margin-left:8px" onclick="hubUploadResume()">从第 ${hubUploadState.nextBatch + 1} 批继续</button></div>`
+      : ""}</div>`;
   }
 
   // —— 重复卷裁决(重扫/重复上传):保留一份,其余作废 ——
@@ -450,7 +475,7 @@ function renderExamHub(d) {
       ${d.duplicates.map(g => {
         const reg = assignedRegOf(d, g[0]);
         const nm = ((d.roster || []).find(r => r.reg === reg) || {}).name;
-        return `<tr><td>${reg || "?"}${nm ? "(" + nm + ")" : ""}</td>
+        return `<tr><td>${OG.esc(reg || "?")}${nm ? "(" + OG.esc(nm) + ")" : ""}</td>
         <td>卷 ${g.join("、卷 ")}</td>
         <td style="display:flex;gap:8px;flex-wrap:wrap">${canEdit ? g.map(si =>
           `<a href="#" onclick="resolveDup('${d.id}',${si},${JSON.stringify(g).replace(/"/g, "&quot;")});return false">保留卷 ${si}</a>`).join("")
@@ -464,10 +489,10 @@ function renderExamHub(d) {
     html += `<div class="group-title" style="margin-top:14px">缺扫名单(${missing.length} 人 — 漏扫/缺考在此收口)</div>
       <p class="hint" style="margin:4px 0">这 ${missing.length} 人不处理,考试会一直停在「扫描中」:实考的走「补录客观作答」(学情分析页),缺考的登记缺考(统计自动剔除,不进阅卷)。</p>
       <table><tr><th>考号</th><th>姓名</th><th>班级</th><th>处理</th></tr>
-      ${missing.map(m => `<tr><td>${m.reg}</td><td>${m.name || "-"}</td><td>${(m.classes || []).join("、") || "-"}</td>
+      ${missing.map(m => `<tr><td>${OG.esc(m.reg)}</td><td>${OG.esc(m.name || "-")}</td><td>${OG.esc((m.classes || []).join("、") || "-")}</td>
         <td style="display:flex;gap:10px">
-          <a href="#" onclick="hubManual('${d.id}','${m.reg}');return false">登记缺考</a>
-          <a href="#" onclick="hubManualEntry('${d.id}','${m.reg}');return false" title="实考但漏扫:录入客观作答(卷号续排,主观题可评分)">补录作答</a>
+          <a href="#" onclick="hubManual('${d.id}','${OG.esc(m.reg)}');return false">登记缺考</a>
+          <a href="#" onclick="hubManualEntry('${d.id}','${OG.esc(m.reg)}');return false" title="实考但漏扫:录入客观题作答(卷号续排,主观题可评分)">补录作答</a>
         </td></tr>`).join("")}</table>
       ${missing.length > 1 ? `<button class="ghost" style="margin-top:8px" onclick="hubAbsentAll('${d.id}')">以上 ${missing.length} 人全部登记缺考</button>` : ""}`;
   }
@@ -476,7 +501,7 @@ function renderExamHub(d) {
   if ((d.absent || []).length) {
     html += `<div class="group-title" style="margin-top:14px">缺考名单(${d.absent.length} 人 · 不进统计与阅卷;误标的可取消)</div>
       <table><tr><th>卷号</th><th>考号</th><th></th></tr>
-      ${d.absent.map(a => `<tr><td>第 ${a.student} 卷</td><td>${a.reg}</td>
+      ${d.absent.map(a => `<tr><td>第 ${a.student} 卷</td><td>${OG.esc(a.reg)}</td>
         <td><a href="#" onclick="hubAbsent('${d.id}',${a.student});return false">取消缺考</a></td></tr>`).join("")}</table>`;
   }
 
@@ -496,8 +521,8 @@ function renderExamHub(d) {
            ${isResidual(w) ? `<a href="#" onclick="hubAck('${d.id}',${w.student},true);return false" title="已线下核对该生各页:接受残卷,不再阻塞异常阶段(继续补扫会自动合并成完整卷)">接受残卷</a>` : ""}
            <a href="/grader.html?exam=${d.id}">去阅卷裁决</a>`;
       }
-      return `<tr style="${w.resolved || w.soft ? "opacity:.55" : ""}"><td>${w.student}</td><td>${w.reg || "?"}${w.variant ? ` <span class="pill on">${w.variant}卷</span>` : ""}</td>
-        <td>${(w.texts || []).join(";<br>")}</td>
+      return `<tr style="${w.resolved || w.soft ? "opacity:.55" : ""}"><td>${w.student}</td><td>${OG.esc(w.reg || "?")}${w.variant ? ` <span class="pill on">${w.variant}卷</span>` : ""}</td>
+        <td>${(w.texts || []).map(t => OG.esc(t)).join(";<br>")}</td>
         <td style="display:flex;gap:10px;flex-wrap:wrap">${actions}</td></tr>`;
     };
     html += `<div class="group-title" style="margin-top:14px">③ 异常清单(待裁决 ${warnOpen.length}${warnDone.length ? ` · 已裁决 ${warnDone.length}` : ""})</div>
@@ -530,37 +555,37 @@ function renderExamHub(d) {
   if ((d.appeals || []).length) {
     html += `<div class="group-title" style="margin-top:14px">成绩复核申请(${d.appeals.filter(a => a.status === "open").length} 条待处理)</div>
       <table><tr><th>#</th><th>时间</th><th>学生</th><th>理由</th><th>状态</th><th>处理</th></tr>
-      ${d.appeals.map(a => `<tr><td>${a.n}</td><td>${a.time}</td><td>${a.name || a.by}</td><td style="max-width:320px">${a.reason}</td>
+      ${d.appeals.map(a => `<tr><td>${a.n}</td><td>${OG.esc(a.time)}</td><td>${OG.esc(a.name || a.by)}</td><td style="max-width:320px">${OG.esc(a.reason)}</td>
         <td>${a.status === "open" ? '<span class="pill off">待处理</span>' : `<span class="pill on">已回复</span>`}</td>
         <td>${a.status === "open"
           ? `${canEdit ? `<input id="appealReply${a.n}" placeholder="回复结论(可空)" style="width:160px;padding:4px 8px">
              <button class="ghost" onclick="resolveAppeal('${d.id}',${a.n})">标记已处理</button>` : `<span class="hint">裁决需建卷人/年级组长/管理员</span>`}
              <a href="/grader.html?exam=${d.id}">去改分 ↗</a>`
-          : `<span class="hint">${a.reply || "(无回复)"}</span>`}</td></tr>`).join("")}</table>`;
+          : `<span class="hint">${OG.esc(a.reply || "(无回复)")}</span>`}</td></tr>`).join("")}</table>`;
   }
 
-  // —— ⑤ 客观题参考答案(逐格编辑,修正后全班重统;判断 T/F、多选连写;B 卷答案在此后补) ——
+  // —— ⑤ 客观题参考答案(逐格编辑,修正后全班重统;判断 T/F、多选连写) ——
   if (objN) {
     const kinds = d.objective || [];
-    const cell = (i, k, attr) => {
+    const cell = (i, k, attr, ro) => {
       const kind = (kinds[i] || {}).kind || "choice";
       const ph = kind === "judge" ? "T/F" : kind === "multiple" ? "如 AC" : "A~F";
       const tag = kind === "judge" ? "判" : kind === "multiple" ? "多" : "";
       return `<label class="hint" style="display:grid;gap:2px;text-align:center">${i + 1}${tag}
-        <input class="keyinput" data-${attr}="${i}" maxlength="4" value="${k || ""}" placeholder="${ph}" ${canEdit ? "" : "disabled"} style="font-family:monospace"></label>`;
+        <input class="keyinput" data-${attr}="${i}" maxlength="4" value="${k || ""}" placeholder="${ph}" ${canEdit && !ro ? "" : "disabled"} style="font-family:monospace"></label>`;
     };
     html += `<div class="group-title" style="margin-top:14px">客观题参考答案${canEdit ? "(逐格修正后全班客观题自动重统;空格=该题不判分)" : ""}</div>
       <div style="display:flex;flex-wrap:wrap;gap:8px">${kinds.map((_, i) => cell(i, (d.key || [])[i], "hubkey")).join("")}</div>
-      ${canEdit ? `<button class="ghost" style="margin-top:10px" onclick="hubSaveKey('${d.id}','A')">保存并重统</button>` : ""}
+      ${canEdit ? `<button class="ghost" style="margin-top:10px" onclick="hubSaveKey('${d.id}')">保存并重统${d.hasB ? "(A/B 卷共用)" : ""}</button>` : ""}
       <span class="hint">共 ${objN} 题;判断题 T/F,多选连写如 AC</span><div id="hubKeyMsg" style="margin-top:6px"></div>`;
     if (d.hasB) {
-      // B 卷答案(规范序存储;按 OrderB 换算成 B 卡面题序逐格显示,保存时换回规范序)
+      // B 卡面答案 = 规范答案按题序对照自动重排(判分按规范题号,两卷共用一份答案键)。
+      // 只读展示:让老师核对印在 B 卡上的答案位置;要改答案改上方 A 卷网格,两卷同步重统。
       const orderB = d.orderB && d.orderB.length ? d.orderB : kinds.map((_, i) => i + 1);
-      const keyBCard = orderB.map((canon, i) => ((d.keyB || [])[canon - 1] ?? "")); // 卡面第 i 题 ← 规范第 canon 题
-      html += `<div class="group-title" style="margin-top:12px">B 卷参考答案${canEdit ? "(建考留空的在此后补;保存后 B 卷客观题即判分)" : ""}</div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px">${kinds.map((_, i) => cell(i, keyBCard[i], "hubkeyb")).join("")}</div>
-        ${canEdit ? `<button class="ghost" style="margin-top:10px" onclick="hubSaveKey('${d.id}','B')">保存 B 卷答案</button>` : ""}
-        <span class="hint">按 B 卡面题号逐格填</span>`;
+      const keyBCard = orderB.map((canon) => ((d.key || [])[canon - 1] ?? "")); // 卡面第 i 题 ← 规范第 canon 题
+      html += `<div class="group-title" style="margin-top:12px">B 卷卡面答案(自动派生,只读)</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">${kinds.map((_, i) => cell(i, keyBCard[i], "hubkeybro", true)).join("")}</div>
+        <span class="hint">B 卡第 i 格 = 参考答案按题序对照(卡面第 i 题 = A 卷第 ${orderB.length && orderB.every((v, i2) => v === i2 + 1) ? "同序" : "打乱后的题序"}重排);判分按规范题号与 A 卷共用同一份答案。要改答案请改上方 A 卷网格。</span>`;
     }
   }
 
@@ -725,61 +750,9 @@ async function manualAbsent(id, reg, absent) {
 }
 
 // 扫描上传(P1:多页 PDF 自动拆页 + 分批接力,替代单个大请求):
-//   - PDF 用本地 pdf.js(web/vendor,离线可用)逐页渲染成 JPEG;
+//   - PDF 拆页用共享工具 OG.collectScanFiles(common.js,与设计器「从试卷识别」同源);
 //   - 全部图像按 15 张一批顺序 POST /scans(服务端按页考号归组,断点续传语义),
 //     每批完成即入库,中途失败只丢当前批,已传批不重来。
-let pdfjsReady = null;
-function ensurePdfJs() {
-  if (pdfjsReady) return pdfjsReady;
-  pdfjsReady = new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = "/vendor/pdf.min.js";
-    s.onload = () => {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = "/vendor/pdf.worker.min.js";
-      resolve(window.pdfjsLib);
-    };
-    s.onerror = () => reject(new Error("pdf.js 加载失败(web/vendor/pdf.min.js 缺失)"));
-    document.head.appendChild(s);
-  });
-  return pdfjsReady;
-}
-
-async function pdfToImages(file, onProgress) {
-  const lib = await ensurePdfJs();
-  const buf = await file.arrayBuffer();
-  const pdf = await lib.getDocument({ data: buf }).promise;
-  const out = [];
-  for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p);
-    const base = page.getViewport({ scale: 1 });
-    const scale = Math.min(4, Math.max(1.2, 2200 / base.width)); // 目标宽 ~2200px(≈265dpi):PDF 内嵌 300dpi 扫描图少降采样,二维码考号模块保 6px+
-    const vp = page.getViewport({ scale });
-    const cv = document.createElement("canvas");
-    cv.width = Math.floor(vp.width); cv.height = Math.floor(vp.height);
-    await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
-    const blob = await new Promise(res => cv.toBlob(res, "image/jpeg", 0.85));
-    out.push(new File([blob], file.name.replace(/\.pdf$/i, "") + `-p${p}.jpg`, { type: "image/jpeg" }));
-    if (onProgress) onProgress(p, pdf.numPages);
-  }
-  return out;
-}
-
-async function collectScanFiles(files, msg) {
-  const images = [];
-  for (const f of files) {
-    if (/\.pdf$/i.test(f.name) || f.type === "application/pdf") {
-      try {
-        const imgs = await pdfToImages(f, (p, n) => { msg.innerHTML = `<span class="hint">正在拆页 ${f.name}:${p}/${n} 页…</span>`; });
-        images.push(...imgs);
-      } catch (e) {
-        throw new Error(`PDF ${f.name} 拆页失败:${e.message}`);
-      }
-    } else {
-      images.push(f);
-    }
-  }
-  return images;
-}
 
 async function hubUpload(id) {
   const files = [...(document.getElementById("hubScanFiles").files || [])];
@@ -787,23 +760,34 @@ async function hubUpload(id) {
   if (!files.length) { msg.innerHTML = `<span class="err">请先选择扫描件</span>`; return; }
   let images;
   try {
-    images = await collectScanFiles(files, msg);
-  } catch (e) { msg.innerHTML = `<span class="err">${e.message}</span>`; return; }
+    images = await OG.collectScanFiles(files, msg);
+  } catch (e) { msg.innerHTML = `<span class="err">${OG.esc(e.message)}</span>`; return; }
   if (!images.length) { msg.innerHTML = `<span class="err">没有可上传的图像</span>`; return; }
-  uploadBatches(id, images, 0, 0, [], []);
+  setUploadBusy(id, true); // 防连点双传(重复 POST 整批 → 误报重答)
+  try { await uploadBatches(id, images, 0, 0, [], []); }
+  finally { setUploadBusy(id, false); }
+}
+
+// 上传期间禁用文件框与上传按钮;离开详情页后 setUploadBusy 找不到元素,静默无害
+function setUploadBusy(id, busy) {
+  const inp = document.getElementById("hubScanFiles");
+  if (inp) inp.disabled = busy;
+  const btn = document.getElementById("hubScanBtn");
+  if (btn) { btn.disabled = busy; btn.textContent = busy ? "上传中…" : "上传本批扫描件"; }
 }
 
 // 分批上传(15 张一批);断批后停在断点,点「继续」从失败批接着传,
 // 不再引导"重新上传未完成的部分"造成已入库卷整批重传、误报重答。
+// 进度渲染按"当下是否还在详情页"即时探测:上传中途切走不再中断传输,
+// 断点状态挂在 hubUploadState,回详情页由渲染层给出「继续」入口。
 let hubUploadState = null;
 async function uploadBatches(id, images, startBatch, addedTotal, failedAll, notesAll) {
-  const msg = document.getElementById("hubScanMsg");
-  if (!msg) return; // 页面已被重新渲染(详情刷新后)则静默退出
   const BATCH = 15;
   const batches = Math.ceil(images.length / BATCH);
+  const say = html => { const m = document.getElementById("hubScanMsg"); if (m) m.innerHTML = html; };
   for (let b = startBatch; b < batches; b++) {
     const chunk = images.slice(b * BATCH, (b + 1) * BATCH);
-    msg.innerHTML = `<span class="hint">上传识别中:第 ${b + 1}/${batches} 批(共 ${images.length} 张,已入库 ${addedTotal} 卷)…</span>`;
+    say(`<span class="hint">上传识别中:第 ${b + 1}/${batches} 批(共 ${images.length} 张,已入库 ${addedTotal} 卷)…</span>`);
     const fd = new FormData();
     for (const f of chunk) fd.append("images", f);
     try {
@@ -815,23 +799,29 @@ async function uploadBatches(id, images, startBatch, addedTotal, failedAll, note
       notesAll = notesAll.concat(d.notes || []);
     } catch (e) {
       hubUploadState = { id, images, nextBatch: b, addedTotal, failedAll, notesAll };
-      msg.innerHTML = `<span class="err">第 ${b + 1} 批失败:${e.message}(已入库 ${addedTotal} 卷不受影响)</span>
-        <button class="ghost" style="margin-left:8px" onclick="hubUploadResume()">从第 ${b + 1} 批继续</button>`;
+      say(`<span class="err">第 ${b + 1} 批失败:${OG.esc(e.message)}(已入库 ${addedTotal} 卷不受影响)</span>
+        <button class="ghost" style="margin-left:8px" onclick="hubUploadResume()">从第 ${b + 1} 批继续</button>`);
       return;
     }
   }
   hubUploadState = null;
   let inner = `✓ 本批入库 ${addedTotal} 卷(${images.length} 张)。`;
-  if ((failedAll || []).length) inner += `<br>失败 ${failedAll.length} 张(未计入):<br>` + failedAll.map(f => `第 ${f.index} 张:${f.error}`).join("<br>");
-  if (notesAll.length) inner += `<br>归组提示:<br>` + [...new Set(notesAll)].map(n => `· ${n}`).join("<br>");
-  await openExam(id); await loadExams();
-  const m2 = document.getElementById("hubScanMsg");
-  if (m2) m2.innerHTML = inner;
+  if ((failedAll || []).length) inner += `<br>失败 ${failedAll.length} 张(未计入):<br>` + failedAll.map(f => `第 ${f.index} 张:${OG.esc(f.error)}`).join("<br>");
+  if (notesAll.length) inner += `<br>归组提示:<br>` + [...new Set(notesAll)].map(n => `· ${OG.esc(n)}`).join("<br>");
+  // 完成后只在用户仍停留在本考试详情时刷新详情(不把已离开的用户拽回来);列表静默刷新
+  if (hubExam && hubExam.id === id && !document.getElementById("tab-exam").hidden) {
+    await openExam(id);
+    const m2 = document.getElementById("hubScanMsg");
+    if (m2) m2.innerHTML = inner;
+  }
+  await loadExams();
 }
 function hubUploadResume() {
   if (!hubUploadState) return;
   const s = hubUploadState;
-  uploadBatches(s.id, s.images, s.nextBatch, s.addedTotal, s.failedAll, s.notesAll);
+  setUploadBusy(s.id, true);
+  uploadBatches(s.id, s.images, s.nextBatch, s.addedTotal, s.failedAll, s.notesAll)
+    .finally(() => setUploadBusy(s.id, false));
 }
 
 // 推荐考号:逐位判涂 + 名册匹配 → 一键采纳
@@ -841,16 +831,16 @@ async function hubSuggest(id, student) {
   try {
     const s = await OG.jget(`/api/v1/exams/${id}/suggest/${student}`);
     const regs = (s.suggestions || []).map(x => x.reg);
-    let html = `卷 ${student} 当前考号 <b>${s.reg || "?"}</b>(涂位 ${s.regValid ? "有效" : "异常"})`;
+    let html = `卷 ${student} 当前考号 <b>${OG.esc(s.reg || "?")}</b>(涂位 ${s.regValid ? "有效" : "异常"})`;
     if (regs.length) {
       html += ` ,推荐:` + regs.map(r =>
-        `<button class="ghost" style="margin:2px 4px;padding:3px 10px" onclick="hubAdopt('${id}',${student},'${r}')">${r}</button>`).join("");
+        `<button class="ghost" style="margin:2px 4px;padding:3px 10px" onclick="hubAdopt('${id}',${student},'${OG.esc(r)}')">${OG.esc(r)}</button>`).join("");
     } else {
       html += ` ,名册无可信推荐,可人工指派:<input id="hubAdoptReg" placeholder="考号" style="width:110px;padding:3px 8px">` +
         `<button class="ghost" style="margin-left:6px;padding:3px 10px" onclick="hubAdopt('${id}',${student},document.getElementById('hubAdoptReg').value)">指派</button>`;
     }
     boxEl.innerHTML = html;
-  } catch (e) { boxEl.innerHTML = `<span class="err">${e.message}</span>`; }
+  } catch (e) { boxEl.innerHTML = `<span class="err">${OG.esc(e.message)}</span>`; }
 }
 async function hubAdopt(id, student, reg) {
   if (!reg) return;
@@ -922,28 +912,21 @@ async function hubClearFlag(id, student, question) {
 }
 
 // 修正参考答案:逐格读取(判断 T/F、多选连写如 AC;空格=该题不判分)。
-// variant="B" 时读 B 卡面序格子,按 OrderB 换回规范题号序再提交。
-async function hubSaveKey(id, variant) {
+// AB 卷两卷共用规范答案键:保存后 A/B 同步重统;B 卡面答案是派生的只读展示,无独立保存入口。
+async function hubSaveKey(id) {
   const msg = document.getElementById("hubKeyMsg");
   const n = (hubExam.objective || []).length;
-  const attr = variant === "B" ? "hubkeyb" : "hubkey";
-  const cells = [...document.querySelectorAll(`[data-${attr}]`)].sort((a, b) => (+a.dataset[attr]) - (+b.dataset[attr]));
+  const cells = [...document.querySelectorAll("[data-hubkey]")].sort((a, b) => (+a.dataset.hubkey) - (+b.dataset.hubkey));
   if (cells.length !== n) { msg.innerHTML = `<span class="err">答案格子数 ${cells.length} 与客观题 ${n} 不一致</span>`; return; }
-  let card = cells.map(c => c.value.trim().toUpperCase());
-  for (let i = 0; i < card.length; i++) {
+  const key = cells.map(c => c.value.trim().toUpperCase());
+  for (let i = 0; i < key.length; i++) {
     const kind = (hubExam.objective[i] || {}).kind || "choice";
-    const ok = card[i] === "" || (kind === "judge" ? /^[TF]$/.test(card[i]) : /^[A-F]{1,4}$/.test(card[i]));
-    if (!ok) { msg.innerHTML = `<span class="err">第 ${i + 1} 题答案「${card[i]}」不合法(判断题用 T/F,多选连写如 AC,单选一个字母)</span>`; return; }
-  }
-  let key = card;
-  if (variant === "B") {
-    const orderB = (hubExam.orderB && hubExam.orderB.length) ? hubExam.orderB : card.map((_, i) => i + 1);
-    key = new Array(n).fill("");
-    card.forEach((v, i) => { const canon = orderB[i]; if (canon >= 1 && canon <= n) key[canon - 1] = v; }); // 卡面 → 规范序
+    const ok = key[i] === "" || (kind === "judge" ? /^[TF]$/.test(key[i]) : /^[A-F]{1,4}$/.test(key[i]));
+    if (!ok) { msg.innerHTML = `<span class="err">第 ${i + 1} 题答案「${key[i]}」不合法(判断题用 T/F,多选连写如 AC,单选一个字母)</span>`; return; }
   }
   try {
-    await OG.jpost(`/api/v1/exams/${id}/key`, { key, variant: variant === "B" ? "B" : "A" });
-    msg.innerHTML = `<span class="hint">✓ 已保存并重统${variant === "B" ? "(B 卷)" : ""}</span>`;
+    await OG.jpost(`/api/v1/exams/${id}/key`, { key, variant: "A" });
+    msg.innerHTML = `<span class="hint">✓ 已保存并重统</span>`;
     await openExam(id); await loadExams();
   } catch (e) { msg.innerHTML = `<span class="err">${e.message}</span>`; }
 }
@@ -981,15 +964,23 @@ function loadCreate() {
       <p class="hint" style="margin:6px 0 0">判断题填 T(对)/ F(错);多选题连写如 AC;题库选题的答案点「从题库带出」自动填好。</p>
     </div>
     <details style="margin-top:10px">
-      <summary style="font-size:13px;cursor:pointer"><b>AB 卷(可选)</b> —— 同场两套卡防抄袭:上传 B 卷版式后,卡面自动印卷种点,扫描自动分版判读</summary>
-      <label style="margin-top:8px">B 卷版式 JSON(客观题序可与 A 卷不同;主观题区必须与 A 卷完全一致)
-        <textarea id="examLayout2" rows="4" placeholder='{"version":2, ...}(留空 = 不启用 AB 卷)' style="font-family:monospace;font-size:12px"></textarea>
+      <summary style="font-size:13px;cursor:pointer"><b>AB 卷(可选)</b> —— 同场两套卡防邻座抄袭:启用后 B 卷自动生成,卡面自动印卷种点,扫描自动分版判读</summary>
+      <label style="margin-top:8px;display:flex;gap:8px;align-items:center;font-size:13px">
+        <input type="checkbox" id="abAuto">
+        启用 AB 卷 —— 自动生成 B 卷(客观题顺序随机打乱,主观题与参考答案不变)
       </label>
-      <div id="keyGridB" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:5px;margin-top:6px"></div>
-      <p class="hint" style="margin:6px 0">B 卷答案按 <b>B 卡面题号</b> 逐格填(留空=后补)。建考成功后到「考试详情 → 打印 A/B 卷」按名册出个性化卡(卷头二维码含考试短号+卷种+考号)。</p>
-      <label>题序对照(B 卡面第 1、2、3…题分别是 A 卷的第几题,逗号分隔;B 与 A 同序可留空)
-        <input id="examOrder2" placeholder="如 3,1,4,2" style="font-family:monospace">
-      </label>
+      <p class="hint" style="margin:6px 0">B 卷与 A 卷题目完全相同、客观题顺序打乱且保证与 A 卷不同;判分按规范题号自动归一,A/B 共用一份参考答案(无需单独录 B 卷答案)。创建后到「考试详情 → 打印 A/B 卷」按名册出个性化卡(卷头二维码含考试短号+卷种+考号)。需要至少 2 道客观题。</p>
+      <details style="margin-left:14px">
+        <summary style="font-size:12px;cursor:pointer" class="hint">高级:自定义 B 卷版式与题序(一般不用;需要指定 B 卷顺序如倒序时才用)</summary>
+        <label style="margin-top:8px">B 卷版式 JSON(客观题序可与 A 卷不同;主观题区必须与 A 卷完全一致)
+          <textarea id="examLayout2" rows="4" placeholder='{"version":2, ...}(留空 = 跟随上方「启用 AB 卷」开关)' style="font-family:monospace;font-size:12px"></textarea>
+        </label>
+        <div id="keyGridB" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:5px;margin-top:6px"></div>
+        <p class="hint" style="margin:6px 0">B 卷答案按 <b>B 卡面题号</b> 逐格填,<b>留空 = 自动与 A 卷答案同步</b>(AB 卷只打乱题序,两卷共用同一份参考答案)。建考成功后到「考试详情 → 打印 A/B 卷」按名册出个性化卡。</p>
+        <label>题序对照(B 卡面第 1、2、3…题分别是 A 卷的第几题,逗号分隔;B 与 A 同序可留空)
+          <input id="examOrder2" placeholder="如 3,1,4,2" style="font-family:monospace">
+        </label>
+      </details>
     </details>
     </div>
     <div id="manualKindBox" hidden>
@@ -1060,16 +1051,29 @@ function loadLastLayout() {
   box.className = "hint";
   box.textContent = "已载入设计器最近生成的版式。";
   renderLayoutMeta();
-  // 设计器若已生成过答案(题库带出/手填),一并带出 —— 建考零手填
+  // 设计器若已生成过答案(题库带出/手填),一并带出 —— 建考零手填。
+  // 配对校验(C-3):答案数组必须与版式指纹、客观题数都对得上才自动填入 ——
+  // 版式改过之后,旧答案按下标静默套进新题序会让全班按错答案判分。
   const savedKey = localStorage.getItem("og.lastKey");
   if (savedKey) {
     try {
-      const arr = JSON.parse(savedKey);
-      const cells = [...document.querySelectorAll("#keyGrid input[data-key]")];
-      let used = 0;
-      arr.forEach((v, i) => { if (cells[i] && v) { cells[i].value = v; used++; } });
-      if (used) box.textContent = `已载入设计器最近版式与 ${used} 题参考答案。`;
-      keyFilledCount();
+      const p = JSON.parse(savedKey);
+      const arr = Array.isArray(p) ? p : (p && Array.isArray(p.arr) ? p.arr : null);
+      if (arr) {
+        const cells = [...document.querySelectorAll("#keyGrid input[data-key]")];
+        const legacy = Array.isArray(p); // 旧格式(纯数组)无指纹:仅按题数把关
+        const sigOK = legacy || !p.sig || p.sig === OG.strHash(saved);
+        const nOK = arr.length === cells.length && (legacy || !p.n || p.n === cells.length);
+        if (sigOK && nOK) {
+          let used = 0;
+          arr.forEach((v, i) => { if (cells[i] && v) { cells[i].value = v; used++; } });
+          if (used) box.textContent = `已载入设计器最近版式与 ${used} 题参考答案。`;
+        } else {
+          box.className = "hint";
+          box.textContent = "已载入设计器最近版式;但它保存的参考答案与当前版式不匹配(版式已变更),请按新版式重新录入答案。";
+        }
+        keyFilledCount();
+      }
     } catch (_) { /* 忽略坏数据 */ }
   }
 }
@@ -1148,17 +1152,43 @@ function renderLayoutMeta() {
   renderKeyGrid();
 }
 
-// B 卷答案网格:粘贴 B 卷版式后按其客观题数出格子(答案按 B 卡面题号填)
+// B 卷答案网格:粘贴 B 卷版式后按其客观题数出格子(答案按 B 卡面题号填);
+// 同时按「B 卡面题规格 ↔ A 卷题规格」自动推导题序对照回填(手填值优先,不覆盖)。
 function renderKeyGridB() {
   const grid = document.getElementById("keyGridB");
   if (!grid) return;
+  const order2Input = document.getElementById("examOrder2");
   let qs = [];
   try {
     const t = document.getElementById("examLayout2").value.trim();
-    if (!t) { grid.innerHTML = `<span class="hint">未启用 AB 卷</span>`; return; }
+    if (!t) { grid.innerHTML = `<span class="hint">未填自定义 B 卷版式(勾选上方「启用 AB 卷」即自动生成)</span>`; return; }
     qs = (JSON.parse(t).questions) || [];
   } catch (e) { grid.innerHTML = `<span class="hint">B 卷版式 JSON 暂不可解析</span>`; return; }
   grid.innerHTML = qs.map((q, i) => `<label style="font-size:11px;text-align:center">B${i + 1}<input data-key maxlength="${(q.kind === "judge") ? 1 : 4}" style="width:100%;padding:4px;text-align:center;font-family:monospace"></label>`).join("");
+  // 自动推导题序对照:卡面第 i 题的规格在 A 卷里逐题找第一个未占用的同规格位置。
+  // 规格可区分时推导值即真实题序;规格完全相同的题互换无法区分,机器核对不了纸质卷的实际题序。
+  try {
+    const la = JSON.parse(document.getElementById("examLayout").value);
+    const aqs = la.questions || [];
+    const spec = q => [q.kind, q.options, q.score, q.knowledge || "", q.bankId || ""].join("\u0000");
+    const used = new Array(aqs.length).fill(false);
+    const order = [];
+    let matched = true;
+    for (const q of qs) {
+      let at = -1;
+      for (let j = 0; j < aqs.length; j++) {
+        if (!used[j] && spec(aqs[j]) === spec(q)) { at = j; break; }
+      }
+      if (at < 0) { matched = false; break; }
+      used[at] = true; order.push(at + 1);
+    }
+    if (matched && order.length === aqs.length && order2Input && !order2Input.value.trim()) {
+      order2Input.value = order.join(",");
+    }
+    if (matched && order.length === aqs.length && new Set(qs.map(spec)).size === 1) {
+      grid.innerHTML += `<div class="hint" style="grid-column:1/-1;color:var(--warn)">⚠ 本版式客观题规格完全相同,机器无法核对题序对照 —— 请务必对照 B 卷纸质试卷的实际题序,人工确认上方「题序对照」与之一致(否则 B 卷会按错位题序判分)。</div>`;
+    }
+  } catch (e) { /* A 卷版式暂不可解析:跳过推导,不阻塞答案格子 */ }
 }
 
 // 答案逐题网格:按版式客观题自动出格子
@@ -1265,14 +1295,17 @@ async function submitCreateExam() {
       fd.append("layout", JSON.stringify(layout));
       fd.append("key", JSON.stringify(key));
       fd.append("threshold", document.getElementById("threshold").value);
-      // AB 卷(可选):B 卷版式 + B 卷答案(卡面序)+ 题序对照(卡面第 i 题对应规范题号)
+      // AB 卷:高级手填 layout2 走自定义路径(题序自定);否则勾选「启用 AB 卷」= 服务端
+      // 自动生成 B 卷(打乱客观题序),答案键两卷共用、无需单独录 B 卷答案。
       const layout2 = document.getElementById("examLayout2").value.trim();
       if (layout2) {
         JSON.parse(layout2); // 语法预检,服务端还有结构校验
         fd.append("layout2", layout2);
         const key2 = [...document.querySelectorAll("#keyGridB input[data-key]")].map(c => c.value.trim().toUpperCase());
-        fd.append("key2", JSON.stringify(key2));
+        fd.append("key2", JSON.stringify(key2.some(v => v) ? key2 : [])); // 全空 = 服务端按 A 卷答案自动同步
         fd.append("order2", document.getElementById("examOrder2").value.trim());
+      } else if (document.getElementById("abAuto").checked) {
+        fd.append("abAuto", "1");
       }
       for (const f of files) fd.append("images", f);
     }
@@ -1355,7 +1388,7 @@ async function renderBank() {
   for (const it of items) {
     const mine = it.createdBy === OG.me.username;
     html += `<tr><td>${it.subject || "-"}</td><td>${bankKinds[it.kind] || it.kind}${it.options ? "(" + it.options + "选)" : ""}</td>
-      <td>${it.score || "-"}</td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${it.stem || ""}">${it.stem || "-"}</td>
+      <td>${it.score || "-"}</td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${OG.esc(it.stem || "")}">${OG.esc(it.stem) || "-"}</td>
       <td>${it.answer || "-"}</td><td>${it.knowledge || "-"}</td><td>${it.difficulty || "-"}</td><td>${(it.usedIn || []).length ? (it.usedIn.length + " 场") : "-"}</td><td>${it.createdBy || "-"}</td>
       <td>${mine || OG.is("admin", "leader") ? `<a href="#" class="danger" onclick="delBankQuestion('${it.id}');return false">删除</a>` : ""}</td></tr>`;
   }
@@ -1461,14 +1494,15 @@ async function renderTaskMode(d) {
   const box = document.getElementById("taskModeBody");
   if (mode === "class") {
     if (!(d.classes || []).length) { box.innerHTML = `<p class="hint">本场考试名册没有班级信息,无法按班分配(建考时上传名册即可)。</p>`; return; }
+    taskClasses = d.classes; // onclick 一律传下标取班级名:班级名含 '(引号)时内联 JS 不再语法崩
     let html = `<table><tr><th>班级</th><th>主观题阅卷人</th><th>截止时间</th></tr>`;
-    for (const cls of d.classes) {
-      html += `<tr><td>${cls}</td><td><select onchange="setClassTask('${id}','${cls}', this.value)">
+    d.classes.forEach((cls, i) => {
+      html += `<tr><td>${OG.esc(cls)}</td><td><select onchange="setClassTask('${id}',${i}, this.value)">
         <option value="">(未分配)</option>
-        ${staff.map(s => `<option value="${s.username}" ${(d.classTasks||{})[cls] === s.username ? "selected" : ""}>${s.displayName || s.username}</option>`).join("")}
+        ${staff.map(s => `<option value="${OG.esc(s.username)}" ${(d.classTasks||{})[cls] === s.username ? "selected" : ""}>${OG.esc(s.displayName || s.username)}</option>`).join("")}
       </select></td>
-      <td><input type="date" value="${(d.taskDue||{})[cls] || ""}" onchange="setTaskDue('${id}','${cls.replace(/'/g, "\\'")}',this.value)" style="padding:4px 8px"></td></tr>`;
-    }
+      <td><input type="date" value="${(d.taskDue||{})[cls] || ""}" onchange="setTaskDue('${id}','class:${i}',this.value)" style="padding:4px 8px"></td></tr>`;
+    });
     html += `</table><p class="hint">按班分配后,被分到的教师在工作台只看到本班学生的卷;截止时间到期未评完会在其「我的任务」标红。</p>`;
     box.innerHTML = html;
     return;
@@ -1479,19 +1513,25 @@ async function renderTaskMode(d) {
       <td>${p.max}</td><td>${p.graded}/${p.total}</td>
       <td><select onchange="setTask(${p.question}, this.value)">
         <option value="">(未分配)</option>
-        ${staff.map(s => `<option value="${s.username}" ${d.tasks && d.tasks["q" + p.question] === s.username ? "selected" : ""}>${s.displayName || s.username}</option>`).join("")}
+        ${staff.map(s => `<option value="${OG.esc(s.username)}" ${d.tasks && d.tasks["q" + p.question] === s.username ? "selected" : ""}>${OG.esc(s.displayName || s.username)}</option>`).join("")}
       </select></td>
       <td><input type="date" value="${(d.taskDue||{})["q" + p.question] || ""}" onchange="setTaskDue('${id}','q${p.question}',this.value)" style="padding:4px 8px"></td></tr>`;
   }
   box.innerHTML = html + "</table>";
 }
+let taskClasses = []; // 按班分配的班级名表(下标寻址,避免班级名内联进 onclick)
 async function setTask(q, teacher) {
-  await OG.jpost(`/api/v1/exams/${document.getElementById("taskExam").value}/tasks`, { question: q, teacher });
+  try { await OG.jpost(`/api/v1/exams/${document.getElementById("taskExam").value}/tasks`, { question: q, teacher }); }
+  catch (e) { alert(`分配失败:${e.message}`); } // 下拉无任何反馈的话,失败会被当成"已保存"
 }
-async function setClassTask(id, cls, teacher) {
-  await OG.jpost(`/api/v1/exams/${id}/tasks`, { class: cls, teacher });
+async function setClassTask(id, clsIdx, teacher) {
+  const cls = taskClasses[clsIdx] || "";
+  try { await OG.jpost(`/api/v1/exams/${id}/tasks`, { class: cls, teacher }); }
+  catch (e) { alert(`分配失败:${e.message}`); }
 }
 async function setTaskDue(id, key, due) {
+  if (key.startsWith("class:")) key = taskClasses[+key.slice(6)] || ""; // 按班截止时间同样走下标
+  if (!key) return;
   try { await OG.jpost(`/api/v1/exams/${id}/task-due`, { key, due }); }
   catch (e) { alert(e.message); }
 }
@@ -1978,6 +2018,9 @@ function drawStudentTrend(reg) {
 let aggData = null;
 
 async function loadAggregate() {
+  // 自取考试列表(C-2):此前直接读全局缓存,而教师默认落在「我的任务」不刷缓存,
+  // 首次点开年级总表必是空数组 → 误报"还没有可聚合的考试分组"误导去反复配置分组。
+  exams = (await OG.jget("/api/v1/exams")) || [];
   const groups = [...new Set(exams.map(e => e.examGroup).filter(Boolean))];
   const box = document.getElementById("tab-group");
   if (!groups.length) {
@@ -1986,7 +2029,7 @@ async function loadAggregate() {
     return;
   }
   box.innerHTML = `<div class="panel">
-    同场分组 <select id="aggGroup" onchange="loadAggData()">${groups.map(g => `<option>${g}</option>`).join("")}</select>
+    同场分组 <select id="aggGroup" onchange="loadAggData()">${groups.map(g => `<option>${OG.esc(g)}</option>`).join("")}</select>
     <label title="全科缺考/无卷的学生保留行但不进排名池;取消则按 0 分垫底参与排名(旧口径)"><input type="checkbox" id="aggAbsentRank" checked onchange="loadAggData()"> 全科缺考不参与排名</label>
     <button class="ghost" onclick="exportAggCsv()">导出 CSV</button>
     <span class="hint" style="margin-left:10px">一行一名学生:各科得分 + 总分 + 年级/班级排名;「—」= 该生不在该科名册;缺考计 0 分。</span>
@@ -2013,14 +2056,14 @@ function renderAgg() {
     ? `<div class="err" style="margin:6px 0">口径提示:该分组共 ${t.totalExams} 科,你当前可见 ${(t.exams || []).length} 科 —— 总分与排名仅按可见科目计算,请以组长/管理员的完整总表为准。</div>` : "";
   const pendingNote = (t.pendingExams || 0) > 0
     ? `<div class="err" style="margin:6px 0">口径提示:${t.pendingExams} 科尚未发布(未评完/扫描中,已排除出总分排名)或发布后数据有变更 —— 收敛后数字才可作为正式口径。</div>` : "";
-  const colHead = t.exams.map((e, i) => `<th title="${e.id}">${e.subject || "科" + (i + 1)}<div class="hint">满分 ${+e.total.toFixed(0)} · 均 ${+e.mean.toFixed(1)} · ${e.count} 人</div></th>`).join("");
-  let html = `<div class="panel"><b>年级总分工表(${t.group})</b>${scopeNote}${pendingNote}
+  const colHead = t.exams.map((e, i) => `<th title="${OG.esc(e.id)}">${OG.esc(e.subject) || "科" + (i + 1)}<div class="hint">满分 ${+e.total.toFixed(0)} · 均 ${+e.mean.toFixed(1)} · ${e.count} 人</div></th>`).join("");
+  let html = `<div class="panel"><b>年级总分工表(${OG.esc(t.group)})</b>${scopeNote}${pendingNote}
     <table style="margin-top:8px"><tr><th>班级</th><th>姓名</th><th>考号</th>${colHead}<th>总分</th><th>年级排名</th><th>班排名</th></tr>`;
   for (const s of t.students) {
     const cells = s.cells.map(c => c.found
       ? (c.absent ? '<span class="hint">缺考</span>' : `<b>${+c.score.toFixed(1)}</b>`)
       : "—").join("</td><td>");
-    html += `<tr><td>${s.class || "-"}</td><td>${s.name || "-"}</td><td class="hint">${s.reg}</td><td>${cells}</td>
+    html += `<tr><td>${OG.esc(s.class || "-")}</td><td>${OG.esc(s.name || "-")}</td><td class="hint">${OG.esc(s.reg)}</td><td>${cells}</td>
       <td><b>${+s.total.toFixed(1)}</b></td><td>${s.rank ? s.rank : '<span class="hint">未参与</span>'}</td><td>${s.classRank || "-"}</td></tr>`;
   }
   html += `</table></div>`;
@@ -2039,7 +2082,13 @@ function renderAgg() {
 // 导出 CSV(前端拼装,与本表一致;Excel 直接打开)
 function exportAggCsv() {
   if (!aggData) return;
-  const esc = v => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+  // CSV 单元格:引号包裹 + 双写引号;首字符为 = + - @ 制表/回车时前置单引号,
+  // 阻断公式注入(姓名/班级填成 =cmd|... 会在 Excel/WPS 打开时被执行)。
+  const esc = v => {
+    let s = String(v == null ? "" : v).replace(/"/g, '""');
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return `"${s}"`;
+  };
   const head = ["班级", "姓名", "考号", ...aggData.exams.map(e => e.subject || e.id), "总分", "年级排名", "班排名"];
   const lines = [head.map(esc).join(",")];
   for (const s of aggData.students) {
@@ -2049,14 +2098,14 @@ function exportAggCsv() {
   const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `年级总表-${aggData.group}.csv`;
+  a.download = `年级总表-${String(aggData.group || "").replace(/[\\/:*?"<>|]/g, "_")}.csv`;
   a.click();
 }
 
 /* —— 账号设置 —— */
 function renderMe() {
   document.getElementById("tab-me").innerHTML = `<div class="panel" style="max-width:420px">
-    <p>当前账号:<b>${OG.me.displayName}</b>(${OG.roleName(OG.me.role)}) · ${OG.me.username}</p>
+    <p>当前账号:<b>${OG.esc(OG.me.displayName)}</b>(${OG.roleName(OG.me.role)}) · ${OG.esc(OG.me.username)}</p>
     <label>原密码<input id="oldPwd" type="password"></label>
     <label>新密码(至少 5 位)<input id="newPwd" type="password"></label>
     <button class="primary" onclick="changePwd()">修改密码</button>

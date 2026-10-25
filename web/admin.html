@@ -94,21 +94,26 @@ async function main() {
 }
 async function refresh() {
   const users = await OG.jget("/api/v1/users");
+  userRows = users; // onclick 一律传下标:用户名含 '(引号)时不再击穿内联 JS
   let html = `<table><tr><th>用户名</th><th>姓名</th><th>角色</th><th>考号/子女</th><th>班级</th><th>任教学科</th><th>班主任/组长</th><th>管辖年级</th><th>操作</th></tr>`;
-  for (const u of users) {
+  users.forEach((u, i) => {
     const regCol = u.role === "parent" ? ((u.children || []).join(",") || "-") : (u.reg || "-");
     const headLead = [(u.headClasses || []).length ? "班主任:" + (u.headClasses || []).join(",") : "",
                       (u.subjectLead || []).length ? "组长:" + (u.subjectLead || []).join(",") : ""].filter(Boolean).join("<br>") || "-";
-    html += `<tr><td>${u.username}</td><td>${u.displayName}</td><td>${OG.roleName(u.role)}</td>
-      <td>${regCol}</td><td>${u.class || "-"}</td><td>${(u.subjects || []).join(",") || "-"}</td><td>${headLead}</td><td>${(u.grades || []).join(",") || "-"}</td>
+    html += `<tr><td>${OG.esc(u.username)}</td><td>${OG.esc(u.displayName)}</td><td>${OG.roleName(u.role)}</td>
+      <td>${OG.esc(regCol)}</td><td>${OG.esc(u.class || "-")}</td><td>${OG.esc((u.subjects || []).join(",") || "-")}</td><td>${OG.esc(headLead)}</td><td>${OG.esc((u.grades || []).join(",") || "-")}</td>
       <td style="display:flex;gap:8px">
-        <a href="#" onclick="editUser('${u.username}');return false">编辑</a>
-        <a href="#" onclick="resetPwd('${u.username}');return false">重置密码</a>
-        <a href="#" class="danger" onclick="delUser('${u.username}');return false">删除</a>
+        <a href="#" onclick="editUser(${i});return false">编辑</a>
+        <a href="#" onclick="resetPwd(${i});return false">重置密码</a>
+        <a href="#" class="danger" onclick="delUser(${i});return false">删除</a>
       </td></tr>`;
-  }
+  });
   document.getElementById("userList").innerHTML = html + "</table>";
 }
+let userRows = [];
+function editUser(i) { editUserByName(userRows[i] && userRows[i].username); }
+function resetPwd(i) { resetPwdByName(userRows[i] && userRows[i].username); }
+function delUser(i) { delUserByName(userRows[i] && userRows[i].username); }
 
 /* —— 组织架构:年级→班级归属 + 全校场次表(admin 维护;组长权限/名册分组/监考冲突检测的地基) —— */
 let schoolGrades = []; // [{name, classes[]}]
@@ -122,7 +127,7 @@ async function loadSchool() {
     const cs = new Set(schoolGrades.flatMap(g => g.classes));
     for (const s of students) for (const c of (s.classes || [])) cs.add(c);
     knownClasses = [...cs].sort();
-  } catch (e) { document.getElementById("schoolBox").innerHTML = `<span class="err">${e.message}</span>`; return; }
+  } catch (e) { document.getElementById("schoolBox").innerHTML = `<span class="err">${OG.esc(e.message)}</span>`; return; }
   renderSchool();
 }
 function renderSchool() {
@@ -213,7 +218,7 @@ async function updateUser() {
     cancelEdit(); refresh();
   } catch (e) { document.getElementById("msg").textContent = e.message; }
 }
-async function editUser(username) {
+async function editUserByName(username) {
   const users = await OG.jget("/api/v1/users");
   const u = users.find(x => x.username === username);
   if (!u) return;
@@ -243,13 +248,13 @@ function cancelEdit() {
   document.getElementById("userFormBtn").textContent = "创建账号";
   document.getElementById("userFormCancel").hidden = true;
 }
-async function resetPwd(username) {
+async function resetPwdByName(username) {
   const np = prompt(`为 ${username} 设置新密码(至少 5 位):`);
   if (!np) return;
   try { await OG.jpost(`/api/v1/users/${username}/password`, { newPassword: np }); }
   catch (e) { alert(e.message); }
 }
-async function delUser(username) {
+async function delUserByName(username) {
   if (!confirm(`删除账号 ${username}?`)) return;
   try { await OG.jpost(`/api/v1/users/${username}`, {}, "DELETE"); refresh(); }
   catch (e) { alert(e.message); }

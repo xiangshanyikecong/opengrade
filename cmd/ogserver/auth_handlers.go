@@ -4,17 +4,23 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/opengrade/opengrade/auth"
 )
 
 const sessionCookie = "og_session"
 
+// cookieSecure 由启动参数 -cookie-secure / OPENGRADE_COOKIE_SECURE 决定(缺省关):
+// 部署常态是局域网 HTTP,强置 Secure 会让登录直接失效;HTTPS 部署时应开启。
+var cookieSecure bool
+
 // setSessionCookie 下发/清除会话 Cookie。
 func setSessionCookie(w http.ResponseWriter, token string, expire bool) {
 	c := &http.Cookie{
 		Name: sessionCookie, Value: token, Path: "/", HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteLaxMode, Secure: cookieSecure,
 	}
 	if expire {
 		c.MaxAge = -1
@@ -24,6 +30,60 @@ func setSessionCookie(w http.ResponseWriter, token string, expire bool) {
 	http.SetCookie(w, c)
 }
 
+// loginLimiter 登录失败限速(A-6):按用户名滚动窗口计数,连错达阈值即临时锁定。
+// 内存态、单实例口径 —— 目的是把在线爆破拖到不可行,不做审计。
+var loginLimiter = struct {
+	mu     sync.Mutex
+	fails  map[string][]time.Time
+	locked map[string]time.Time
+}{fails: map[string][]time.Time{}, locked: map[string]time.Time{}}
+
+const (
+	loginFailWindow = 15 * time.Minute
+	loginFailMax    = 5
+	loginLockSpan   = 15 * time.Minute
+)
+
+func loginLocked(username string) bool {
+	loginLimiter.mu.Lock()
+	defer loginLimiter.mu.Unlock()
+	until, ok := loginLimiter.locked[username]
+	if !ok {
+		return false
+	}
+	if time.Now().After(until) {
+		delete(loginLimiter.locked, username)
+		return false
+	}
+	return true
+}
+
+func loginFail(username string) {
+	loginLimiter.mu.Lock()
+	defer loginLimiter.mu.Unlock()
+	now := time.Now()
+	fs := loginLimiter.fails[username]
+	keep := fs[:0]
+	for _, t := range fs {
+		if now.Sub(t) < loginFailWindow {
+			keep = append(keep, t)
+		}
+	}
+	keep = append(keep, now)
+	loginLimiter.fails[username] = keep
+	if len(keep) >= loginFailMax {
+		loginLimiter.locked[username] = now.Add(loginLockSpan)
+		delete(loginLimiter.fails, username)
+	}
+}
+
+func loginOK(username string) {
+	loginLimiter.mu.Lock()
+	defer loginLimiter.mu.Unlock()
+	delete(loginLimiter.fails, username)
+	delete(loginLimiter.locked, username)
+}
+
 // handleLogin POST /api/v1/auth/login {username, password} → {role, displayName, redirect}
 func handleLogin(w http.ResponseWriter, r *http.Request, authStore *auth.Store) {
 	var req struct{ Username, Password string }
@@ -31,11 +91,18 @@ func handleLogin(w http.ResponseWriter, r *http.Request, authStore *auth.Store) 
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
-	token, u, err := authStore.Login(strings.TrimSpace(req.Username), req.Password)
+	username := strings.TrimSpace(req.Username)
+	if loginLocked(username) {
+		httpError(w, http.StatusTooManyRequests, fmt.Errorf("连续失败次数过多,账号已临时锁定(约 %d 分钟),请稍后再试", int(loginLockSpan.Minutes())))
+		return
+	}
+	token, u, err := authStore.Login(username, req.Password)
 	if err != nil {
+		loginFail(username)
 		httpError(w, http.StatusUnauthorized, err)
 		return
 	}
+	loginOK(username)
 	setSessionCookie(w, token, false)
 	redirect := "/"
 	switch u.Role {
@@ -75,12 +142,16 @@ func handlePasswordChange(w http.ResponseWriter, r *http.Request, authStore *aut
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
-	full, ok := authStore.Users[u.Username]
+	full, ok := authStore.Lookup(u.Username) // 锁内副本:不直接索引 Users map(与开号/导入并发写互斥)
 	if !ok || !full.CheckPassword(req.OldPassword) {
 		httpError(w, http.StatusForbidden, fmt.Errorf("原密码不正确"))
 		return
 	}
-	if err := authStore.SetPasswordSelf(u.Username, req.NewPassword); err != nil {
+	keepToken := ""
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		keepToken = c.Value // 保留当前会话,其余(疑似泄露的)会话随改密吊销
+	}
+	if err := authStore.SetPasswordSelf(u.Username, req.NewPassword, keepToken); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -110,15 +181,15 @@ func handleUserCreate(w http.ResponseWriter, r *http.Request, authStore *auth.St
 	writeJSON(w, http.StatusCreated, map[string]string{"status": "created"})
 }
 
-// handleUserUpdate POST /api/v1/users/{username} {displayName, role, reg, class, grades}
+// handleUserUpdate POST /api/v1/users/{username} {displayName, role, reg, class, grades…}
+// 增量语义:未携带的字段不变更(此前部分提交会把 DisplayName/Reg 等静默清空)。
 func handleUserUpdate(w http.ResponseWriter, r *http.Request, authStore *auth.Store, u *auth.User) {
-	var patch auth.User
+	var patch auth.UserPatch
 	if err := decodeJSON(r, &patch); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
-	patch.Username = r.PathValue("username")
-	if err := authStore.UpdateUser(patch.Username, &patch); err != nil {
+	if err := authStore.UpdateUser(r.PathValue("username"), &patch); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}

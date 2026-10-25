@@ -105,7 +105,7 @@ function renderList() {
   <table><tr><th>考试</th><th>学科</th><th>时间</th><th>我的得分</th><th>排名</th><th>本班均分</th><th></th></tr>`;
   if (!list.length) html += `<tr><td colspan="7" class="hint">暂无已发布的考试成绩。</td></tr>`;
   for (const e of list) {
-    html += `<tr><td>${e.id}</td><td>${e.subject || "-"}${e.hasReply ? ' <span class="pill" style="background:#e7f5ef;color:var(--brand);border-radius:8px;padding:1px 6px;font-size:11px">复核已回复</span>' : (e.hasOpen ? ' <span class="pill" style="background:#fff3cd;color:#9a3412;border-radius:8px;padding:1px 6px;font-size:11px">复核待处理</span>' : "")}</td><td>${e.createdAt}</td>
+    html += `<tr><td>${OG.esc(e.id)}</td><td>${OG.esc(e.subject || "-")}${e.hasReply ? ' <span class="pill" style="background:#e7f5ef;color:var(--brand);border-radius:8px;padding:1px 6px;font-size:11px">复核已回复</span>' : (e.hasOpen ? ' <span class="pill" style="background:#fff3cd;color:#9a3412;border-radius:8px;padding:1px 6px;font-size:11px">复核待处理</span>' : "")}</td><td>${e.createdAt}</td>
       <td>${e.absent ? `<span class="hint">缺考</span>` : `<b>${e.score}</b> / ${e.total}`}</td>
       <td>${e.rank && !e.absent ? `第 ${e.rank} 名` : "-"}</td>
       <td>${e.classMean ? e.classMean.toFixed(1) : "-"}</td>
@@ -306,13 +306,17 @@ function printReport() {
       rows += `<tr><td>${q.index}</td><td>${kindName(q.kind)}</td><td>${q.max}</td><td>未选做,不计分</td><td>-</td></tr>`;
       continue;
     }
-    const mine = q.myAnswer !== undefined && q.myAnswer !== "" ? q.myAnswer : (q.myScore !== undefined ? `${q.myScore} 分` : "-");
-    rows += `<tr><td>${q.index}</td><td>${kindName(q.kind)}</td><td>${q.max}</td><td>${mine}</td><td>${q.correct || "-"}</td></tr>`;
+    if (q.pending) { // 主观题评卷中:打印版与屏显同口径,不得显示成 0 分
+      rows += `<tr><td>${q.index}</td><td>${kindName(q.kind)}</td><td>${q.max}</td><td>评卷中…</td><td>-</td></tr>`;
+      continue;
+    }
+    const mine = q.myAnswer !== undefined && q.myAnswer !== "" ? OG.esc(q.myAnswer) : (q.myScore !== undefined ? `${q.myScore} 分` : "-");
+    rows += `<tr><td>${q.index}</td><td>${kindName(q.kind)}</td><td>${q.max}</td><td>${mine}</td><td>${OG.esc(q.correct || "-")}</td></tr>`;
   }
   document.getElementById("printArea").innerHTML = `
     <div class="pa-head"><h2>个人成绩报告单</h2>
-      <p style="margin:0;font-size:12px">OpenGrade 开元智阅 · 考试 ${d.id} · ${d.createdAt}${d.subject ? " · " + d.subject : ""}</p></div>
-    <p style="font-size:13px">考号 <b>${d.reg}</b> · 班级 ${d.class || "-"} ·
+      <p style="margin:0;font-size:12px">OpenGrade 开元智阅 · 考试 ${OG.esc(d.id)} · ${d.createdAt}${d.subject ? " · " + OG.esc(d.subject) : ""}</p></div>
+    <p style="font-size:13px">考号 <b>${OG.esc(d.reg)}</b> · 班级 ${OG.esc(d.class || "-")} ·
       总分 <b>${d.score} / ${d.total}</b> · 年级排名 ${d.rank}/${d.count} · 班级排名 ${d.classRank || "-"} · 年级均分 ${d.mean.toFixed(1)}</p>
     <table><tr><th>题号</th><th>题型</th><th>满分</th><th>我的作答/得分</th><th>参考答案</th></tr>${rows}</table>
     <p style="font-size:11px;color:#666;margin-top:10px">本报告单由学校本机系统生成,成绩数据归学校与学生本人所有。</p>`;

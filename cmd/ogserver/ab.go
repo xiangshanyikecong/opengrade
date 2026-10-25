@@ -1,11 +1,14 @@
 package main
 
 // AB 卷(版式 v3 增量):同一场考试 A/B 两套卡,防邻座抄袭。
+//   - 启用方式两选一:建考 abAuto=1 由 A 卷版式自动派生 B 卷(客观题序打乱,见 deriveAB,
+//     推荐路径);或高级手填 layout2/order2(B 卷题序自定,如倒序);
 //   - 卡面卷种点:A 卡第 1 点实心、B 卡第 2 点实心(OMR 自动识别,与考号通道无关);
 //   - 二维码/条码复合内容(个性化印刷卡):考试短号(4)+卷种位(1/2)+考号 —— 扫描时可核对
 //     「这张卡是不是本场的」,并作为卷种点的冗余通道;
 //   - B 卷可打乱客观题序:主观题区两版强制一致(建考校验),判读按卷种选版式,
 //     作答在入库期按题序对照(OrderB)归一为规范题号 —— 统计/导出/趋势下游零改动;
+//     判分按规范题号共用一份答案键(KeyB 恒等于 ObjectiveKey,入库即同步);
 //   - 卷种判不出的卷:客观题作答暂扣(PendingVariant,不进统计),异常清单人工指派后
 //     按所指派卷种从已存的矫正图重读恢复。
 
@@ -14,6 +17,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,6 +25,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/opengrade/opengrade/auth"
 	"github.com/opengrade/opengrade/card"
@@ -96,10 +101,47 @@ func abOfExam(ex *Exam) (*abSupport, error) {
 	return &abSupport{hasB: true, booksB: bookB, orderB: ex.OrderB, shortID: ex.ShortID}, nil
 }
 
+// deriveAB 由 A 卷版式自动派生 B 卷(建考「启用 AB 卷」开关):
+// 客观题顺序随机打乱并尽量取错位排列(无固定点 → B 卷题序必与 A 不同),其余
+// (卷头/考号通道/分栏/主观题区)与 A 完全一致。返回 B 版式与题序对照
+// (B 卡面第 i 题 → 规范题号)。调用方保证客观题数 ≥ 2。
+func deriveAB(la *card.Layout, rng *rand.Rand) (*card.Layout, []int) {
+	n := len(la.Questions)
+	if rng == nil {
+		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+	perm := rng.Perm(n) // 0-based:B 卡面第 i 题 = 规范第 perm[i]+1 题
+	for tries := 0; tries < 128; tries++ {
+		fixed := false
+		for i, v := range perm {
+			if v == i {
+				fixed = true
+				break
+			}
+		}
+		if !fixed {
+			break
+		}
+		perm = rng.Perm(n) // 1/n 概率出现固定点,重抽(错位排列概率 ≈ 37%,128 次全败可忽略)
+	}
+	lb := *la
+	lb.Variant = "B"
+	qs := make([]card.QuestionSpec, n)
+	orderB := make([]int, n)
+	for i, src := range perm {
+		qs[i] = la.Questions[src]
+		orderB[i] = src + 1
+	}
+	lb.Questions = qs
+	return &lb, orderB
+}
+
 // validateAbLayouts 建考校验 A/B 双版式:
 //   - 主观题区必须完全一致(数量/题型/分值/小问/选做组 —— 切片与评分键共用);
 //   - 客观题集合相同(题型/选项数/分值/知识点),仅顺序可不同;
-//   - OrderB 必须是 1..N 的排列;KeyB 长度与客观题数一致。
+//   - OrderB 必须是 1..N 的排列,且与 B 卡面实际题序一致(规格可区分的题逐一比对);
+//   - KeyB 长度与客观题数一致。
+//
 // 返回归一化后的 KeyB(规范题号序)。
 func validateAbLayouts(a, b *card.Layout, keyB []string, orderB []int) ([]string, error) {
 	sheetA, err := a.Build()
@@ -131,10 +173,11 @@ func validateAbLayouts(a, b *card.Layout, keyB []string, orderB []int) ([]string
 	for i, q := range nb.Questions {
 		kb[i] = key(q)
 	}
-	sort.Strings(ka)
-	sort.Strings(kb)
-	for i := range ka {
-		if ka[i] != kb[i] {
+	sa, sb := append([]string{}, ka...), append([]string{}, kb...)
+	sort.Strings(sa)
+	sort.Strings(sb)
+	for i := range sa {
+		if sa[i] != sb[i] {
 			return nil, fmt.Errorf("AB 卷客观题集合不一致(第 %d 个题规格不同):B 卷只能打乱题序,不能增删或改题型/分值", i+1)
 		}
 	}
@@ -147,6 +190,14 @@ func validateAbLayouts(a, b *card.Layout, keyB []string, orderB []int) ([]string
 			return nil, fmt.Errorf("B 卷题序对照必须是 1~%d 的排列(得到 %v)", len(nb.Questions), orderB)
 		}
 		seen[v] = true
+	}
+	// B 卡面题序与题序对照的一致性(规格可区分的题逐一比对):卡面第 i 题的规格必须与
+	// 对照所指的规范题一致。规格完全相同的题互换无害(校验不出也不需要);规格可区分时
+	// 版式与对照矛盾 = 客观题判分错位,必须在建考拦下。
+	for i := range nb.Questions {
+		if kb[i] != ka[orderB[i]-1] {
+			return nil, fmt.Errorf("B 卷卡面第 %d 题与题序对照所指的 A 卷第 %d 题规格不一致(题型/选项数/分值/知识点不同):B 卷版式与题序对照矛盾", i+1, orderB[i])
+		}
 	}
 	// KeyB(卡面序)→ 规范序:统分只用规范键,B 卷作答入库时同步归一
 	canon := make([]string, len(keyB))

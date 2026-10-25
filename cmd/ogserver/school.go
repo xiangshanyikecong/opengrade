@@ -64,7 +64,7 @@ func (s *School) save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, raw, 0o644)
+	return writeFileAtomic(s.path, raw, 0o644) // 原子落盘:防断电留下半截组织架构文件
 }
 
 // Snapshot 返回年级配置的深拷贝(接口响应用,避免外部改内部切片)。

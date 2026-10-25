@@ -524,6 +524,7 @@ cv.addEventListener("pointercancel", () => { curStroke = null; redrawInk(); });
 /* —— 触屏快捷出口(R/F/G 三个键盘专属动作的手机按钮封装) —— */
 function quickSameLast() {
   if (lastScore == null) { toast("还没有上一份的分数"); return; }
+  if (!slices.length || !slices[cur]) { toast("当前没有可评分的卷"); return; }
   setScore(lastScore);
 }
 function quickNextUngraded() {
@@ -559,6 +560,7 @@ function gradeVer() {
 
 async function setScore(score) {
   const s = slices[cur];
+  if (!s) { toast("当前没有可评分的卷"); return; } // 队列切空/加载失败的兜底,防止 TypeError 中断阅卷流
   const cap = curPartMax();
   if (score < 0 || score > cap + 1e-9) { toast(`分数 ${score} 超出满分 ${cap},未保存`); return; }
   score = Math.round(score * 100) / 100;
@@ -684,7 +686,11 @@ document.querySelectorAll(".markbtns button").forEach(b => b.onclick = () => set
 
 window.addEventListener("keydown", e => {
   if (!$("report").hidden && e.key === "Escape") { $("report").hidden = true; return; }
-  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  // 输入控件里的按键归输入控件:INPUT/SELECT/TEXTAREA 不触发快捷键。
+  // 按钮聚焦不在此列(点击按钮后焦点留在按钮上,数字/空格仍要能打分)——
+  // 但按钮上按空格会同时触发 click 与「满分」快捷键,所以所有已处理的键
+  // 一律 preventDefault,吃掉浏览器默认的按钮激活,杜绝"误打满分"。
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
   if (!slices.length) return;
   const k = e.key;
   const cap = curPartMax();
@@ -725,12 +731,12 @@ window.addEventListener("keydown", e => {
     return;
   }
   if (k === " ") { clearBuf(); setScore(curPartMax()); e.preventDefault(); }
-  else if (k === "z" || k === "Z") { clearBuf(); setScore(0); }
-  else if (k === "v" || k === "V") setMark("check");
-  else if (k === "b" || k === "B") setMark("cross");
-  else if (k === "x" || k === "X") setMark("flag");
-  else if (k === "p" || k === "P") togglePen();
-  else if (k === "r" || k === "R") { if (lastScore != null) setScore(lastScore); }
+  else if (k === "z" || k === "Z") { clearBuf(); setScore(0); e.preventDefault(); }
+  else if (k === "v" || k === "V") { setMark("check"); e.preventDefault(); }
+  else if (k === "b" || k === "B") { setMark("cross"); e.preventDefault(); }
+  else if (k === "x" || k === "X") { setMark("flag"); e.preventDefault(); }
+  else if (k === "p" || k === "P") { togglePen(); e.preventDefault(); }
+  else if (k === "r" || k === "R") { if (lastScore != null) setScore(lastScore); e.preventDefault(); }
   else if (k === "f" || k === "F") { // 跳到本题下一份未评;全评完提示
     if (!jumpNextUngraded()) toast("本题已全部阅完(打分会自动跨题)");
     e.preventDefault();
@@ -750,7 +756,7 @@ function jumpNextFlagged() {
   // 从当前位置环形找最近的一份
   idx.sort((a, b) => (a > cur ? a - cur : a + slices.length - cur) - (b > cur ? b - cur : b + slices.length - cur));
   cur = idx[0]; partSel = 0; buildScoreBtns(); render();
-  toast(`待复核:第 ${cur + 1} 号卷(⚑ ${idx.length} 份待复核)`);
+  toast(`待复核:第 ${slices[cur].student} 号卷(⚑ ${idx.length} 份待复核)`); // 卷号用 student 字段:缺考/作废剔除后不等于下标+1
 }
 
 init();
