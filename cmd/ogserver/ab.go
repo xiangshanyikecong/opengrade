@@ -17,6 +17,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"log"
 	"math/rand"
 	"net/http"
 	"os"
@@ -283,6 +284,8 @@ func handleAssignVariant(w http.ResponseWriter, r *http.Request, store *Store, u
 
 // handleExamCardsPDF AB 卷个性化出卡:GET /api/v1/exams/{id}/cards.pdf?variant=A|B
 // 按名册逐生渲染(卷种点 + 复合码二维码:考试短号+卷种位+考号),多页版式逐页出。
+// 流式逐页写响应:峰值内存 = 单页位图(大 roster 全量驻留曾 10GB 级 OOM 直接拖死服务);
+// 客户端取消下载经 Context 感知,停止渲染。
 func handleExamCardsPDF(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, ok := store.openExamFor(r, u, false)
 	if !ok {
@@ -316,8 +319,9 @@ func handleExamCardsPDF(w http.ResponseWriter, r *http.Request, store *Store, u 
 		vd = '2'
 	}
 	prefix := ex.ShortID + string(vd)
-	count := 0
-	var pageImages []image.Image
+	// 先收集考号合法的名册学生:总页数可预知(/Pages /Count 需要),校验类错误也都能在
+	// 响应头发出去之前以正常状态码返回
+	var fills [][]int
 	for _, st := range ex.Roster {
 		if st.Reg == "" || len(st.Reg) != base.RegDigits {
 			continue // 考号位数不符的学生跳过(名册脏数据),不阻断整包
@@ -334,22 +338,23 @@ func handleExamCardsPDF(w http.ResponseWriter, r *http.Request, store *Store, u 
 		if bad {
 			continue
 		}
-		f := &card.Filling{Reg: digits, CodePrefix: prefix}
-		for _, sheet := range book {
-			pageImages = append(pageImages, card.RenderPNG(sheet, f).ToGray())
-			count++
-		}
+		fills = append(fills, digits)
 	}
-	if count == 0 {
+	if len(fills) == 0 {
 		httpError(w, http.StatusUnprocessableEntity, fmt.Errorf("名册中没有考号位数匹配的学生,无法出卡"))
-		return
-	}
-	data, err := export.PagesPDF(pageImages, 210, 297)
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=opengrade-cards-%s-%s.pdf", ex.ID, variant))
-	_, _ = w.Write(data)
+	err = export.StreamPagesPDF(w, len(fills)*len(book), func(i int) (image.Image, error) {
+		if err := r.Context().Err(); err != nil {
+			return nil, fmt.Errorf("客户端已断开,停止出卡: %w", err)
+		}
+		f := &card.Filling{Reg: fills[i/len(book)], CodePrefix: prefix}
+		return card.RenderPNG(book[i%len(book)], f).ToGray(), nil
+	}, 210, 297)
+	if err != nil && r.Context().Err() == nil {
+		// 头部已发出,无法改状态码:记日志供排障(客户端断开的静默中止不记)
+		log.Printf("出卡 PDF 中断(exam %s / variant %s): %v", ex.ID, variant, err)
+	}
 }

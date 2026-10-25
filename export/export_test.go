@@ -4,6 +4,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/xml"
+	"errors"
+	"fmt"
+	"image"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -174,4 +178,81 @@ func mustSheet(t *testing.T) *card.Sheet {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// TestStreamPagesPDF 流式写出与缓冲版逐字节等价(重构回归锚点),且页数正确、
+// pageAt 错误传播 —— 出卡大册(305 人×多页)靠它从「全量驻留 10GB 级 OOM」改生。
+func TestStreamPagesPDF(t *testing.T) {
+	imgs := make([]image.Image, 8)
+	for i := range imgs {
+		g := image.NewGray(image.Rect(0, 0, 64, 90))
+		for j := range g.Pix {
+			g.Pix[j] = uint8(30 + i*20) // 每页不同灰度,保证 JPEG 流不同
+		}
+		imgs[i] = g
+	}
+	want, err := PagesPDF(imgs, 210, 297)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := StreamPagesPDF(&buf, len(imgs), func(i int) (image.Image, error) { return imgs[i], nil }, 210, 297); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(want, buf.Bytes()) {
+		t.Fatalf("流式输出与缓冲输出不一致(%d vs %d 字节)", len(want), buf.Len())
+	}
+	if n := bytes.Count(buf.Bytes(), []byte("/Type /Page ")); n != len(imgs) {
+		t.Fatalf("页数应 %d,得到 %d", len(imgs), n)
+	}
+	if _, err := PagesPDFIter(2, func(i int) (image.Image, error) {
+		if i == 1 {
+			return nil, errors.New("boom")
+		}
+		return imgs[0], nil
+	}, 210, 297); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("pageAt 错误应传播:%v", err)
+	}
+}
+
+// TestStreamPagesPDFXref 每条 xref 偏移必须精确指向「N 0 obj」对象头 —— 此前多页 PDF 的
+// Catalog/Pages/Page/Content 对象从未写过对象头(305 人出卡时 1222/1832 条指向对象体),
+// 小文件靠阅读器全文重建索引自愈蒙混过关,220MB 大册重建直接超时打不开。
+func TestStreamPagesPDFXref(t *testing.T) {
+	imgs := make([]image.Image, 5)
+	for i := range imgs {
+		g := image.NewGray(image.Rect(0, 0, 32, 44))
+		g.Pix[len(g.Pix)/2] = 0
+		imgs[i] = g
+	}
+	var buf bytes.Buffer
+	if err := StreamPagesPDF(&buf, len(imgs), func(i int) (image.Image, error) { return imgs[i], nil }, 210, 297); err != nil {
+		t.Fatal(err)
+	}
+	s := buf.Bytes()
+	sx := bytes.LastIndex(s, []byte("startxref\n"))
+	if sx < 0 {
+		t.Fatal("缺少 startxref")
+	}
+	rest := s[sx+len("startxref\n"):]
+	xrefPos, err := strconv.Atoi(string(rest[:bytes.IndexByte(rest, '\n')]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(s[xrefPos:xrefPos+4]) != "xref" {
+		t.Fatalf("startxref 未指向 xref 表(指向 %q)", s[xrefPos:xrefPos+8])
+	}
+	total := 3*len(imgs) + 2
+	lines := bytes.Split(s[xrefPos:], []byte("\n"))
+	if string(lines[1]) != fmt.Sprintf("0 %d", total+1) {
+		t.Fatalf("xref 条目数不符:%q", lines[1])
+	}
+	for k := 1; k <= total; k++ {
+		fields := bytes.Fields(lines[2+k]) // 行 0="xref"、行 1="0 N"、行 2=保留 free 条,对象 k 从行 3 起
+		off, _ := strconv.Atoi(string(fields[0]))
+		want := fmt.Sprintf("%d 0 obj", k)
+		if string(s[off:off+len(want)]) != want {
+			t.Fatalf("对象 %d 的 xref 偏移 %d 未指向对象头(得到 %q)", k, off, s[off:off+len(want)])
+		}
+	}
 }
