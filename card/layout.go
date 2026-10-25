@@ -48,8 +48,14 @@ const (
 	pageDotSide  = 2.6   // 页点方块边长(mm)
 	pageDotRMM   = 1.05  // 页点判读采样半径(mm,只看方块内部避开边缘)
 
+	codeFrameX = 150.0 // 考号码区装饰框左缘(mm):姓名框右缘不得越过(留 2mm 间隙)
+
 	variantDotRight = 152.0 // 卷种点右缘(mm):在页点(右缘 174,最多向左铺)左侧,互不挤占
 )
+
+// maxParts 一道主观题最多拆分的小问数:逐问得分框每问占 13mm + 2mm 间距,
+// 作答区可用宽 182mm(版心 14~196mm),12 问已接近满宽。
+const maxParts = 12
 
 // 题型常量。
 const (
@@ -258,6 +264,9 @@ func (l Layout) normalize() (Layout, error) {
 				return Layout{}, fmt.Errorf("第 %d 道主观题题型 %q 不合法(fillblank/subjective)", i+1, s.Kind)
 			}
 			if len(s.Parts) > 0 { // 小问拆分(版式 v3):大题满分 = 小问之和
+				if len(s.Parts) > maxParts {
+					return Layout{}, fmt.Errorf("第 %d 道主观题拆分了 %d 个小问,最多支持 %d 个(作答区右上角逐问得分框的宽度限制)", i+1, len(s.Parts), maxParts)
+				}
 				var sum float64
 				for pi := range s.Parts {
 					if s.Parts[pi].Score <= 0 {
@@ -459,7 +468,15 @@ func (l Layout) geometryFor(pageNo, pageCount int, pageSubs []int) (geom, error)
 		}
 		nx := 26 + float64(n.RegDigits)*6 + 10
 		g.nameLabel = mmPt{nx + 4, 18.5}
-		g.nameBoxX, g.nameBoxY, g.nameBoxW, g.nameBoxH = nx, 21, 62, 13
+		nameW := 62.0
+		// 码区装饰框左缘在 150mm:高位数考号(≥9 位)时姓名框右缘会压进码区,按码区收窄
+		if nx+nameW > codeFrameX-2 {
+			nameW = codeFrameX - 2 - nx
+			if nameW < 20 {
+				nameW = 20
+			}
+		}
+		g.nameBoxX, g.nameBoxY, g.nameBoxW, g.nameBoxH = nx, 21, nameW, 13
 	} else {
 		g.nameLabel = mmPt{26, 18.5}
 		g.nameBoxX, g.nameBoxY, g.nameBoxW, g.nameBoxH = 26, 21, 62, 13
@@ -468,7 +485,7 @@ func (l Layout) geometryFor(pageNo, pageCount int, pageSubs []int) (geom, error)
 	// 考号码区(卷头右侧,条码/二维码通道):姓名框右侧到右边距之间的空闲带
 	if kind := n.RegCodeKind(); kind != "" {
 		cg := &codeGeom{kind: kind}
-		cg.frame = boxRectMM{x: 150, y: 16.5, w: PageWMM - marginX - 150, h: 46}
+		cg.frame = boxRectMM{x: codeFrameX, y: 16.5, w: PageWMM - marginX - codeFrameX, h: 46}
 		if kind == "barcode" {
 			cg.label = mmPt{cg.frame.x + cg.frame.w/2, 30}
 			cg.body = boxRectMM{x: 152, y: 33, w: 42, h: 13}

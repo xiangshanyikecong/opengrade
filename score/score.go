@@ -133,19 +133,19 @@ type Thresholds struct {
 }
 
 func (t Thresholds) pass() float64 {
-	if t.Pass > 0 && t.Pass < 1 {
+	if t.Pass > 0 && t.Pass <= 1 { // 允许 1.0(满分及格);仅排除 0 与越界值
 		return t.Pass
 	}
 	return 0.6
 }
 func (t Thresholds) good() float64 {
-	if t.Good > 0 && t.Good < 1 {
+	if t.Good > 0 && t.Good <= 1 {
 		return t.Good
 	}
 	return 0.85
 }
 func (t Thresholds) low() float64 {
-	if t.Low > 0 && t.Low < 1 {
+	if t.Low > 0 && t.Low <= 1 {
 		return t.Low
 	}
 	return 0.4
@@ -238,7 +238,7 @@ func Merge(questions []card.QuestionSpec, objectiveKey []string, results []*omr.
 		}
 		if res.Absent { // 缺考:保留行供名册/趋势对齐,不进入统计与排名
 			r.AbsentCount++
-			r.Students = append(r.Students, StudentLine{Index: si + 1, RegNumber: res.RegNumber, RegValid: true, Absent: true, Total: r.Total})
+			r.Students = append(r.Students, StudentLine{Index: si + 1, RegNumber: res.RegNumber, RegValid: res.RegValid, Absent: true, Total: r.Total})
 			continue
 		}
 		line := StudentLine{Index: si + 1, RegValid: true}
@@ -358,9 +358,18 @@ func Merge(questions []card.QuestionSpec, objectiveKey []string, results []*omr.
 				ps := PartStat{Index: pi + 1, Label: part.Label, Max: part.Score}
 				var psum float64
 				for si := range results {
-					if g, ok := grades[GradePartKey(si+1, qi+1, pi+1)]; ok && g.Graded {
+					res := results[si]
+					// 与主统计同口径:过滤(nil)/缺考/作废/卷种待指派卷不进小问统计;
+					// 选做题只统计"判分计入本题"的学生(涂点或批阅回退),口径同上
+					if res == nil || res.Absent || res.Voided || res.PendingVariant {
+						continue
+					}
+					if g != nil && electiveChoice(g, subjectives, grades, res, si+1) != qNo {
+						continue
+					}
+					if g2, ok := grades[GradePartKey(si+1, qi+1, pi+1)]; ok && g2.Graded {
 						ps.Graded++
-						psum += g.Score
+						psum += g2.Score
 					}
 				}
 				if ps.Graded > 0 {
@@ -400,19 +409,23 @@ func finalize(r *Report, earned [][]float64, valid [][]bool) {
 	}
 	for qi := range r.PerQuestion {
 		st := &r.PerQuestion[qi]
-		if groupN <= 0 || len(ordered) < 4 || st.Max <= 0 {
+		// 列下标用题目原始题号还原:PerQuestion 是紧凑序列(空答案键题不进),
+		// 与 earned/valid 的"原位列"在有空键题时错位,按下标直取会把第 N 题的
+		// 区分度算到第 N-1 题头上(或因空键列恒无效而归零)。
+		col := st.Index - 1
+		if groupN <= 0 || len(ordered) < 4 || st.Max <= 0 || col < 0 {
 			continue
 		}
 		hi, hn, lo, ln := 0.0, 0, 0.0, 0
 		for _, si := range ordered[:groupN] {
-			if qi < len(valid[si]) && valid[si][qi] {
-				hi += earned[si][qi]
+			if col < len(valid[si]) && valid[si][col] {
+				hi += earned[si][col]
 				hn++
 			}
 		}
 		for _, si := range ordered[len(ordered)-groupN:] {
-			if qi < len(valid[si]) && valid[si][qi] {
-				lo += earned[si][qi]
+			if col < len(valid[si]) && valid[si][col] {
+				lo += earned[si][col]
 				ln++
 			}
 		}

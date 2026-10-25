@@ -165,7 +165,7 @@ async function loadTrend() {
   let html = `<div class="panel noprint"><b>历次成绩趋势</b>
     <span class="hint">按考号跨考试对齐 · 曲线为得分率(不同满分可比)·「进退」= 名次较上一场变化 · 缺考在图中断开</span>`;
   Object.entries(groups).forEach(([subj, g], gi) => {
-    html += `<p style="margin:14px 0 4px"><b>${subj}</b>(共 ${g.length} 场)
+    html += `<p style="margin:14px 0 4px"><b>${OG.esc(subj)}</b>(共 ${g.length} 场)
       <table><tr><th>日期</th><th>得分</th><th>班级均分</th><th>年级排名</th><th>班级排名</th><th>名次进退</th></tr>`;
     g.forEach((p, i) => {
       let delta = "—";

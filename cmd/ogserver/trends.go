@@ -307,11 +307,27 @@ func handleStudentTrends(w http.ResponseWriter, r *http.Request, store *Store, u
 	if !ok {
 		return
 	}
-	var points []TrendPoint
-	for _, ex := range store.List() { // 学生/家长不看可见性门禁,只看已发布的考试
+	// 时间轴口径与教师端 visibleExamsAsc 一致:考试日期优先(未填用创建时间)。
+	// 只按创建时间排,补录建考(创建晚于考试日期)会让个人曲线与教师端/年级总表互相矛盾。
+	exams := make([]*Exam, 0)
+	for _, ex := range store.List() {
 		if !ex.Published {
 			continue // 成绩发布控制:未发布不可查
 		}
+		exams = append(exams, ex)
+	}
+	sort.SliceStable(exams, func(i, j int) bool {
+		di, dj := examDateOf(exams[i]), examDateOf(exams[j])
+		if di != dj {
+			return di < dj
+		}
+		if !exams[i].CreatedAt.Equal(exams[j].CreatedAt) {
+			return exams[i].CreatedAt.Before(exams[j].CreatedAt)
+		}
+		return exams[i].ID < exams[j].ID
+	})
+	var points []TrendPoint
+	for _, ex := range exams {
 		idx := findIndex(ex, reg)
 		if idx == 0 {
 			continue
@@ -333,22 +349,21 @@ func handleStudentTrends(w http.ResponseWriter, r *http.Request, store *Store, u
 			cls = classOfReg(ex, reg)
 		}
 		if cls != "" {
-			pt.ClassMean, _ = classMeanOf(ex, rep, cls)
-			sameClass := make([]score.StudentLine, 0, rep.Count)
-			for _, ol := range rep.Students {
-				if inClassOfReg(ex, ol.RegNumber, cls) {
-					sameClass = append(sameClass, ol)
+			pt.ClassMean, _ = classMeanOf(ex, rep, cls) // 缺考也展示该场班级均分作参照
+			if !line.Absent {                           // 缺考不参与班级排名(同教师端口径),不给垫底名次
+				sameClass := make([]score.StudentLine, 0, rep.Count)
+				for _, ol := range rep.Students {
+					if inClassOfReg(ex, ol.RegNumber, cls) {
+						sameClass = append(sameClass, ol)
+					}
 				}
+				pt.ClassRank = rankWithin(sameClass, reg)
 			}
-			pt.ClassRank = rankWithin(sameClass, reg)
 		}
 		points = append(points, pt)
 	}
 	if points == nil {
 		points = []TrendPoint{}
-	}
-	for i, j := 0, len(points)-1; i < j; i, j = i+1, j-1 { // List 为时间降序,翻转为升序
-		points[i], points[j] = points[j], points[i]
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"reg":    reg,

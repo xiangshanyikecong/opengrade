@@ -74,10 +74,14 @@ func buildPractice(ex *Exam, title string, wrong map[int]bool) practiceResult {
 }
 
 // wrongSetOfStudent 汇总某生在某场考试的错题集合:客观题答错、主观题未满分。
+// 空答案键题不判对错、未评完的主观题不进错题(与学生端逐题明细同口径)。
 func wrongSetOfStudent(ex *Exam, idx int) map[int]bool {
 	wrong := map[int]bool{}
 	res := ex.Results[idx-1]
 	for qi := range ex.ObjectiveKey {
+		if ex.ObjectiveKey[qi] == "" {
+			continue // 答案未录:该题不判分,不进错题重练
+		}
 		ans := ""
 		if res != nil && qi < len(res.Answers) {
 			ans = res.Answers[qi]
@@ -89,8 +93,7 @@ func wrongSetOfStudent(ex *Exam, idx int) map[int]bool {
 	base := len(ex.ObjectiveKey)
 	for qi, spec := range ex.Layout.Subjectives {
 		max := score.SubjectiveMax(spec)
-		s, _, _ := score.SubjectiveScore(spec, ex.Grades, idx, qi+1)
-		if s < max {
+		if s, done, _ := score.SubjectiveScore(spec, ex.Grades, idx, qi+1); done && s < max {
 			wrong[base+qi+1] = true
 		}
 	}

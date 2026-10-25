@@ -43,6 +43,8 @@ func knowledgeTags(ex *Exam) map[int]string {
 
 // handleKnowledgeSet 写入逐题知识点:POST /api/v1/exams/{id}/knowledge
 // {"tags":{"1":"函数","2":"函数、导数",...}};仅管理员/组长/建卷教师。
+// 变更走 Store.SetKnowledge(锁内写时复制 + 审计落盘)——此前在锁外直接改快照并
+// save,审计条目随下一次保存被静默抹除,且与并发写构成数据竞争。
 func handleKnowledgeSet(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, ok := store.Get(r.PathValue("id"))
 	if !ok || !canOpenExam(u, ex, store.School) {
@@ -60,34 +62,10 @@ func handleKnowledgeSet(w http.ResponseWriter, r *http.Request, store *Store, u 
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
-	nQ := len(ex.Layout.Questions) + len(ex.Layout.Subjectives)
-	for qi := range req.Tags {
-		if qi < 1 || qi > nQ {
-			httpError(w, http.StatusBadRequest, fmt.Errorf("题号 %d 越界(共 %d 题)", qi, nQ))
-			return
-		}
-	}
-	changed := 0
-	for i := range ex.Layout.Questions {
-		v := req.Tags[i+1]
-		if ex.Layout.Questions[i].Knowledge != v {
-			ex.Layout.Questions[i].Knowledge = v
-			changed++
-		}
-	}
-	for i := range ex.Layout.Subjectives {
-		v := req.Tags[len(ex.Layout.Questions)+i+1]
-		if ex.Layout.Subjectives[i].Knowledge != v {
-			ex.Layout.Subjectives[i].Knowledge = v
-			changed++
-		}
-	}
-	if changed > 0 {
-		ex.log(u.Username, "setKnowledge", fmt.Sprintf("更新知识点标签(%d 处变更)", changed))
-		if err := store.save(ex); err != nil {
-			httpError(w, http.StatusInternalServerError, err)
-			return
-		}
+	changed, err := store.SetKnowledge(ex.ID, req.Tags, u.Username)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "changed": changed})
 }

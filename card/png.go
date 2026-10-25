@@ -147,7 +147,11 @@ func RenderPNG(s *Sheet, f *Filling) *raster.Canvas {
 
 	// 主观题区块:标签行(左对齐,避免长标签溢出左页边距)+ 作答框;拆分小问时画逐问得分框
 	for i, sg := range g.subjectives {
-		label := itoa(len(s.Choice)+i+1) + ". " + subjectiveTagCN(sg.kind, tf != nil) + " (" + scoreText(sg.score)
+		gi := i // 全局主观题下标(0-based):多页版式下第 2+ 页的 i 是页内序号,须还原(与 svg.go 同口径)
+		if i < len(s.pageSubs) {
+			gi = s.pageSubs[i]
+		}
+		label := itoa(len(s.Layout.Questions)+gi+1) + ". " + subjectiveTagCN(sg.kind, tf != nil) + " (" + scoreText(sg.score)
 		if len(sg.parts) > 0 {
 			label += ": " + partsBreakdown(sg.parts)
 		}

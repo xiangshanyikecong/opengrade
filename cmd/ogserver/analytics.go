@@ -245,13 +245,16 @@ func perClassQuestionRates(ex *Exam) map[string][]float64 {
 	}
 	groups := score.ElectiveGroups(ex.Layout.Subjectives)
 	for si, res := range ex.Results {
-		if res == nil || res.Absent {
+		// 与全体统计(score.Merge)同口径:作废/卷种待指派卷不进班级逐题率
+		if res == nil || res.Absent || res.Voided || res.PendingVariant {
 			continue
 		}
 		cls := regClasses[ex.AssignedReg(si+1)]
 		if len(cls) == 0 {
 			cls = []string{"未匹配"}
 		}
+		// 选做口径同统分层(涂点 + 批阅回退,自带涂点下标防护),替代裸 marks 下标比对
+		excluded := score.ElectiveExcluded(groups, ex.Layout.Subjectives, ex.Grades, res, si+1)
 		for _, c := range cls {
 			accs := get(c)
 			for qi := 0; qi < nObj && qi < len(res.Answers); qi++ {
@@ -266,11 +269,8 @@ func perClassQuestionRates(ex *Exam) map[string][]float64 {
 			for qi := 0; qi < nSub; qi++ {
 				spec := ex.Layout.Subjectives[qi]
 				qNo := nObj + qi + 1
-				if g := score.GroupOf(groups, qNo); g != nil {
-					marks := res.Electives[g.Members[0]]
-					if len(marks) != 1 || g.Members[marks[0]] != qNo {
-						continue // 选了同组另一题:不进本题统计
-					}
+				if excluded[qi+1] {
+					continue // 未被所选(含漏涂/多涂且无批阅回退):不进本题统计
 				}
 				if sc, done, _ := score.SubjectiveScore(spec, ex.Grades, si+1, qNo); done {
 					accs[nObj+qi].graded++

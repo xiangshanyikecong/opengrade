@@ -151,9 +151,12 @@ func scopeExamToClasses(ex *Exam, classes []string) *Exam {
 		// 名册未覆盖的学生(校级卷)对任课教师可见;名册覆盖但班级无交集的过滤
 		if known && !overlaps(cls, classes) {
 			cp.Results[i] = nil
-			// 同步剔除该生的评分与指派
+			// 同步剔除该生的评分(整题键 + 拆分小问键)与指派
 			for q := 1; q <= len(ex.Layout.Subjectives); q++ {
 				delete(cp.Grades, score.GradeKey(i+1, q))
+				for p := 1; p <= len(ex.Layout.Subjectives[q-1].Parts); p++ {
+					delete(cp.Grades, score.GradePartKey(i+1, q, p))
+				}
 			}
 			delete(cp.Assignments, fmt.Sprintf("s%d", i+1))
 			continue

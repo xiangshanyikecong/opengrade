@@ -126,7 +126,8 @@ func handleAggregate(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		}
 	}
 
-	// 逐科填格:报告里的行给分;名册在册但缺卷的按 0(Found=false)
+	// 逐科填格:报告里的行给分;名册在册但缺卷(或卷种待指派未进报告)的格保持零值
+	// (Found=false,总分不计)——零值即语义,无需回填。
 	for ci, ex := range exams {
 		rep := mergeReport(ex)
 		for _, l := range rep.Students {
@@ -138,17 +139,6 @@ func handleAggregate(w http.ResponseWriter, r *http.Request, store *Store, u *au
 			if !l.Absent {
 				st.Total += l.Score
 			}
-		}
-		for i := range ex.Results {
-			res := ex.Results[i]
-			if res == nil || res.Voided {
-				continue
-			}
-			st := rows[ex.AssignedReg(i+1)]
-			if st == nil || st.Cells[ci].Found {
-				continue
-			}
-			// 在册无卷:格子保持零值(Found=false,总分不加)
 		}
 	}
 

@@ -63,17 +63,20 @@ func Load(data []byte) ([]Student, error) {
 		return out, nil
 	}
 	var out []Student
-	for i, line := range strings.Split(trimmed, "\n") {
+	dataLine := 0 // 已处理的数据行数(表头判定看"第一个非空行",而非物理第 0 行:
+	// 文件以空行开头时,原先把真表头当数据行,整份名册因"考号必须为纯数字"被拒)
+	for _, line := range strings.Split(trimmed, "\n") {
 		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
 		if line == "" {
 			continue
 		}
 		parts := strings.Split(line, ",")
 		if len(parts) < 2 {
-			return nil, fmt.Errorf("名册第 %d 行格式不合法(应为 考号,姓名[,班级])", i+1)
+			return nil, fmt.Errorf("名册第 %d 行格式不合法(应为 考号,姓名[,班级])", dataLine+1)
 		}
-		if i == 0 && !isDigits(strings.TrimSpace(parts[0])) {
-			continue // 表头
+		if dataLine == 0 && !isDigits(strings.TrimSpace(parts[0])) {
+			dataLine++
+			continue // 表头(第一个非空行且考号列非数字)
 		}
 		s := Student{Reg: strings.TrimSpace(parts[0]), Name: strings.TrimSpace(parts[1])}
 		if len(parts) > 2 {
@@ -81,6 +84,7 @@ func Load(data []byte) ([]Student, error) {
 			s.Class, s.Classes = splitClasses(parts[2])
 		}
 		out = append(out, s)
+		dataLine++
 	}
 	if err := validate(out); err != nil {
 		return nil, err

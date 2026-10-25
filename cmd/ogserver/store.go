@@ -1175,6 +1175,60 @@ func (s *Store) SetTaskDue(id, key, due, by string) error {
 	return s.save(ex)
 }
 
+// SetKnowledge 写入逐题知识点标签(题号为 1-based 全卷序:客观在前,主观接续)。
+// 布局切片走写时复制(整片重建后整体赋值),不做原地元素改写 —— Layout 与已发出的
+// 快照共享底层数组,原地改会让锁外读者与本次写入构成数据竞争,快照的"不可变"约定
+// 也随之失效。知识点不影响分数,不置 Dirty。
+func (s *Store) SetKnowledge(id string, tags map[int]string, by string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return 0, fmt.Errorf("考试 %s 不存在", id)
+	}
+	nObj := len(ex.Layout.Questions)
+	nQ := nObj + len(ex.Layout.Subjectives)
+	for qi := range tags {
+		if qi < 1 || qi > nQ {
+			return 0, fmt.Errorf("题号 %d 越界(共 %d 题)", qi, nQ)
+		}
+	}
+	changed := 0
+	qs := append([]card.QuestionSpec(nil), ex.Layout.Questions...)
+	for i := range qs {
+		if v, ok := tags[i+1]; ok && qs[i].Knowledge != v {
+			qs[i].Knowledge = v
+			changed++
+		}
+	}
+	ss := append([]card.SubjectiveSpec(nil), ex.Layout.Subjectives...)
+	for i := range ss {
+		if v, ok := tags[nObj+i+1]; ok && ss[i].Knowledge != v {
+			ss[i].Knowledge = v
+			changed++
+		}
+	}
+	if changed == 0 {
+		return 0, nil
+	}
+	layout := ex.Layout
+	layout.Questions, layout.Subjectives = qs, ss
+	if ex.LayoutB != nil { // AB 卷主观题区强制一致:知识点标签同步到 B 版式,保持两版同源
+		sb := append([]card.SubjectiveSpec(nil), ex.LayoutB.Subjectives...)
+		for i := range sb {
+			if v, ok := tags[nObj+i+1]; ok && sb[i].Knowledge != v {
+				sb[i].Knowledge = v
+			}
+		}
+		lb := *ex.LayoutB
+		lb.Subjectives = sb
+		ex.LayoutB = &lb
+	}
+	ex.Layout = layout
+	ex.log(by, "setKnowledge", fmt.Sprintf("更新知识点标签(%d 处变更)", changed))
+	return changed, s.save(ex)
+}
+
 // AddAppeal 学生/家长发起成绩复核申请(仅已发布考试)。返回申请序号(1-based)。
 // 拒绝口径:本场被拉黑/全校黑名单、已有待处理申请(防重复刷)、理由为空或超 200 字。
 func (s *Store) AddAppeal(id, reg, reason string) (int, error) {

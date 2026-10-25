@@ -183,7 +183,7 @@ async function loadRooms() {
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center" class="no-print">
       <label>考试 <select id="roomsExamSel" onchange="roomsPick()">
         <option value="">选择考试…</option>
-        ${exams.map(e => `<option value="${e.id}" ${roomsExam === e.id ? 'selected' : ''}>${e.id}(${e.createdAt}${e.subject ? '·' + e.subject : ''})</option>`).join("")}
+        ${exams.map(e => `<option value="${e.id}" ${roomsExam === e.id ? 'selected' : ''}>${e.id}(${e.createdAt}${e.subject ? '·' + OG.esc(e.subject) : ''})</option>`).join("")}
       </select></label>
       <label>每场人数 <input id="roomsSize" type="number" value="30" min="5" max="200" style="width:64px"></label>
       <label>编排 <select id="roomsGroup"><option value="class">同班聚齐(按主班)</option><option value="reg">纯考号序</option></select></label>
@@ -236,21 +236,21 @@ function renderRooms() {
   for (const c of (roomsPlan.conflicts || [])) (cByRoom[c.room] = cByRoom[c.room] || []).push(c);
   if ((roomsPlan.conflicts || []).length) {
     html += `<div class="err" style="margin-bottom:10px;padding:8px 12px;border-radius:8px">⚠ 监考冲突 ${roomsPlan.conflicts.length} 处(同日同场次其它考试已指派同一教师):<br>` +
-      roomsPlan.conflicts.map(c => `· ${c.teacher} 在 ${c.room},同时被「${c.subject || c.examId}」的 ${c.otherRoom} 指派`).join("<br>") + `</div>`;
+      roomsPlan.conflicts.map(c => `· ${OG.esc(c.teacher)} 在 ${OG.esc(c.room)},同时被「${OG.esc(c.subject || c.examId)}」的 ${OG.esc(c.otherRoom)} 指派`).join("<br>") + `</div>`;
   }
   for (const room of roomsPlan.rooms) {
     const seats = room.seats.map(s => {
       const selMark = swapSel && swapSel.room === room.name && swapSel.idx === s.idx;
       const body = s.reg
-        ? `<div>${s.name}</div><div class="hint">${s.reg}</div><div class="hint">${s.class || ""}</div>`
+        ? `<div>${OG.esc(s.name)}</div><div class="hint">${OG.esc(s.reg)}</div><div class="hint">${OG.esc(s.class || "")}</div>`
         : `<div class="hint">空座</div>`;
       return `<div class="seat ${s.reg ? '' : 'empty'} ${selMark ? 'sel' : ''}" onclick="seatClick('${room.name}',${s.idx})"><b>${s.idx}</b>${body}</div>`;
     }).join("");
     const conflictBadge = (cByRoom[room.name] || []).length
-      ? ` <span class="err" title="${cByRoom[room.name].map(c => c.teacher + ' ↔ ' + (c.subject || c.examId) + ' ' + c.otherRoom).join('; ')}">⚠ 监考冲突</span>` : "";
+      ? ` <span class="err" title="${OG.esc(cByRoom[room.name].map(c => c.teacher + ' ↔ ' + (c.subject || c.examId) + ' ' + c.otherRoom).join('; '))}">⚠ 监考冲突</span>` : "";
     const proctors = `<select class="no-print" onchange="setProctor('${room.name}', this.value)">
         <option value="">监考…</option>
-        ${roomsStaff.map(t => `<option value="${t.username}" ${room.proctor === t.username ? 'selected' : ''}>${t.displayName || t.username}</option>`).join("")}
+        ${roomsStaff.map(t => `<option value="${OG.esc(t.username)}" ${room.proctor === t.username ? 'selected' : ''}>${OG.esc(t.displayName || t.username)}</option>`).join("")}
       </select>`;
     html += `<div class="room">
       <div class="room-head"><b>${room.name}</b><span class="hint">${room.seats.filter(s => s.reg).length} 人 · 监考:${room.proctor || "未指派"}</span>${conflictBadge}${proctors}</div>
@@ -361,8 +361,8 @@ function renderExamTable() {
     if (e.appeals) badges.push(`<span class="pill off" title="待处理的学生复核申请">复核 ${e.appeals}</span>`);
     if (e.flagged) badges.push(`<span class="pill" style="background:#fff3cd;color:#9a3412" title="⚑ 待复核切片">⚑ ${e.flagged}</span>`);
     const whenTxt = e.examDate ? `<b>${e.examDate}</b>` : e.createdAt;
-    html += `<tr><td><a href="#" onclick="openExam('${e.id}');return false" title="打开考试详情">${e.id}</a></td><td>${whenTxt}</td><td>${metaTxt(e) || "-"}</td><td>${e.createdBy || "-"}</td>
-      <td>${e.subject || "-"}</td><td>${e.students}${e.expected ? "/" + e.expected : ""}</td><td>客观 ${e.objective} + 主观 ${e.subjective}</td>
+    html += `<tr><td><a href="#" onclick="openExam('${e.id}');return false" title="打开考试详情">${e.id}</a></td><td>${whenTxt}</td><td>${metaTxt(e) || "-"}</td><td>${OG.esc(e.createdBy || "-")}</td>
+      <td>${OG.esc(e.subject || "-")}</td><td>${e.students}${e.expected ? "/" + e.expected : ""}</td><td>客观 ${e.objective} + 主观 ${e.subjective}</td>
       <td>${stagePill(e)}${badges.length ? "<br>" + badges.join(" ") : ""}</td>
       <td style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
         ${primary}
@@ -1697,7 +1697,7 @@ async function loadReports() {
     选择考试:<select id="repExam" onchange="renderReport()"></select>
     <span id="pubState" style="margin-left:12px"></span>
     <div id="repBody" style="margin-top:14px"></div></div>`;
-  document.getElementById("repExam").innerHTML = exams.map(e => `<option value="${e.id}">${e.id}·${e.subject || "无学科"}(${e.createdAt})</option>`).join("");
+  document.getElementById("repExam").innerHTML = exams.map(e => `<option value="${e.id}">${e.id}·${OG.esc(e.subject || "无学科")}(${e.createdAt})</option>`).join("");
   renderReport();
 }
 
@@ -2096,7 +2096,7 @@ function renderTrend() {
   html += `<div class="panel"><b>考试序列</b>
     <table><tr><th>#</th><th>日期</th><th>学科</th><th>实考</th><th>满分</th><th>全体均分</th>${hasClass ? "<th>本班均分</th><th>本班人数</th>" : ""}</tr>`;
   t.exams.forEach((e, i) => {
-    html += `<tr><td>${i + 1}</td><td>${e.date}</td><td>${e.subject || "-"}</td><td>${e.students}</td>
+    html += `<tr><td>${i + 1}</td><td>${e.date}</td><td>${OG.esc(e.subject || "-")}</td><td>${e.students}</td>
       <td>${f1(e.total)}</td><td>${f1(e.mean)}</td>
       ${hasClass ? `<td><b>${f1(e.classMean)}</b></td><td>${e.classCount}</td>` : ""}</tr>`;
   });

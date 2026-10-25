@@ -513,6 +513,13 @@ func handleStudentReportPDF(w http.ResponseWriter, r *http.Request, store *Store
 		if qi < len(res.Answers) {
 			my = res.Answers[qi]
 		}
+		if ex.ObjectiveKey[qi] == "" { // 答案未录:不判对错(与 Web 端逐题明细同口径)
+			if my == "" {
+				my = "(未答)"
+			}
+			rows = append(rows, export.QRow{Index: qi + 1, Kind: kindName(spec.Kind), Max: trimMaxF(max), Mine: my, Wrong: false})
+			continue
+		}
 		right := my == ex.ObjectiveKey[qi]
 		if my == "" {
 			my = "(未答)"
@@ -536,15 +543,19 @@ func handleStudentReportPDF(w http.ResponseWriter, r *http.Request, store *Store
 			})
 			continue
 		}
-		myScore := 0.0
+		// 未评完(复核改分窗口/撤回重阅):明示评卷中,不按 0 分进"错题"列(与 Web 端同口径)
 		if s, done, _ := score.SubjectiveScore(spec, ex.Grades, idx, qi+1); done {
-			myScore = s
+			rows = append(rows, export.QRow{
+				Index: qNo, Kind: kindName(spec.Kind),
+				Max: trimMaxF(max), Mine: fmt.Sprintf("%s 分", trimMaxF(s)),
+				Wrong: s < max,
+			})
+		} else {
+			rows = append(rows, export.QRow{
+				Index: qNo, Kind: kindName(spec.Kind),
+				Max: trimMaxF(max), Mine: "评卷中", Wrong: false,
+			})
 		}
-		rows = append(rows, export.QRow{
-			Index: qNo, Kind: kindName(spec.Kind),
-			Max: trimMaxF(max), Mine: fmt.Sprintf("%s 分", trimMaxF(myScore)),
-			Wrong: myScore < max,
-		})
 	}
 
 	var know []export.KV

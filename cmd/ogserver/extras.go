@@ -348,7 +348,8 @@ func handleReviewPPTX(w http.ResponseWriter, r *http.Request, store *Store, u *a
 			letters := card.OptionLetters(spec.Kind, spec.Options)
 			dist := map[string]int{}
 			for _, res := range ex.Results {
-				if res == nil || res.Absent || qi >= len(res.Answers) {
+				// 与逐题统计同口径:作废/卷种待指派卷的作答不进选项分布
+				if res == nil || res.Absent || res.Voided || res.PendingVariant || qi >= len(res.Answers) {
 					continue
 				}
 				if ans := res.Answers[qi]; ans != "" {
@@ -415,6 +416,11 @@ func pickTypicalSlices(ex *Exam, question int, anon bool) (best, worst struct {
 	}
 	var graded []sg
 	for si := range ex.Results {
+		res := ex.Results[si]
+		// 典型样本与统计口径一致:作废/缺考/卷种待指派卷不入选(作废卷曾计入"典型满分")
+		if res == nil || res.Absent || res.Voided || res.PendingVariant {
+			continue
+		}
 		if s, done, _ := score.SubjectiveScore(ex.Layout.Subjectives[question-1], ex.Grades, si+1, question); done {
 			graded = append(graded, sg{si + 1, s})
 		}

@@ -282,6 +282,20 @@ func optionsText(opts map[string]int) string {
 	return strings.Join(parts, " ")
 }
 
+// csvField 输出 CSV 字段:含逗号/引号/换行的加引号并双写引号;
+// 以 = + - @ 或制表符开头的前缀 '(防 Excel 打开时当公式执行,如恶意名字 "=cmd|..."。
+// 名册姓名/班级是人工录入面,成绩单会被直接双击打开,这一层转义不能省。
+func csvField(s string) string {
+	if strings.HasPrefix(s, "=") || strings.HasPrefix(s, "+") || strings.HasPrefix(s, "-") ||
+		strings.HasPrefix(s, "@") || strings.HasPrefix(s, "\t") {
+		s = "'" + s
+	}
+	if strings.ContainsAny(s, ",\"\r\n") {
+		return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+	}
+	return s
+}
+
 // ScoresCSV 输出 UTF-8 BOM 的 CSV(Excel 直接打开不乱码)。
 func ScoresCSV(rep *score.Report) []byte {
 	var b strings.Builder
@@ -297,7 +311,8 @@ func ScoresCSV(rep *score.Report) []byte {
 			absent = "缺考"
 		}
 		fmt.Fprintf(&b, "%d,%s,%s,%s,%v,%.2f,%.2f,%.2f,%.2f,%d,%s,%s\r\n",
-			s.Index, s.RegNumber, s.Name, s.ClassInfo, s.RegValid, s.Objective, s.Subjective, s.Score, s.Total, s.Rank, mark, absent)
+			s.Index, csvField(s.RegNumber), csvField(s.Name), csvField(s.ClassInfo), s.RegValid,
+			s.Objective, s.Subjective, s.Score, s.Total, s.Rank, mark, absent)
 	}
 	return []byte(b.String())
 }

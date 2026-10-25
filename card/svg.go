@@ -107,9 +107,13 @@ func RenderSVG(s *Sheet, f *Filling) []byte {
 	// 主观题区块:标签行(左对齐)+ 作答框;拆分小问时标签列出小问分值,作答区右上角画逐问得分框;
 	// 选做题(版式 v3)在组内第一道题的标签行右端印题号区涂点
 	for i, sg := range g.subjectives {
-		label := itoa(len(g.choice)+i+1) + ". "
-		if i < len(n.Subjectives) && n.Subjectives[i].Label != "" {
-			label += n.Subjectives[i].Label + " "
+		gi := i // 全局主观题下标(0-based):多页版式下第 2+ 页的 i 是页内序号,须还原
+		if i < len(s.pageSubs) {
+			gi = s.pageSubs[i]
+		}
+		label := itoa(len(n.Questions)+gi+1) + ". "
+		if gi < len(n.Subjectives) && n.Subjectives[gi].Label != "" {
+			label += n.Subjectives[gi].Label + " "
 		}
 		label += "(" + kindName(sg.kind) + " " + trimScore(sg.score) + "分"
 		if len(sg.parts) > 0 {
