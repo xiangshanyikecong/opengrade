@@ -152,6 +152,8 @@ func TestElectiveQuestionsE2E(t *testing.T) {
 	}
 
 	// 发布后学生端:未选题标注 notCounted,不进错题本
+	// 发布门禁:补齐卷 3 漏评的填空题(0 分,不改变其总分与选做统计 —— 漏涂回退语义只依赖题 3 的批阅)
+	admin.json("POST", "/api/v1/grades", map[string]any{"examId": examID, "student": 3, "question": 1, "score": 0, "graded": true}, http.StatusOK)
 	admin.json("POST", "/api/v1/exams/"+examID+"/publish", map[string]any{"published": true}, http.StatusOK)
 	sd := student.json("GET", "/api/v1/student/exams/"+examID, nil, http.StatusOK)
 	wrongs := sd["wrongQuestions"].([]any)

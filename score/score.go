@@ -205,6 +205,9 @@ func Merge(questions []card.QuestionSpec, objectiveKey []string, results []*omr.
 	r := &Report{}
 	r.Total = 0
 	for qi := range objectiveKey {
+		if objectiveKey[qi] == "" {
+			continue // 答案未录(后补窗口):该题不判分也不占满分,杜绝"白卷对空键记满分"
+		}
 		r.Total += weight(qi)
 	}
 	for qi := range subjectives {
@@ -245,6 +248,9 @@ func Merge(questions []card.QuestionSpec, objectiveKey []string, results []*omr.
 		row := make([]float64, nQ)
 		ok := make([]bool, nQ)
 		for qi := 0; qi < len(objectiveKey) && qi < len(res.Answers); qi++ {
+			if objectiveKey[qi] == "" {
+				continue // 空键题不判分:作答与未答都不给分,也不计入有效作答
+			}
 			ok[qi] = true
 			if res.Answers[qi] == objectiveKey[qi] {
 				line.Objective += weight(qi)
@@ -276,8 +282,11 @@ func Merge(questions []card.QuestionSpec, objectiveKey []string, results []*omr.
 		r.Mean /= float64(r.Count)
 	}
 
-	// 客观题统计(含选项人数分布)
+	// 客观题统计(含选项人数分布);空键题(答案未录)不进入逐题统计
 	for qi := range objectiveKey {
+		if objectiveKey[qi] == "" {
+			continue
+		}
 		st := QuestionStat{Index: qi + 1, Kind: kindOf(qi), Max: weight(qi), Count: r.Count, Options: map[string]int{}}
 		if qi < len(questions) {
 			for _, l := range card.OptionLetters(kindOf(qi), questions[qi].Options) {

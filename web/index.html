@@ -125,8 +125,8 @@
     <label>版式 JSON(设计器生成的可整段粘贴过来)
       <textarea id="examLayout" rows="8" placeholder='{"version":2, ...}'></textarea>
     </label>
-    <label>客观题参考答案(JSON 数组,如 ["A","T","AC",...];判断题用 T/F,多选题如 "AC")
-      <textarea id="examKey" rows="3" placeholder='["A","B","T",...]'></textarea>
+    <label>客观题参考答案(可留空后补;JSON 数组如 ["A","T","AC",...];判断题用 T/F,多选题如 "AC";空位填 "" 表示该题不判分)
+      <textarea id="examKey" rows="3" placeholder='["A","B","T",...] 或留空(考试详情可后补)'></textarea>
     </label>
     <button class="secondary" onclick="bankKey()">⇩ 从题库带出客观题答案</button>
     <span class="hint">按版式题序生成;未从题库插入的题为 ?,请手工补齐后使用(会覆盖上面文本框)</span>
@@ -139,8 +139,8 @@
     <label>二值化方式
       <select id="threshold"><option value="otsu">全局 Otsu(常规扫描)</option><option value="adaptive">局部自适应(阴影/翻拍)</option></select>
     </label>
-    <label>整卷扫描件(可多选;多页版式每名学生连续上传全部页,按份扫描的自然顺序即可)
-      <input id="examImages" type="file" accept="image/png,image/jpeg" multiple>
+    <label>整卷扫描件(可选;现在不传=先建档,考后到教师工作台「考试详情 → 扫描上传」续传;支持 PNG/JPG/多页 PDF)
+      <input id="examImages" type="file" accept="image/png,image/jpeg,application/pdf" multiple>
     </label>
     <button class="primary" id="createExam">创建考试并切片</button>
     <p class="hint">也可在<a href="/teacher.html" target="_blank">教师工作台 → 新建考试</a>创建(版式已自动同步)。</p>
@@ -384,9 +384,16 @@ $("createExam").onclick = async () => {
   $("examMsg").className = "err"; $("examMsg").textContent = "";
   try {
     const layout = JSON.parse($("examLayout").value);
-    const key = JSON.parse($("examKey").value);
+    // 与工作台「新建考试」同口径:答案与扫描件都可后补(创建即建档),
+    // 扫描件支持 PNG/JPG/PDF,考后到教师工作台「考试详情」批量上传。
+    let key = [];
+    const keyRaw = $("examKey").value.trim();
+    if (keyRaw) {
+      try { key = JSON.parse(keyRaw); } catch (_) { throw new Error("参考答案不是合法 JSON 数组(可留空后补,如 [\"A\",\"B\",\"T\"]"); }
+    } else {
+      key = new Array((layout.questions || []).length).fill("");
+    }
     const files = $("examImages").files;
-    if (!files.length) throw new Error("请选择至少一张整卷扫描件");
     const fd = new FormData();
     fd.append("layout", JSON.stringify(layout));
     fd.append("key", JSON.stringify(key));
@@ -399,7 +406,7 @@ $("createExam").onclick = async () => {
     const j = await r.json();
     if (!r.ok) throw new Error(j.error);
     $("examMsg").className = "ok";
-    $("examMsg").textContent = `考试 ${j.id} 已创建:${j.students} 卷,客观 ${j.objectiveCount} 题,主观 ${j.subjectiveCount} 题。`;
+    $("examMsg").textContent = `考试 ${j.id} 已创建(${j.stageLabel}):${j.students} 卷,客观 ${j.objectiveCount} 题,主观 ${j.subjectiveCount} 题。后续到教师工作台「考试详情」上传扫描件/补答案。`;
     refreshExams();
   } catch (e) { $("examMsg").textContent = e.message; }
 };
@@ -428,7 +435,10 @@ async function refreshExams() {
 async function delExam(id) {
   if (!confirm(`删除考试 ${id} 及其全部数据?此操作不可恢复。`)) return;
   const r = await fetch(`/api/v1/exams/${id}`, { method: "DELETE" });
-  if (r.ok) refreshExams();
+  if (r.ok) { refreshExams(); return; }
+  let err = `删除失败(HTTP ${r.status})`;
+  try { err = (await r.json()).error || err; } catch (_) {}
+  alert(err + (r.status === 403 ? "(仅管理员/年级组长可删除;教师请到工作台操作)" : ""));
 }
 </script>
 </body>

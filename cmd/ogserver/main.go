@@ -137,6 +137,8 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	mux.HandleFunc("GET /api/v1/exams/{id}/cards.pdf", staff(withStore(handleExamCardsPDF)))             // AB 卷个性化出卡(卷种点+复合码)
 	mux.HandleFunc("POST /api/v1/exams/{id}/task-due", staff(withStore(handleTaskDue)))                  // 任务截止时间
 	mux.HandleFunc("POST /api/v1/exams/{id}/appeals/{n}/resolve", staff(withStore(handleResolveAppeal))) // 裁决复核申请
+	mux.HandleFunc("POST /api/v1/exams/{id}/results/{student}/ack", staff(withStore(handleSheetAck)))    // 残卷告警人工接受/撤销
+	mux.HandleFunc("POST /api/v1/exams/{id}/flags/clear", staff(withStore(handleClearFlag)))             // 清除 ⚑ 待复核标记
 	mux.HandleFunc("GET /api/v1/workload", staff(func(w http.ResponseWriter, r *http.Request, u *auth.User) {
 		handleWorkload(w, r, store, authStore, u) // 阅卷工作量统计
 	}))
@@ -435,10 +437,11 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 	// AB 卷(可选 layout2/key2/order2):B 卷客观题序可打乱,主观题区必须与 A 一致;
 	// 卷种点 + 复合码(考试短号+卷种位+考号)自动识别,作答入库即归一为规范题号。
 	var (
-		layoutB     *card.Layout
-		keyBCanon   []string
-		orderB      []int
-		ab          *abSupport
+		layoutB   *card.Layout
+		keyBCanon []string
+		orderB    []int
+		ab        *abSupport
+		shortID   string
 	)
 	if lv2 := strings.TrimSpace(r.FormValue("layout2")); lv2 != "" {
 		var lb card.Layout
@@ -485,7 +488,8 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 			return
 		}
 		sheet, layoutB, keyBCanon = sheetA, &lb, canon
-		ab = &abSupport{hasB: true, orderB: orderB, shortID: ""} // ShortID 建考落库时生成;入库若带图,码核对在补传/下次批生效
+		shortID = store.NextShortID() // 建考入库前预发:复合码「考试短号核对」对本批扫描即生效
+		ab = &abSupport{hasB: true, orderB: orderB, shortID: shortID}
 	}
 
 	// 多页版式:主观题自动分页,每生 P 页连续上传,逐页判读后合并
@@ -539,7 +543,7 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		st = parsed
 	}
 
-	markDuplicateRegs(nil, results) // 批内重答检测(同考号二次上传 → 告警进异常清单)
+	markDuplicateRegs(nil, nil, results) // 批内重答检测(同考号二次上传 → 告警进异常清单)
 	session := strings.TrimSpace(r.FormValue("session"))
 	if session != "" && !store.School.HasSession(session) {
 		httpError(w, http.StatusBadRequest, fmt.Errorf("场次 %q 不在全校场次表中(先维护场次表)", session))
@@ -553,7 +557,7 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		ExamType:  strings.TrimSpace(r.FormValue("examType")),
 		ExamGroup: strings.TrimSpace(r.FormValue("examGroup")),
 		Session:   session,
-		LayoutB:   layoutB, KeyB: keyBCanon, OrderB: orderB,
+		LayoutB:   layoutB, KeyB: keyBCanon, OrderB: orderB, ShortID: shortID,
 	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err)
@@ -611,13 +615,25 @@ func failSummary(failed []scanFail) string {
 
 // markDuplicateRegs 重答检测:同一考号再次出现(批内或与存量)不阻塞流程,
 // 但给后到的卷打「疑似重答」告警,进考试详情的异常清单由人工裁决。
-func markDuplicateRegs(existing []*omr.Result, batch []*omr.Result) {
+// 存量考号取 AssignedReg(含人工指派)——异常卷被指派为 X 后,该生真卷再扫进来也能判重。
+func markDuplicateRegs(ex *Exam, existing []*omr.Result, batch []*omr.Result) {
 	seen := map[string]int{} // 考号 → 首次出现的卷号(1-based)
-	for i, r := range existing {
+	regOfExisting := func(i int) string {
+		if ex != nil {
+			return ex.AssignedReg(i + 1)
+		}
+		if r := existing[i]; r != nil && r.RegValid {
+			return r.RegNumber
+		}
+		return ""
+	}
+	for i := range existing {
 		// 作废卷对外语义是"不存在":不计入存量,否则重扫替换后再补传会误报重答、且告警指向死卷
-		if r != nil && !r.Voided && r.RegValid && r.RegNumber != "" {
-			if _, dup := seen[r.RegNumber]; !dup {
-				seen[r.RegNumber] = i + 1
+		if existing[i] != nil && !existing[i].Voided {
+			if reg := regOfExisting(i); reg != "" {
+				if _, dup := seen[reg]; !dup {
+					seen[reg] = i + 1
+				}
 			}
 		}
 	}
@@ -655,6 +671,9 @@ func handleListExams(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		Warnings   int    `json:"warnings"`
 		Ungraded   int    `json:"ungraded"`
 		Total      int    `json:"total"`
+		Dirty      bool   `json:"dirty"`             // 发布后数据有变更(需重新发布收口)
+		Appeals    int    `json:"appeals,omitempty"` // 待处理复核申请数(列表角标)
+		Flagged    int    `json:"flagged,omitempty"` // ⚑ 待复核数(列表角标)
 	}
 	out := []summary{} // 空列表也返回 [],避免 null 使前端 .map/.forOf 崩溃
 	for _, ex := range store.List() {
@@ -662,6 +681,12 @@ func handleListExams(w http.ResponseWriter, r *http.Request, store *Store, u *au
 			continue // 学科教师只看任教班级+学科的考试
 		}
 		stage := examStage(ex)
+		pending := 0
+		for _, a := range ex.Appeals {
+			if a.Status == "open" {
+				pending++
+			}
+		}
 		out = append(out, summary{
 			ID: ex.ID, CreatedAt: ex.CreatedAt.Format("2006-01-02 15:04"), CreatedBy: ex.CreatedBy,
 			Subject: ex.Subject, ExamDate: ex.ExamDate, Term: ex.Term, ExamType: ex.ExamType, ExamGroup: ex.ExamGroup,
@@ -670,6 +695,7 @@ func handleListExams(w http.ResponseWriter, r *http.Request, store *Store, u *au
 			Published: ex.Published, Mine: ex.CreatedBy == u.Username,
 			Stage: stage.Stage, StageLabel: stage.Label,
 			Expected: stage.Expected, Warnings: stage.Warnings, Ungraded: stage.Ungraded, Total: stage.Total,
+			Dirty: stage.Dirty, Appeals: pending, Flagged: stage.Flagged,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -704,20 +730,23 @@ type examDetail struct {
 	Roster     []rosterRow           `json:"roster"`     // 名册(缺扫名单/班级口径展示)
 
 	// 考试元数据 + 卷生命周期 + 复核申请
-	ExamDate   string       `json:"examDate,omitempty"`
-	Term       string       `json:"term,omitempty"`
-	ExamType   string       `json:"examType,omitempty"`
-	ExamGroup  string       `json:"examGroup,omitempty"`
-	Session    string       `json:"session,omitempty"`      // 场次(监考冲突检测依据)
-	Sessions   []SessionDef `json:"sessions"`               // 全校场次表(详情页场次下拉选项)
-	Anonymous  bool         `json:"anonymous,omitempty"`    // 匿名阅卷开关
-	ManualMode bool         `json:"manualMode,omitempty"`   // 手工成绩考试(免版式建考)
-	ManualFull float64      `json:"manualFull,omitempty"`   // 手工成绩满分
-	Duplicates [][]int      `json:"duplicates"`             // 同考号多份卷(每组卷号列表,人工裁决保留哪份)
-	VoidedRows []absentInfo `json:"voidedRows"`             // 已作废卷(可恢复)
-	Appeals    []appealView `json:"appeals"`                // 成绩复核申请(发布后学生发起)
-	HasB       bool         `json:"hasB,omitempty"`         // AB 卷考试(配置了 B 卷版式)
-	ShortID    string       `json:"shortId,omitempty"`      // 考试短号(复合码前缀,个性化出卡用)
+	ExamDate   string            `json:"examDate,omitempty"`
+	Term       string            `json:"term,omitempty"`
+	ExamType   string            `json:"examType,omitempty"`
+	ExamGroup  string            `json:"examGroup,omitempty"`
+	Session    string            `json:"session,omitempty"`    // 场次(监考冲突检测依据)
+	Sessions   []SessionDef      `json:"sessions"`             // 全校场次表(详情页场次下拉选项)
+	Anonymous  bool              `json:"anonymous,omitempty"`  // 匿名阅卷开关
+	ManualMode bool              `json:"manualMode,omitempty"` // 手工成绩考试(免版式建考)
+	ManualFull float64           `json:"manualFull,omitempty"` // 手工成绩满分
+	Duplicates [][]int           `json:"duplicates"`           // 同考号多份卷(每组卷号列表,人工裁决保留哪份)
+	VoidedRows []absentInfo      `json:"voidedRows"`           // 已作废卷(可恢复)
+	Appeals    []appealView      `json:"appeals"`              // 成绩复核申请(发布后学生发起)
+	HasB       bool              `json:"hasB,omitempty"`       // AB 卷考试(配置了 B 卷版式)
+	ShortID    string            `json:"shortId,omitempty"`    // 考试短号(复合码前缀,个性化出卡用)
+	KeyB       []string          `json:"keyB,omitempty"`       // B 卷客观题参考答案(规范题号序;详情页后补出口)
+	OrderB     []int             `json:"orderB,omitempty"`     // B 卷题序对照(卡面第 i 题 → 规范题号)
+	RegOf      map[string]string `json:"regOf"`                // 卷号 → 考号(重复卷表头等前端推导用)
 }
 
 // appealView 是复核申请的一行(n 为 1-based 序号,裁决接口用)。
@@ -743,7 +772,8 @@ type sheetWarning struct {
 	Student  int      `json:"student"` // 卷号(1-based)
 	Reg      string   `json:"reg,omitempty"`
 	Texts    []string `json:"texts"`
-	Resolved bool     `json:"resolved"` // 已人工裁决(考号指派/缺考/卷种指派),前端置灰归档
+	Resolved bool     `json:"resolved"`          // 已人工裁决(考号指派/缺考/卷种指派/接受残卷),前端置灰归档
+	Soft     bool     `json:"soft"`              // 信息类告警(系统已自愈/已有判分口径):展示但不算待裁决
 	Variant  string   `json:"variant,omitempty"` // 卷种(AB 卷):A/B;卷种判不出为空
 }
 
@@ -782,20 +812,23 @@ func handleExamDetail(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		Published: ex.Published,
 		CanEdit:   u.Role == auth.RoleAdmin || u.Role == auth.RoleLeader || ex.CreatedBy == u.Username,
 		ExamDate:  ex.ExamDate, Term: ex.Term, ExamType: ex.ExamType, ExamGroup: ex.ExamGroup,
-		Session:   ex.Session, Sessions: store.School.SessionsSnapshot(),
+		Session: ex.Session, Sessions: store.School.SessionsSnapshot(),
 		Anonymous: ex.Anonymous, ManualMode: ex.ManualFull > 0, ManualFull: ex.ManualFull,
 		Duplicates: ex.DupGroups(),
 		VoidedRows: []absentInfo{},
 		Appeals:    []appealView{},
 		HasB:       ex.LayoutB != nil,
 		ShortID:    ex.ShortID,
+		KeyB:       ex.KeyB,
+		OrderB:     ex.OrderB,
+		RegOf:      map[string]string{},
 	}
 	for _, su := range authStore.List() {
 		if su.Role == auth.RoleTeacher || su.Role == auth.RoleLeader || su.Role == auth.RoleAdmin {
 			d.Staff = append(d.Staff, staffInfo{su.Username, su.DisplayName, string(su.Role)})
 		}
 	}
-	active := activeCount(ex)
+	active := gradableCount(ex) // 阅卷进度口径:缺考占位卷不进分母(没有需要评的作答)
 	for qi := range ex.Layout.Subjectives {
 		p := questionProgress{Question: qi + 1, Total: active}
 		if qi < len(ex.Layout.Subjectives) {
@@ -808,7 +841,7 @@ func handleExamDetail(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		}
 		for si := range ex.Results {
 			res := ex.Results[si]
-			if res == nil || res.Voided {
+			if res == nil || res.Voided || res.Absent {
 				continue
 			}
 			if subjectiveGraded(ex, si+1, qi+1) {
@@ -832,13 +865,21 @@ func handleExamDetail(w http.ResponseWriter, r *http.Request, store *Store, u *a
 			d.Absent = append(d.Absent, absentInfo{Student: si + 1, Reg: ex.AssignedReg(si + 1)})
 		}
 		if len(res.Warnings) > 0 {
-			d.Warnings = append(d.Warnings, sheetWarning{Student: si + 1, Reg: ex.AssignedReg(si + 1), Texts: res.Warnings, Resolved: sheetResolved(ex, si+1), Variant: res.Variant})
+			// 信息类告警(系统已自愈:码修复考号/多涂已判/浅涂)展示但不计入待裁决,不挡发布
+			d.Warnings = append(d.Warnings, sheetWarning{Student: si + 1, Reg: ex.AssignedReg(si + 1), Texts: res.Warnings,
+				Resolved: sheetResolved(ex, si+1) || !hasBlockingWarning(res.Warnings),
+				Soft:     !hasBlockingWarning(res.Warnings), Variant: res.Variant})
 		}
 	}
 	for i, a := range ex.Appeals {
 		av := appealView{N: i + 1, Time: a.Time.Format("2006-01-02 15:04"), By: a.By, Reason: a.Reason, Status: a.Status, Reply: a.Reply}
 		av.Name = nameOfReg(ex, a.By)
 		d.Appeals = append(d.Appeals, av)
+	}
+	for i := range ex.Results {
+		if ex.Results[i] != nil {
+			d.RegOf[strconv.Itoa(i+1)] = ex.AssignedReg(i + 1)
+		}
 	}
 	d.Stage = examStage(ex)
 	d.Flagged = flaggedQueue(ex)
@@ -908,6 +949,9 @@ func handleSlices(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 	for si := range ex.Results {
 		if ex.Results[si] == nil || ex.Results[si].Voided {
 			continue // 教师视图下不可见学生 / 作废卷不进阅卷队列
+		}
+		if ex.Results[si].Absent {
+			continue // 缺考占位卷无作答可评:不进队列,也无需打分解锁阶段
 		}
 		it := item{Student: si + 1, URL: fmt.Sprintf("/api/v1/exams/%s/slice/%d/%d", ex.ID, si+1, q)}
 		if si < len(ex.Results) {
@@ -989,7 +1033,8 @@ func pad2(s string) string {
 }
 
 // handleSetGrade 写入一条主观题评分(含手写批注笔迹);part>0 时为小问评分(版式 v3)。
-// ver>0 启用乐观锁(他人先改则 409);分数越界(负分/超满分)服务端拒绝。
+// 乐观锁:目标已评过时必须携带匹配 ver(他人先改则 409);分数越界(负分/超满分)服务端拒绝。
+// 响应携带写入后的新版本号,前端回填本地 ver(后续批注/改分/标记才能带上)。
 func handleSetGrade(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	var req struct {
 		ExamID   string         `json:"examId"`
@@ -1000,7 +1045,7 @@ func handleSetGrade(w http.ResponseWriter, r *http.Request, store *Store, u *aut
 		Mark     string         `json:"mark"`
 		Graded   *bool          `json:"graded"`
 		Ink      []score.Stroke `json:"ink"`
-		Ver      int            `json:"ver"` // 乐观锁版本号(读到的评分 ver;0=不校验,兼容旧调用方)
+		Ver      int            `json:"ver"` // 乐观锁版本号(读到的评分 ver)
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, err)
@@ -1011,16 +1056,24 @@ func handleSetGrade(w http.ResponseWriter, r *http.Request, store *Store, u *aut
 		graded = *req.Graded
 	}
 	// 阅卷走可见性门禁(全量,不按班级过滤)
-	if ex, ok := store.Get(req.ExamID); !ok || !canOpenExam(u, ex, store.School) {
+	ex, ok := store.Get(req.ExamID)
+	if !ok {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
+	if !canOpenExam(u, ex, store.School) {
+		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在或无权访问该考试(不在你的任教/管辖范围)"))
+		return
+	}
 	g := score.Grade{Score: req.Score, Mark: req.Mark, Graded: graded, Ink: req.Ink}
-	var err error
+	var (
+		newVer int
+		err    error
+	)
 	if req.Part > 0 {
-		err = store.SetGradePart(req.ExamID, req.Student, req.Question, req.Part, g, u.Username, req.Ver)
+		newVer, err = store.SetGradePart(req.ExamID, req.Student, req.Question, req.Part, g, u.Username, req.Ver)
 	} else {
-		err = store.SetGrade(req.ExamID, req.Student, req.Question, g, u.Username, req.Ver)
+		newVer, err = store.SetGrade(req.ExamID, req.Student, req.Question, g, u.Username, req.Ver)
 	}
 	if err != nil {
 		var conflict *ConflictError
@@ -1034,7 +1087,7 @@ func handleSetGrade(w http.ResponseWriter, r *http.Request, store *Store, u *aut
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "ver": newVer})
 }
 
 // subjectiveGraded 报告某生某道主观题是否完成评分(拆分小问时要求全部小问已阅)。

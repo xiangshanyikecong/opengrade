@@ -29,7 +29,9 @@ import (
 )
 
 // loadPageGroups 从 pages/ 目录装回某生的矫正图组(第 1 页 sNN.jpg,第 k>1 页 sNN_pKK.jpg;
-// 卷种指派重读用)。无图返回空(如手工补录卷)。
+// 卷种指派重读/跨批合并用)。无图返回空(如手工补录卷)。
+// 页号可能跳号(缺页残卷按真实页号命名,如只有第 1、3 页):逐号探测到 60,不做
+// "遇缺即停"——否则缺第 2 页的卷会把第 3 页也丢掉。返回按页号升序的图组。
 func (s *Store) loadPageGroups(id string, student int) []*image.Gray {
 	dir := s.PageDir(id)
 	var out []*image.Gray
@@ -44,10 +46,8 @@ func (s *Store) loadPageGroups(id string, student int) []*image.Gray {
 	if !appendIf(fmt.Sprintf("s%02d.jpg", student)) {
 		return nil
 	}
-	for k := 2; ; k++ {
-		if !appendIf(fmt.Sprintf("s%02d_p%02d.jpg", student, k)) {
-			break
-		}
+	for k := 2; k <= 60; k++ {
+		appendIf(fmt.Sprintf("s%02d_p%02d.jpg", student, k))
 	}
 	return out
 }
@@ -199,8 +199,12 @@ func (ab *abSupport) variantBook(book []*card.Sheet, variant string, k int) *car
 // 清除暂扣标记;卷种本来就明确的卷也允许改派(改派即重读)。
 func handleAssignVariant(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, ok := store.Get(r.PathValue("id"))
-	if !ok || !canOpenExam(u, ex, store.School) {
+	if !ok {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
+		return
+	}
+	if !canOpenExam(u, ex, store.School) {
+		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在或无权访问该考试(不在你的任教/管辖范围)"))
 		return
 	}
 	if !canEditExam(u, ex) {

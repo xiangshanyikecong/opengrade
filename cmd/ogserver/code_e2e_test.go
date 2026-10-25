@@ -129,12 +129,14 @@ func TestCodeChannelsE2E(t *testing.T) {
 				}
 			}
 			// 发布后学生端考号契约:s0001(考号 00000001)能在本人列表看到这场考试
+			gradeAllForPublish(t, teacher, id) // 发布门禁:主观题评完
 			teacher.json("POST", "/api/v1/exams/"+id+"/publish", map[string]any{"published": true}, http.StatusOK)
 			stu := newClient(t, ts.URL)
 			stu.login("s0001", "student123")
 			found := false
-			for _, e := range stu.jsonArr("GET", "/api/v1/student/exams", http.StatusOK) {
-				if e["id"] == id {
+			lr := stu.json("GET", "/api/v1/student/exams", nil, http.StatusOK)
+			for _, e := range lr["exams"].([]any) {
+				if e.(map[string]any)["id"] == id {
 					found = true
 				}
 			}

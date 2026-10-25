@@ -183,7 +183,12 @@ async function jpost(url, body) {
 async function init() {
   if (!await OG.init()) return;
   if (!examId) { document.body.innerHTML = "<p style='padding:40px'>缺少 ?exam= 参数。<a href='/'>返回设计器</a></p>"; return; }
-  meta = await jget(`/api/v1/exams/${examId}`);
+  try {
+    meta = await jget(`/api/v1/exams/${examId}`);
+  } catch (e) {
+    document.querySelector("main").innerHTML = `<p style='padding:40px'>考试加载失败:${e.message}<br><a href='/teacher.html'>返回工作台</a></p>`;
+    return;
+  }
   $("examMeta").textContent = `考试 ${examId} · ${meta.students} 份卷 · 客观 ${meta.objective.length} 题`;
   const sel = $("questionSel");
   sel.innerHTML = meta.subjective.map((s, i) => {
@@ -198,7 +203,9 @@ async function init() {
   const qDeep = +params.get("q") || 0;
   const studentDeep = +params.get("student") || 0;
   if (meta.subjective.length) {
-    loadQuestion(qDeep >= 1 && qDeep <= meta.subjective.length ? qDeep : 1);
+    const q = qDeep >= 1 && qDeep <= meta.subjective.length ? qDeep : 1;
+    await loadQuestion(q);          // 必须等切片列表就绪再落位,否则 focusStudent 找的是空数组
+    sel.value = String(q);          // 深链回填题目下拉(否则信息行是第 N 题、下拉仍显示第 1 题)
     if (studentDeep) focusStudent(studentDeep);
   } else document.body.innerHTML = "<p style='padding:40px'>该考试没有主观题</p>";
   $("reportLink").onclick = async e => { e.preventDefault(); showReport(); };
@@ -223,16 +230,26 @@ async function init() {
   window.addEventListener("resize", syncCanvas);
 }
 
-async function loadQuestion(q) {
+async function loadQuestion(q, keepCur) {
+  let sl;
+  try {
+    sl = await jget(`/api/v1/exams/${examId}/slices?q=${q}&grading=1`); // 阅卷不受班级过滤(跨班职责)
+  } catch (e) {
+    toast("题目加载失败:" + e.message, 4200);
+    return; // qIndex/slices 保持旧值:加载失败时画面还是旧题,绝不能把分写到新题号下
+  }
+  const prevStudent = keepCur && slices[cur] ? slices[cur].student : 0;
   qIndex = q;
-  slices = await jget(`/api/v1/exams/${examId}/slices?q=${q}&grading=1`); // 阅卷不受班级过滤(跨班职责)
+  slices = sl;
   const spec = meta.subjective[q - 1];
   specParts = spec.parts || [];
   partSel = 0;
   qMax = spec.score;
   buildScoreBtns();
-  // 落位:第一份未评卷(评卷惯例;全评完落第 1 卷)
-  cur = Math.max(0, slices.findIndex(x => !x.graded));
+  // 落位:冲突重载保持原卷;否则第一份未评卷(评卷惯例;全评完落第 1 卷)
+  let i = prevStudent ? slices.findIndex(x => x.student === prevStudent) : -1;
+  if (i < 0) i = Math.max(0, slices.findIndex(x => !x.graded));
+  cur = i;
   preload(Math.min(8, slices.length));
   render();
 }
@@ -360,7 +377,19 @@ function preload(count) {
 }
 
 function render() {
-  if (!slices.length) return;
+  if (!slices.length) { // 空态:按班范围无学生/全部作废/全部缺考 —— 不能保持上一题的旧图冒充本题
+    $("sliceImg").removeAttribute("src");
+    $("sliceImg").src = "data:image/svg+xml;utf8," + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="320"><rect width="100%" height="100%" fill="#f4f6f8"/><text x="50%" y="48%" font-size="30" fill="#8a94a3" text-anchor="middle" font-family="sans-serif">本题暂无可阅卷</text><text x="50%" y="62%" font-size="20" fill="#b6bec9" text-anchor="middle" font-family="sans-serif">可能已全部评完、按班分配范围内没有学生或缺考</text></svg>'
+    );
+    $("studentInfo").textContent = "本题没有可阅的卷";
+    $("progressBar").style.width = "100%";
+    $("progressText").textContent = "本题已阅 0/0";
+    $("questionStatus").textContent = "本题无可阅卷";
+    $("assignBox").hidden = true;
+    $("partBox").hidden = true;
+    return;
+  }
   const s = slices[cur];
   // 手工补录卷没有切片原图:占位提示,仍可键盘打分
   $("sliceImg").src = s.missing ? "data:image/svg+xml;utf8," + encodeURIComponent(
@@ -429,9 +458,13 @@ async function loadAssign(student) {
 }
 async function assignReg(reg) {
   const s = slices[cur];
-  await jpost("/api/v1/assign", { examId, student: s.student, reg });
-  s.reg = reg; s.regValid = true;
-  render();
+  try {
+    await jpost("/api/v1/assign", { examId, student: s.student, reg });
+    s.reg = reg; s.regValid = true;
+    render();
+  } catch (e) {
+    toast("指派失败:" + e.message, 4200); // 失败不置"已指派"假象(如考号被占用/不在名册)
+  }
 }
 
 /* —— 画布同步与手写批注 —— */
@@ -529,18 +562,17 @@ async function setScore(score) {
   const cap = curPartMax();
   if (score < 0 || score > cap + 1e-9) { toast(`分数 ${score} 超出满分 ${cap},未保存`); return; }
   score = Math.round(score * 100) / 100;
-  const payload = { examId, student: s.student, question: qIndex, score, mark: s.mark || "", graded: true, ink: s.ink || [] };
-  const ver = gradeVer();
-  if (ver > 0) payload.ver = ver; // 乐观锁:他人先改则 409
+  const payload = { examId, student: s.student, question: qIndex, score, mark: s.mark || "", graded: true, ink: s.ink || [], ver: gradeVer() };
   try {
     if (specParts.length) {
       payload.part = partSel + 1;
-      await jpost("/api/v1/grades", payload);
+      const r = await jpost("/api/v1/grades", payload);
       lastScore = score;
       const st = partStateOf(s);
       st[partSel].score = score;
       st[partSel].graded = true;
-      st[partSel].ver = ver + 1;
+      st[partSel].ver = (r && r.ver) || gradeVer() + 1;
+      if (s.mark === "flag") toast("已改分;复核完成可再按 X 清除 ⚑(队列才会排空)", 3600);
       const allPartsDone = st.every(x => x.graded);
       if (partSel < specParts.length - 1) {
         partSel++; // 同卷内自动跳下一小问
@@ -559,9 +591,10 @@ async function setScore(score) {
       render();
       return;
     }
-    await jpost("/api/v1/grades", payload);
+    const r = await jpost("/api/v1/grades", payload);
     lastScore = score;
-    Object.assign(s, { graded: true, score, ver: ver + 1 });
+    Object.assign(s, { graded: true, score, ver: (r && r.ver) || gradeVer() + 1 });
+    if (s.mark === "flag") toast("已改分;复核完成可再按 X 清除 ⚑(队列才会排空)", 3600);
     if (autoAdvOn()) {
       if (!jumpNextUngraded()) await crossQuestionAdvance();
       return;
@@ -570,7 +603,7 @@ async function setScore(score) {
   } catch (e) {
     if (String(e.message).includes("刚被他人改过")) {
       toast("⚠ " + e.message, 4200);
-      await loadQuestion(qIndex); // 拉回服务器最新评分状态
+      await loadQuestion(qIndex, true); // 拉回服务器最新评分状态,并保持在当前这份卷上
     } else {
       toast("保存失败:" + e.message, 4200);
     }
@@ -578,33 +611,50 @@ async function setScore(score) {
 }
 async function saveGrade() {
   const s = slices[cur];
-  if (specParts.length) { // 笔迹/标注同步写进每个小问(读取端取第 1 问)
-    const st = partStateOf(s);
-    for (let i = 0; i < specParts.length; i++) {
-      await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, part: i + 1, score: st[i].score, mark: s.mark || "", graded: st[i].graded, ink: s.ink || [] });
+  try {
+    if (specParts.length) { // 笔迹/标注同步写进每个小问(读取端取第 1 问);ver 逐问携带防旁路覆盖
+      const st = partStateOf(s);
+      for (let i = 0; i < specParts.length; i++) {
+        const r = await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, part: i + 1, score: st[i].score, mark: s.mark || "", graded: st[i].graded, ink: s.ink || [], ver: st[i].ver || 0 });
+        if (r && r.ver) st[i].ver = r.ver;
+      }
+      return;
     }
-    return;
+    const r = await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score: s.score, mark: s.mark || "", graded: s.graded, ink: s.ink || [], ver: s.ver || 0 });
+    if (r && r.ver) s.ver = r.ver;
+  } catch (e) {
+    toast("批注保存失败:" + e.message, 4200);
+    if (String(e.message).includes("刚被他人改过")) await loadQuestion(qIndex, true);
   }
-  await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score: s.score, mark: s.mark || "", graded: s.graded, ink: s.ink || [] });
 }
 async function setMark(mark) {
   const s = slices[cur];
-  const nextMark = s.mark === mark ? "" : mark;
-  s.mark = nextMark;
-  if (specParts.length) {
-    const st = partStateOf(s);
-    for (let i = 0; i < specParts.length; i++) {
-      await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, part: i + 1, score: st[i].score, mark: nextMark, graded: st[i].graded, ink: s.ink || [] });
+  const prevMark = s.mark;
+  const nextMark = prevMark === mark ? "" : mark;
+  s.mark = nextMark; // 先翻转本地高亮;失败即还原,绝不给"已标记"的假象
+  try {
+    if (specParts.length) {
+      const st = partStateOf(s);
+      for (let i = 0; i < specParts.length; i++) {
+        const r = await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, part: i + 1, score: st[i].score, mark: nextMark, graded: st[i].graded, ink: s.ink || [], ver: st[i].ver || 0 });
+        if (r && r.ver) st[i].ver = r.ver;
+      }
+      render();
+      return;
     }
+    const r = await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score: s.score, mark: nextMark, graded: s.graded, ink: s.ink || [], ver: s.ver || 0 });
+    if (r && r.ver) s.ver = r.ver;
     render();
-    return;
+  } catch (e) {
+    s.mark = prevMark;
+    toast("标记保存失败:" + e.message, 4200);
+    if (String(e.message).includes("刚被他人改过")) await loadQuestion(qIndex, true);
+    else render();
   }
-  await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score: s.score, mark: nextMark, graded: s.graded, ink: s.ink || [] });
-  render();
 }
 
-function next() { if (cur < slices.length - 1) { cur++; render(); } }
-function prev() { if (cur > 0) { cur--; render(); } }
+function next() { if (cur < slices.length - 1) { cur++; render(); } else toast("已是最后一份(Enter/→ 到头)"); }
+function prev() { if (cur > 0) { cur--; render(); } else toast("已是第一份"); }
 
 async function showReport() {
   const rep = await jget(`/api/v1/exams/${examId}/report`);
@@ -619,10 +669,11 @@ async function showReport() {
   }
   html += `</table>
   <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+    ${anon ? `<span class="hint">匿名阅卷中:导出(含姓名/考号)已隐藏,评完对分请到工作台</span>` : `
     <a href="/api/v1/exams/${examId}/export.xlsx">成绩册 xlsx</a>
     <a href="/api/v1/exams/${examId}/export.csv">csv</a>
     <a href="/api/v1/exams/${examId}/review.pptx">讲评课件 pptx</a>
-    <a href="/api/v1/exams/${examId}/export.zip">全量数据包 zip</a>
+    <a href="/api/v1/exams/${examId}/export.zip">全量数据包 zip</a>`}
   </div>`;
   box.innerHTML = html;
 }

@@ -48,7 +48,8 @@ func readPageScan(book []*card.Sheet, k int, img image.Image, opt omr.Options) (
 // mergePageScans 把一名学生的多页判读合并为一条 Result。
 func mergePageScans(pages []pageScan) *omr.Result {
 	if len(pages) == 1 {
-		return pages[0].res
+		cp := *pages[0].res // 副本:组级告警(缺页等)要挂在合并结果上,不能写进逐页 res
+		return &cp          // (逐页 res 是跨批合并的素材,被污染会把已消解的告警带进新卷)
 	}
 	primary := pages[0]
 	for _, p := range pages {

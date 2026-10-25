@@ -96,8 +96,12 @@ func createManualExam(w http.ResponseWriter, r *http.Request, store *Store, u *a
 // reg 不存在时报错列出;分数越界拒绝;absent 可选(登记缺考)。逐条返回结果。
 func handleManualScores(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, ok := store.Get(r.PathValue("id"))
-	if !ok || !canOpenExam(u, ex, store.School) {
+	if !ok {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
+		return
+	}
+	if !canOpenExam(u, ex, store.School) {
+		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在或无权访问该考试(不在你的任教/管辖范围)"))
 		return
 	}
 	if ex.ManualFull <= 0 {
@@ -141,7 +145,12 @@ func handleManualScores(w http.ResponseWriter, r *http.Request, store *Store, u 
 		}
 		if sc.Score != nil {
 			g := score.Grade{Score: *sc.Score, Graded: true}
-			if err := store.SetGrade(ex.ID, idx, manualScoreQuestion, g, u.Username, 0); err != nil {
+			// 直录改分是常态:携带当前版本号通过乐观锁(真正的并发互写仍会 409 提示)
+			ver := 0
+			if old, exists := ex.Grades[score.GradeKey(idx, manualScoreQuestion)]; exists && old.Graded {
+				ver = old.Ver
+			}
+			if _, err := store.SetGrade(ex.ID, idx, manualScoreQuestion, g, u.Username, ver); err != nil {
 				res.Err = err.Error()
 				out = append(out, res)
 				continue

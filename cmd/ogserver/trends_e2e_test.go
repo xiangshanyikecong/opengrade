@@ -161,13 +161,15 @@ func TestTrendsAndSupplements(t *testing.T) {
 		if d["manual"].(float64) != 1 {
 			t.Fatalf("补录卷计数 = %v", d["manual"])
 		}
-		// 缺考卷无切片,阅卷列表应带 missing 占位
+		// 缺考占位卷不进阅卷队列(无需给幽灵卷打分解锁阶段):列表 = 4 份实卷
 		sl := teacher.jsonArr("GET", "/api/v1/exams/"+examA+"/slices?q=1&grading=1", http.StatusOK)
-		if len(sl) != 5 {
-			t.Fatalf("切片列表 = %d,期望 5(含缺考/补录卷)", len(sl))
+		if len(sl) != 4 {
+			t.Fatalf("切片列表 = %d,期望 4(缺考卷不进阅卷队列)", len(sl))
 		}
-		if sl[4]["missing"] != true {
-			t.Fatalf("第 5 卷(手工缺考)应标记 missing: %v", sl[4])
+		for _, it := range sl {
+			if it["student"].(float64) == 5 {
+				t.Fatal("缺考占位卷(第 5 卷)不应出现在阅卷队列")
+			}
 		}
 	})
 
@@ -244,10 +246,13 @@ func TestTrendsAndSupplements(t *testing.T) {
 
 	// ---------- 发布后学生端:列表/趋势/缺考视图 ----------
 	t.Run("学生端趋势与缺考视图", func(t *testing.T) {
+		gradeAllForPublish(t, admin, examA) // 发布门禁:主观题评完才能发布
+		gradeAllForPublish(t, admin, examB)
 		admin.json("POST", "/api/v1/exams/"+examA+"/publish", map[string]any{"published": true}, http.StatusOK)
 		admin.json("POST", "/api/v1/exams/"+examB+"/publish", map[string]any{"published": true}, http.StatusOK)
 
-		list := stu1.jsonArr("GET", "/api/v1/student/exams", http.StatusOK)
+		lr := stu1.json("GET", "/api/v1/student/exams", nil, http.StatusOK)
+		list := lr["exams"].([]any)
 		if len(list) != 2 {
 			t.Fatalf("s0001 应见两场考试: %d", len(list))
 		}
@@ -264,16 +269,21 @@ func TestTrendsAndSupplements(t *testing.T) {
 			t.Fatalf("学生端趋势应含班级均分对照: %v", p0)
 		}
 
-		// s0005:examA 缺考;examB 无卷(列表照常列出,found=false)
-		list5 := stu5.jsonArr("GET", "/api/v1/student/exams", http.StatusOK)
+		// s0005:examA 缺考;examB 无卷(不进列表,计入 unmatched 汇总 —— 不再逐条刷"未找到关联答卷")
+		lr5 := stu5.json("GET", "/api/v1/student/exams", nil, http.StatusOK)
+		list5 := lr5["exams"].([]any)
 		var examAItem map[string]any
 		for _, it := range list5 {
-			if it["id"] == examA {
-				examAItem = it
+			m := it.(map[string]any)
+			if m["id"] == examA {
+				examAItem = m
 			}
 		}
 		if examAItem == nil || examAItem["found"] != true || examAItem["absent"] != true {
 			t.Fatalf("s0005 应在 examA 显示缺考: %v", list5)
+		}
+		if lr5["unmatched"].(float64) < 1 {
+			t.Fatalf("examB 无卷应计入 unmatched 汇总: %v", lr5["unmatched"])
 		}
 		det := stu5.json("GET", "/api/v1/student/exams/"+examA, nil, http.StatusOK)
 		if det["absent"] != true {

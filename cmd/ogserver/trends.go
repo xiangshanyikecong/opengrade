@@ -159,7 +159,13 @@ func visibleExamsAsc(store *Store, u *auth.User, subject string) []*Exam {
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 { // 反转为升序
 		out[i], out[j] = out[j], out[i]
 	}
-	sort.SliceStable(out, func(i, j int) bool { // 同刻度并列打破,已升序序列不受影响
+	// 时间轴口径与年级总表一致:考试日期优先(未填用创建时间)。
+	// 只按创建时间排,补录建考(创建晚于考试日期)会让两个纵向视图的科目顺序互相矛盾。
+	sort.SliceStable(out, func(i, j int) bool {
+		di, dj := examDateOf(out[i]), examDateOf(out[j])
+		if di != dj {
+			return di < dj
+		}
 		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
 			return out[i].CreatedAt.Before(out[j].CreatedAt)
 		}
@@ -262,7 +268,7 @@ func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *
 			if class != "" && !l.Absent {
 				sameClass := make([]score.StudentLine, 0, rep.Count)
 				for _, ol := range rep.Students {
-					if classOfReg(ex, ol.RegNumber) == class {
+					if inClassOfReg(ex, ol.RegNumber, class) { // 走班双口径:排名池与均分口径一致(教学班也算)
 						sameClass = append(sameClass, ol)
 					}
 				}
@@ -321,11 +327,16 @@ func handleStudentTrends(w http.ResponseWriter, r *http.Request, store *Store, u
 		if line.Total > 0 {
 			pt.Rate = line.Score / line.Total
 		}
-		if u.Class != "" {
-			pt.ClassMean, _ = classMeanOf(ex, rep, u.Class)
+		// 班级口径:家长账号自身无班级,取该场名册中子女的班级(否则班级均分恒空、班级排名错位)
+		cls := u.Class
+		if cls == "" {
+			cls = classOfReg(ex, reg)
+		}
+		if cls != "" {
+			pt.ClassMean, _ = classMeanOf(ex, rep, cls)
 			sameClass := make([]score.StudentLine, 0, rep.Count)
 			for _, ol := range rep.Students {
-				if classOfReg(ex, ol.RegNumber) == u.Class {
+				if inClassOfReg(ex, ol.RegNumber, cls) {
 					sameClass = append(sameClass, ol)
 				}
 			}

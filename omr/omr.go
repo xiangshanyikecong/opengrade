@@ -50,6 +50,9 @@ type Result struct {
 	Manual    bool          `json:"manual,omitempty"` // 手工补录卷(漏扫/答题卡作废后补录,无扫描原图与切片)
 	Voided    bool          `json:"voided,omitempty"` // 作废卷(重扫替换/重复卷裁决后弃用的那张):不进报告与阅卷队列
 	PageNo    int           `json:"pageNo,omitempty"` // 页点判读出的页号(多页卡;0=单页卡/旧卡无页点)
+	// PageNos 是多页卡合并时逐页(按合并顺序)的页点页号;0=该页页号未知(旧数据/页点不可信)。
+	// 供跨批残卷合并、卷种重读按真实页号对版式,以及整卷图按页号落盘命名。
+	PageNos []int `json:"pageNos,omitempty"`
 
 	// AB 卷(卷种识别):卷种点为主、二维码复合码冗余佐证;两者都拿不到时由服务端挂"待人工指派"。
 	Variant     string `json:"variant,omitempty"`     // 卷种点判读结果:"A"/"B";非 AB 卡为空

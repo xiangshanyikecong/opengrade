@@ -45,6 +45,9 @@ func handleMyTasks(w http.ResponseWriter, r *http.Request, store *Store, school 
 			if ex.Tasks != nil && ex.Tasks[fmt.Sprintf("q%d", qi+1)] == u.Username {
 				graded := 0
 				for si := range ex.Results {
+					if ex.Results[si] == nil || ex.Results[si].Voided || ex.Results[si].Absent {
+						continue // 缺考占位卷不进任务口径
+					}
 					if subjectiveGraded(ex, si+1, qi+1) {
 						graded++
 					}
@@ -52,7 +55,7 @@ func handleMyTasks(w http.ResponseWriter, r *http.Request, store *Store, school 
 				it := base
 				it.Kind, it.Question = "question", qi+1
 				it.Label = fmt.Sprintf("第 %d 题(满分 %g)", objN+qi+1, ex.Layout.Subjectives[qi].Score)
-				it.Graded, it.Total = graded, activeCount(ex)
+				it.Graded, it.Total = graded, gradableCount(ex)
 				it.Due = ex.TaskDue[fmt.Sprintf("q%d", qi+1)]
 				items = append(items, it)
 			}
@@ -69,6 +72,10 @@ func handleMyTasks(w http.ResponseWriter, r *http.Request, store *Store, school 
 					byReg[st.Reg] = st.AllClasses()
 				}
 				for si := range ex.Results {
+					res := ex.Results[si]
+					if res == nil || res.Voided || res.Absent {
+						continue // 缺考占位卷不进任务口径
+					}
 					cls := byReg[ex.AssignedReg(si+1)]
 					if cls != nil && !overlaps(cls, []string{c}) {
 						continue // 名册覆盖但不是本班:不计入我的任务口径
@@ -88,13 +95,16 @@ func handleMyTasks(w http.ResponseWriter, r *http.Request, store *Store, school 
 				items = append(items, it)
 			}
 		}
-		// 我建的考试兜底:建卷人全程跟进 —— 可评(未评完)或可跟进(待扫/扫图中)都给入口
-		if ex.CreatedBy == u.Username && ((stage.Total > 0 && stage.Ungraded > 0) || stage.Stage == stageAwaiting || stage.Stage == stageScanning) {
+		// 我建的考试兜底:建卷人全程跟进 —— 可评(未评完)、待扫/扫图中、异常待裁决都给入口
+		if ex.CreatedBy == u.Username && ((stage.Total > 0 && stage.Ungraded > 0) ||
+			stage.Stage == stageAwaiting || stage.Stage == stageScanning || stage.Stage == stageAnomaly) {
 			it := base
 			it.Kind = "mine"
 			switch {
 			case stage.Total > 0 && stage.Ungraded > 0:
 				it.Label = "我创建的考试(未分完/未评完)"
+			case stage.Stage == stageAnomaly:
+				it.Label = fmt.Sprintf("我创建的考试(异常待处理 %d:重答/空白卡/残卷待裁决)", stage.Warnings)
 			case stage.Stage == stageAwaiting:
 				it.Label = "我创建的考试(待扫描:考后上传扫描件)"
 			default:

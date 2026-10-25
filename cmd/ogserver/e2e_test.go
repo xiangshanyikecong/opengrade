@@ -179,6 +179,39 @@ func buildFixture(t *testing.T) *fixture {
 	return f
 }
 
+// gradeAllForPublish 把一场考试的全部(未评)主观切片按 0 分评完,满足发布门禁的测试工具。
+// 已评切片跳过(不带 ver 重评会被乐观锁拒绝);缺考卷不在切片列表里,天然跳过。
+func gradeAllForPublish(t *testing.T, c *e2eClient, examID string) {
+	t.Helper()
+	d := c.json("GET", "/api/v1/exams/"+examID, nil, http.StatusOK)
+	subs := d["subjective"].([]any)
+	for q := 1; q <= len(subs); q++ {
+		items := c.jsonArr("GET", fmt.Sprintf("/api/v1/exams/%s/slices?q=%d&grading=1", examID, q), http.StatusOK)
+		for _, it := range items {
+			if it["graded"] == true {
+				continue
+			}
+			if parts, ok := it["parts"].([]any); ok && len(parts) > 0 {
+				for pi, p := range parts {
+					pm := p.(map[string]any)
+					if pm["graded"] == true {
+						continue
+					}
+					c.json("POST", "/api/v1/grades", map[string]any{
+						"examId": examID, "student": it["student"], "question": q, "part": pi + 1,
+						"score": 0, "graded": true,
+					}, http.StatusOK)
+				}
+				continue
+			}
+			c.json("POST", "/api/v1/grades", map[string]any{
+				"examId": examID, "student": it["student"], "question": q,
+				"score": 0, "graded": true,
+			}, http.StatusOK)
+		}
+	}
+}
+
 func TestFullSystemReview(t *testing.T) {
 	dir := t.TempDir()
 	fx := buildFixture(t)
@@ -486,7 +519,8 @@ func TestFullSystemReview(t *testing.T) {
 		if q0["options"] == nil || q0["difficulty"] == nil {
 			t.Fatal("客观题应含选项分布与难度")
 		}
-		// 发布 → 学生可查;教师(建卷人)可发布
+		// 发布 → 学生可查;教师(建卷人)可发布(发布门禁:先评完剩余切片)
+		gradeAllForPublish(t, teacher, examID)
 		teacher.json("POST", "/api/v1/exams/"+examID+"/publish", map[string]any{"published": true}, http.StatusOK)
 		if got := student.code("GET", "/api/v1/student/exams/"+examID, nil, ""); got != http.StatusOK {
 			t.Fatalf("发布后学生查分应 200,得到 %d", got)
@@ -613,10 +647,12 @@ func TestFullSystemReview(t *testing.T) {
 
 	// ---------- I. 学生端 ----------
 	t.Run("I1_学生考试列表", func(t *testing.T) {
-		list := student.jsonArr("GET", "/api/v1/student/exams", http.StatusOK)
+		lr := student.json("GET", "/api/v1/student/exams", nil, http.StatusOK)
+		list := lr["exams"].([]any)
 		found := false
 		for _, e := range list {
-			if e["id"] == examID && e["found"] == true {
+			m := e.(map[string]any)
+			if m["id"] == examID && m["found"] == true {
 				found = true
 			}
 		}

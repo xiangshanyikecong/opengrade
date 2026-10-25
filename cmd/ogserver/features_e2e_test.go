@@ -177,6 +177,10 @@ func TestNewFeaturesE2E(t *testing.T) {
 
 	// ---------- G6. 学生端:个人掌握度 / 练习卡 / PDF ----------
 	t.Run("G6_学生端新能力", func(t *testing.T) {
+		// 发布门禁收口:裁决考号异常卷(学生 3 漏涂)+ 评完剩余切片
+		// (admin 补评:本场已按班分配,teacher1 的阅卷视野被裁到本班,补不全其它班的切片)
+		teacher.json("POST", "/api/v1/assign", map[string]any{"examId": examID, "student": 3, "reg": "00000003"}, http.StatusOK)
+		gradeAllForPublish(t, admin, examID)
 		teacher.json("POST", "/api/v1/exams/"+examID+"/publish", map[string]any{"published": true}, http.StatusOK)
 
 		d := student.json("GET", "/api/v1/student/exams/"+examID, nil, http.StatusOK)
@@ -223,8 +227,9 @@ func TestNewFeaturesE2E(t *testing.T) {
 		sl := t301.jsonArr("GET", fmt.Sprintf("/api/v1/exams/%s/slices?q=1&grading=1", examID), http.StatusOK)
 		for _, item := range sl {
 			studentNo := int(item["student"].(float64))
+			ver, _ := item["ver"].(float64) // 乐观锁:发布门禁补评过的卷携带当前版本改分
 			t301.json("POST", "/api/v1/grades", map[string]any{
-				"examId": examID, "student": studentNo, "question": 1, "score": 5,
+				"examId": examID, "student": studentNo, "question": 1, "score": 5, "ver": int(ver),
 			}, http.StatusOK)
 		} // 统计不受影响:第 31 题已阅数应 ≥ 2(仅这 2 卷被改)
 		a := admin.json("GET", "/api/v1/exams/"+examID+"/analytics", nil, http.StatusOK)

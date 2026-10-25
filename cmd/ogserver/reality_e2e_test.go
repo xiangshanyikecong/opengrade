@@ -133,12 +133,15 @@ func TestRealityAlignmentE2E(t *testing.T) {
 		t.Fatalf("voidedRows = %v,期望 1 条", vr)
 	}
 
-	// —— 权限收窄:作废/恢复限建卷人/组长/管理员,普通任课教师 403 ——
+	// —— 权限口径:作废/恢复对能看到该考试的教师开放(扫描员要能闭环自己扫出的问题,
+	//    否则每次都要找建卷人;全程审计留痕)。学生等非教职员仍被角色门禁挡在 403。 ——
 	rVoid, _ := teacher.do("POST", fmt.Sprintf("/api/v1/exams/%s/results/%d/void", examID, voided),
 		jsonBody(map[string]any{"voided": false}), "application/json")
-	if rVoid.StatusCode != http.StatusForbidden {
-		t.Fatalf("教师恢复卷应 403,得到 %d", rVoid.StatusCode)
+	if rVoid.StatusCode != http.StatusOK {
+		t.Fatalf("可见教师恢复卷应 200(扫描员闭环),得到 %d", rVoid.StatusCode)
 	}
+	// 还原现场:再作废回去,后续"作废卷不存在"语义的重答检测依赖这一状态
+	admin.json("POST", fmt.Sprintf("/api/v1/exams/%s/results/%d/void", examID, voided), map[string]any{"voided": true}, http.StatusOK)
 
 	// —— 重答检测不认作废卷:作废该考号唯一在册卷后重传,应无声入库 ——
 	// (修复前:存量循环计入已作废卷 → 新卷被误报"疑似重答"且指向死卷,异常清单出现悬案)
@@ -210,6 +213,12 @@ func TestRealityAlignmentE2E(t *testing.T) {
 	}, http.StatusBadRequest)
 
 	// —— 年级总分工表:两科(数学=手工 100 分制 + 默认卷)同场分组聚合 ——
+	// (总表只收已发布科目:未发布科目未收敛,进了总分排名就是错数 —— 先发布两科)
+	// 发布门禁收口:裁决卷 3 考号漏涂(指派回名册考号),评完全部切片。
+	admin.json("POST", "/api/v1/assign", map[string]any{"examId": examID, "student": 3, "reg": "00000003"}, http.StatusOK)
+	gradeAllForPublish(t, admin, examID)
+	admin.json("POST", "/api/v1/exams/"+examID+"/publish", map[string]any{"published": true}, http.StatusOK)
+	admin.json("POST", "/api/v1/exams/"+manualID+"/publish", map[string]any{"published": true}, http.StatusOK)
 	agg := admin.json("GET", "/api/v1/aggregate?group=R2026月考", nil, http.StatusOK)
 	cols := agg["exams"].([]any)
 	if len(cols) != 2 {
@@ -264,6 +273,8 @@ func TestRealityAlignmentE2E(t *testing.T) {
 	admin.json("POST", "/api/v1/exams/"+examID+"/task-due", map[string]any{"key": "q1", "due": "12/31"}, http.StatusBadRequest)
 
 	// —— 复核申请:未发布不可申请;发布后学生发起、教师裁决 ——
+	// (本场为年级总表已在前面发布过 → 先撤回验证未发布门禁,再重新发布)
+	admin.json("POST", "/api/v1/exams/"+examID+"/publish", map[string]any{"published": false}, http.StatusOK)
 	student.json("POST", "/api/v1/student/exams/"+examID+"/appeals", map[string]any{"reason": "第 3 题我答对了"}, http.StatusBadRequest) // 未发布
 	admin.json("POST", "/api/v1/exams/"+examID+"/publish", map[string]any{"published": true}, http.StatusOK)
 	student.json("POST", "/api/v1/student/exams/"+examID+"/appeals", map[string]any{"reason": "第 3 题我答对了"}, http.StatusCreated)

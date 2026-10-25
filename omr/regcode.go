@@ -3,6 +3,7 @@ package omr
 
 import (
 	"image"
+	"strings"
 
 	"github.com/opengrade/opengrade/barcode"
 	"github.com/opengrade/opengrade/card"
@@ -76,6 +77,16 @@ func mergeRegCode(res *Result, sheet *card.Sheet, codeVal string, codeOK bool) {
 	res.RegNumber = codeVal
 	res.RegValid = true
 	res.RegSource = sheet.RegCodeKind
+	// 码已成功给出考号:此前填涂路径逐位告警(第 N 位漏涂/多涂请人工定位)已被码取代,
+	// 不清掉会让已修复的卷一直挂在异常清单、阻塞发布。
+	kept := res.Warnings[:0]
+	for _, w := range res.Warnings {
+		if strings.Contains(w, "位漏涂") || strings.Contains(w, "位多涂") {
+			continue
+		}
+		kept = append(kept, w)
+	}
+	res.Warnings = kept
 	switch {
 	case !sheet.Layout.RegHasFill():
 		// 纯码制:无涂卡可比较

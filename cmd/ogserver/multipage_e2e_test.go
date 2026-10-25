@@ -172,3 +172,113 @@ func TestMultipageE2E(t *testing.T) {
 		}
 	}
 }
+
+// TestCrossBatchMergeE2E 跨批残卷合并:同一学生的页被拆在两批上传时,
+// 第二批把两批页按真实页号拼成完整卷并原地替换(卷号不变、已评分数保留),
+// 不再产生"两个残卷 + 误报重答";两份完整卷重扫仍走重复卷裁决。
+func TestCrossBatchMergeE2E(t *testing.T) {
+	dir := t.TempDir()
+	srv, err := newServer(dir, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv.Handler)
+	defer ts.Close()
+
+	admin := newClient(t, ts.URL)
+	admin.login("admin", "admin123")
+
+	layout := card.Layout{
+		Version: 2, Title: "XB E2E", RegDigits: 8, RegMode: card.RegFillBarcode, Columns: 2,
+		Questions: []card.QuestionSpec{
+			{Kind: card.KindChoice, Options: 4, Score: 2}, {Kind: card.KindChoice, Options: 4, Score: 2},
+		},
+		Subjectives: []card.SubjectiveSpec{
+			{Kind: card.KindSubjective, Score: 10, HeightMM: 42}, {Kind: card.KindSubjective, Score: 10, HeightMM: 42},
+			{Kind: card.KindSubjective, Score: 10, HeightMM: 42}, {Kind: card.KindSubjective, Score: 10, HeightMM: 42},
+			{Kind: card.KindSubjective, Score: 10, HeightMM: 42}, {Kind: card.KindSubjective, Score: 10, HeightMM: 42},
+		},
+	}
+	book, err := layout.BuildBook()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(book) != 2 {
+		t.Fatalf("预期 2 页版式,得到 %d", len(book))
+	}
+	rng := rand.New(rand.NewSource(321))
+	key := randomAnswers(rng, book[0])
+	roster := `[{"reg":"03000001","name":"跨批甲","class":"三年二班"}]`
+
+	// 第一批:只传第 1 页 → 残卷入库,缺页告警落库进异常清单
+	var b1 bytes.Buffer
+	p1 := mpScanPage(t, book[0], "03000001", key, 9001)
+	writeExamForm(&b1, layout, key, roster, multipartFile{field: "images", name: "p1.jpg", ctype: "image/jpeg", data: p1})
+	resp, data := admin.do("POST", "/api/v1/exams", &b1, "multipart/form-data; boundary="+multipartBoundary)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("建考(仅第 1 页)失败 %d: %s", resp.StatusCode, data)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(data, &m)
+	examID := m["id"].(string)
+	d := admin.json("GET", "/api/v1/exams/"+examID, nil, http.StatusOK)
+	st := d["stage"].(map[string]any)
+	if st["stage"] != "anomalies" {
+		t.Fatalf("缺页残卷阶段 = %v,期望 anomalies(缺页告警已落库)", st)
+	}
+
+	// 给第 1 卷的页 2 题目评个分,验证合并后分数保留(原地替换,评分键 s1-q* 不变)
+	admin.json("POST", "/api/v1/grades", map[string]any{"examId": examID, "student": 1, "question": 5, "score": 7, "graded": true}, http.StatusOK)
+
+	// 第二批:补传第 2 页 → 跨批合并成完整卷(原地替换,不追加新卷、不再报重答)
+	var b2 bytes.Buffer
+	p2 := mpScanPage(t, book[1], "03000001", nil, 9002)
+	writeExamForm(&b2, layout, key, "", multipartFile{field: "images", name: "p2.jpg", ctype: "image/jpeg", data: p2})
+	resp2, data2 := admin.do("POST", "/api/v1/exams/"+examID+"/scans", &b2, "multipart/form-data; boundary="+multipartBoundary)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("补传第 2 页失败 %d: %s", resp2.StatusCode, data2)
+	}
+	var m2 map[string]any
+	_ = json.Unmarshal(data2, &m2)
+	if m2["added"].(float64) != 0 || m2["students"].(float64) != 1 {
+		t.Fatalf("跨批合并后应不追加新卷(students=1): %v", m2)
+	}
+	if merged, ok := m2["merged"].([]any); !ok || len(merged) != 1 || merged[0].(float64) != 1 {
+		t.Fatalf("响应应报告合并进第 1 卷: %v", m2["merged"])
+	}
+
+	// 合并后:无未裁决异常,阶段离开 anomalies;缺页告警消失
+	d = admin.json("GET", "/api/v1/exams/"+examID, nil, http.StatusOK)
+	st = d["stage"].(map[string]any)
+	if st["stage"] == "anomalies" || st["warnings"].(float64) != 0 {
+		t.Fatalf("合并完整后阶段 = %v(异常 %v),期望离开 anomalies", st["stage"], st["warnings"])
+	}
+	if d["students"].(float64) != 1 {
+		t.Fatalf("合并后 students = %v,期望 1", d["students"])
+	}
+	// 页 2 的主观题切片(第 5、6 题)应存在,且第 5 题的已评分保留
+	for _, q := range []int{5, 6} {
+		items := admin.jsonArr("GET", fmt.Sprintf("/api/v1/exams/%s/slices?q=%d&grading=1", examID, q), http.StatusOK)
+		if len(items) != 1 {
+			t.Fatalf("合并后第 %d 题切片数 = %d,期望 1", q, len(items))
+		}
+	}
+	sl5 := admin.jsonArr("GET", fmt.Sprintf("/api/v1/exams/%s/slices?q=5&grading=1", examID), http.StatusOK)
+	if sl5[0]["graded"] != true || sl5[0]["score"].(float64) != 7 {
+		t.Fatalf("合并应保留已评分数(第 5 题 7 分): %v", sl5[0])
+	}
+
+	// 两份完整卷重扫:不合并,走重复卷裁决(疑似重答告警 + duplicates)
+	var b3 bytes.Buffer
+	writeExamForm(&b3, layout, key, "",
+		multipartFile{field: "images", name: "r1.jpg", ctype: "image/jpeg", data: p1},
+		multipartFile{field: "images", name: "r2.jpg", ctype: "image/jpeg", data: p2})
+	resp3, data3 := admin.do("POST", "/api/v1/exams/"+examID+"/scans", &b3, "multipart/form-data; boundary="+multipartBoundary)
+	if resp3.StatusCode != http.StatusOK {
+		t.Fatalf("完整重扫失败 %d: %s", resp3.StatusCode, data3)
+	}
+	d = admin.json("GET", "/api/v1/exams/"+examID, nil, http.StatusOK)
+	if dups, _ := d["duplicates"].([]any); len(dups) != 1 {
+		t.Fatalf("完整重扫应产生 1 组重复卷交人工裁决: %v", d["duplicates"])
+	}
+}

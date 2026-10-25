@@ -56,8 +56,40 @@ async function main() {
     childOf = (OG.me.children && OG.me.children[0]) || "";
     if (!childOf) { document.getElementById("app").innerHTML = "<div class='panel'>尚未绑定子女考号,请联系管理员在「用户管理」中绑定。</div>"; return; }
   }
-  list = await OG.jget("/api/v1/student/exams");
+  // 首登强制改密(服务端已把其它 API 全部 403):先改密再进成绩页,不再给"即将进入改密页"的空头承诺
+  if (OG.me.mustChangePassword || new URLSearchParams(location.search).get("forcePwd") === "1") {
+    renderForcePwd();
+    return;
+  }
+  const r = await OG.jget("/api/v1/student/exams");
+  list = r.exams || [];
+  unmatched = r.unmatched || 0;
   renderList();
+}
+
+let unmatched = 0;
+
+function renderForcePwd() {
+  document.getElementById("app").innerHTML = `<div class="panel" style="max-width:440px">
+    <b>⚠ 首次登录请先修改密码</b>
+    <p class="hint" style="margin:8px 0">当前账号仍在使用初始密码。为保护成绩数据,修改密码前无法查询成绩;新密码至少 5 位,请牢记。</p>
+    <label style="display:block;margin:8px 0">原密码(初始密码)<input id="fpOld" type="password" style="width:100%"></label>
+    <label style="display:block;margin:8px 0">新密码(至少 5 位)<input id="fpNew" type="password" style="width:100%"></label>
+    <label style="display:block;margin:8px 0">确认新密码<input id="fpNew2" type="password" style="width:100%"></label>
+    <button style="padding:8px 16px;border:0;border-radius:8px;background:var(--brand);color:#fff;cursor:pointer" onclick="doForcePwd()">修改密码</button>
+    <span class="hint" id="fpMsg" style="margin-left:10px"></span>
+    <p class="hint" style="margin:10px 0 0">忘记初始密码请联系管理员/老师在「用户管理」重置。</p>
+  </div>`;
+}
+async function doForcePwd() {
+  const msg = document.getElementById("fpMsg");
+  const n1 = document.getElementById("fpNew").value, n2 = document.getElementById("fpNew2").value;
+  if (n1 !== n2) { msg.textContent = "两次输入的新密码不一致"; return; }
+  try {
+    await OG.jpost("/api/v1/auth/password", { oldPassword: document.getElementById("fpOld").value, newPassword: n1 });
+    msg.textContent = "已修改 ✓,正在进入成绩页…";
+    setTimeout(() => location.href = "/student.html", 600);
+  } catch (e) { msg.textContent = e.message; }
 }
 
 function qs() { return childOf ? "?child=" + childOf : ""; }
@@ -69,14 +101,15 @@ function renderList() {
     html += `<div class="panel noprint">查看子女:<select onchange="childOf=this.value;renderList()">${opts}</select></div>`;
   }
   html += `<div class="panel"><p class="free">基础查分与答卷回溯永久免费 —— 成绩属于你,不属于任何厂商。教师确认发布后即可查看。</p>
+  ${unmatched ? `<p class="hint" style="margin:0 0 8px">另有 ${unmatched} 场已发布的考试没有你的答卷 —— 可能未参加,或账号未绑定考号(请联系管理员核对)。</p>` : ""}
   <table><tr><th>考试</th><th>学科</th><th>时间</th><th>我的得分</th><th>排名</th><th>本班均分</th><th></th></tr>`;
   if (!list.length) html += `<tr><td colspan="7" class="hint">暂无已发布的考试成绩。</td></tr>`;
   for (const e of list) {
-    html += `<tr><td>${e.id}</td><td>${e.subject || "-"}</td><td>${e.createdAt}</td>
-      <td>${e.found ? (e.absent ? `<span class="hint">缺考</span>` : `<b>${e.score}</b> / ${e.total}`) : `<span class="hint">未找到关联答卷</span>`}</td>
-      <td>${e.found && e.rank && !e.absent ? `第 ${e.rank} 名` : "-"}</td>
+    html += `<tr><td>${e.id}</td><td>${e.subject || "-"}${e.hasReply ? ' <span class="pill" style="background:#e7f5ef;color:var(--brand);border-radius:8px;padding:1px 6px;font-size:11px">复核已回复</span>' : (e.hasOpen ? ' <span class="pill" style="background:#fff3cd;color:#9a3412;border-radius:8px;padding:1px 6px;font-size:11px">复核待处理</span>' : "")}</td><td>${e.createdAt}</td>
+      <td>${e.absent ? `<span class="hint">缺考</span>` : `<b>${e.score}</b> / ${e.total}`}</td>
+      <td>${e.rank && !e.absent ? `第 ${e.rank} 名` : "-"}</td>
       <td>${e.classMean ? e.classMean.toFixed(1) : "-"}</td>
-      <td>${e.found ? `<a href="#" onclick="showExam('${e.id}');return false">成绩单 / 错题本 / 答卷</a>` : ""}</td></tr>`;
+      <td><a href="#" onclick="showExam('${e.id}');return false">成绩单 / 错题本 / 答卷${e.hasReply ? " / 复核回复" : ""}</a></td></tr>`;
   }
   html += "</table></div><div id='detail'></div><div id='trendPanel'></div>";
   document.getElementById("app").innerHTML = html;
@@ -178,6 +211,11 @@ async function showExam(id) {
     if (q.notCounted) { // 选做题未被所选:不计分(版式 v3)
       html += `<tr><td>${q.index}</td><td>${kindName(q.kind)}</td><td>${q.max}</td>
         <td><span class="hint">选做 ${q.elective || ""} · 未选做,不计分</span></td><td>-</td></tr>`;
+      continue;
+    }
+    if (q.pending) { // 主观题评卷中(复核改分窗口):不按 0 分进错题本
+      html += `<tr><td>${q.index}</td><td>${kindName(q.kind)}</td><td>${q.max}</td>
+        <td><span class="hint">评卷中…</span></td><td>-</td></tr>`;
       continue;
     }
     const mine = q.myAnswer !== undefined && q.myAnswer !== ""

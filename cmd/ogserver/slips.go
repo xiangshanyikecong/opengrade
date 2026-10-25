@@ -6,12 +6,10 @@ package main
 import (
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/opengrade/opengrade/auth"
 	"github.com/opengrade/opengrade/export"
-	"github.com/opengrade/opengrade/score"
 )
 
 // handleSlipsPDF 全班成绩条连排 PDF。
@@ -35,18 +33,25 @@ func handleSlipsPDF(w http.ResponseWriter, r *http.Request, store *Store, u *aut
 		visible[l.RegNumber] = true
 	}
 
-	// 班级排名:按名册班级逐班排(缺考不计)
+	// 班级排名:按名册班级逐班排(缺考不计;并列同名次,与全卷排名/年级总表同口径)
 	classRank := map[string]int{}
 	for _, cls := range examClasses(full) {
-		same := []score.StudentLine{}
+		var scores []float64
+		mine := map[string]float64{}
 		for _, l := range rep.Students {
 			if !l.Absent && inClassOfReg(full, l.RegNumber, cls) {
-				same = append(same, l)
+				scores = append(scores, l.Score)
+				mine[l.RegNumber] = l.Score
 			}
 		}
-		sort.Slice(same, func(i, j int) bool { return same[i].Score > same[j].Score })
-		for i, l := range same {
-			classRank[l.RegNumber] = i + 1
+		for reg, sc := range mine {
+			rank := 1
+			for _, s := range scores {
+				if s > sc {
+					rank++
+				}
+			}
+			classRank[reg] = rank
 		}
 	}
 

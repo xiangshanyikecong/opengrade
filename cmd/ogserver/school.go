@@ -37,8 +37,8 @@ type SessionDef struct {
 type School struct {
 	mu       sync.Mutex
 	path     string
-	Grades   []GradeDef    `json:"grades"`
-	Sessions []SessionDef  `json:"sessions,omitempty"` // 场次表(可为空 = 不启用时段/冲突检测)
+	Grades   []GradeDef   `json:"grades"`
+	Sessions []SessionDef `json:"sessions,omitempty"` // 场次表(可为空 = 不启用时段/冲突检测)
 }
 
 // LoadSchool 从数据目录加载组织架构;文件不存在视为空(未配置)。

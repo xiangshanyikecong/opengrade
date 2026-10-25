@@ -30,8 +30,11 @@ func handleAssign(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
-	if ex, ok := store.Get(req.ExamID); !ok || !canOpenExam(u, ex, store.School) {
+	if ex, ok := store.Get(req.ExamID); !ok {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
+		return
+	} else if !canOpenExam(u, ex, store.School) {
+		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在或无权访问该考试(不在你的任教/管辖范围)"))
 		return
 	}
 	if err := store.SetAssignment(req.ExamID, req.Student, req.Reg, u.Username); err != nil {
@@ -148,17 +151,52 @@ func injectRosterInfo(ex *Exam, rep *score.Report) {
 	}
 }
 
+// exportReport 统一成绩册(xlsx/CSV)导出口径:
+//   - 行按教师可见班级裁剪,但「排名」一律取全卷真实口径 —— 单班教师导出的
+//     「第 N 名」也是全卷名次,与成绩条/组长导出对得上(此前成绩册是班内名次,两份材料打架);
+//   - 匿名阅卷下,非建卷人/组长/管理员的导出抹去考号与姓名(阅卷面板的导出链接不再击穿匿名)。
+func (s *Store) exportReport(r *http.Request, u *auth.User) (*Exam, *score.Report, []string, bool) {
+	ex, ok := s.openExamFor(r, u, false) // 行按任教班级过滤
+	if !ok {
+		return nil, nil, nil, false
+	}
+	full, ok2 := s.Get(r.PathValue("id"))
+	if !ok2 {
+		full = ex
+	}
+	repFull := score.Merge(full.Layout.Questions, full.ObjectiveKey, assignedResults(full), full.Layout.Subjectives, full.Grades)
+	rankByReg := map[string]int{}
+	for _, l := range repFull.Students {
+		rankByReg[l.RegNumber] = l.Rank
+	}
+	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades)
+	for i := range rep.Students {
+		if rk, ok := rankByReg[rep.Students[i].RegNumber]; ok {
+			rep.Students[i].Rank = rk
+		}
+	}
+	privileged := u.Role == auth.RoleAdmin || u.Role == auth.RoleLeader || full.CreatedBy == u.Username
+	if full.Anonymous && !privileged {
+		for i := range rep.Students {
+			rep.Students[i].RegNumber = ""
+			rep.Students[i].Name = ""
+			rep.Students[i].ClassInfo = ""
+		}
+	} else {
+		injectRosterInfo(full, rep)
+	}
+	labels := make([]string, len(rep.PerQuestion))
+	for i, q := range rep.PerQuestion {
+		labels[i] = questionLabel(full, q)
+	}
+	return full, rep, labels, true
+}
+
 func handleExportXlsx(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
-	ex, ok := store.openExamFor(r, u, false) // 导出按任教班级过滤
+	ex, rep, labels, ok := store.exportReport(r, u)
 	if !ok {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
-	}
-	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades)
-	injectRosterInfo(ex, rep)
-	labels := make([]string, len(rep.PerQuestion))
-	for i, q := range rep.PerQuestion {
-		labels[i] = questionLabel(ex, q)
 	}
 	data, err := export.ScoresXlsxZip(rep, labels, knowledgeStatsOf(ex))
 	if err != nil {
@@ -170,15 +208,13 @@ func handleExportXlsx(w http.ResponseWriter, r *http.Request, store *Store, u *a
 	_, _ = w.Write(data)
 }
 
-// handleExportCSV 成绩册 CSV 导出。
+// handleExportCSV 成绩册 CSV 导出(与 xlsx 同口径:可见行 + 全卷排名 + 匿名保护)。
 func handleExportCSV(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
-	ex, ok := store.openExamFor(r, u, false) // 导出按任教班级过滤
+	ex, rep, _, ok := store.exportReport(r, u)
 	if !ok {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
-	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades)
-	injectRosterInfo(ex, rep)
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=opengrade-%s.csv", ex.ID))
 	_, _ = w.Write(export.ScoresCSV(rep))
@@ -193,6 +229,8 @@ func handleExportFullZip(w http.ResponseWriter, r *http.Request, store *Store, u
 		return
 	}
 	dir := store.Dir(ex.ID)
+	privileged := u.Role == auth.RoleAdmin || u.Role == auth.RoleLeader || ex.CreatedBy == u.Username
+	anon := ex.Anonymous && !privileged
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=opengrade-%s-full.zip", ex.ID))
 	zw := zip.NewWriter(w)
@@ -211,11 +249,20 @@ func handleExportFullZip(w http.ResponseWriter, r *http.Request, store *Store, u
 		_, err = fh.Write(b)
 		return err
 	}
-	_ = addFile("exam.json")
+	if !anon {
+		_ = addFile("exam.json") // 匿名模式下对普通阅卷教师不含原始考号明细
+	}
 	// 版式与答案独立成文件,便于第三方工具直接消费
 	layoutJSON, _ := json.MarshalIndent(ex.Layout, "", "  ")
 	keyJSON, _ := json.MarshalIndent(map[string]any{"version": 1, "answers": ex.ObjectiveKey}, "", "  ")
 	report := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades)
+	if !anon {
+		injectRosterInfo(ex, report)
+	} else {
+		for i := range report.Students {
+			report.Students[i].RegNumber = ""
+		}
+	}
 	reportJSON, _ := json.MarshalIndent(report, "", "  ")
 	for name, content := range map[string][]byte{
 		"opengrade/layout.json": layoutJSON,

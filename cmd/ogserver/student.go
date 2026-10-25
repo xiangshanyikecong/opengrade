@@ -136,6 +136,8 @@ func computeClassStats(ex *Exam, rep *score.Report) []ClassStat {
 
 // handleStudentExams GET /api/v1/student/exams → 我的(或子女的)考试列表。
 // 未发布成绩的考试不出现在列表中(教师确认发布后才可见)。
+// 只列出找到关联答卷的考试;全校已发布但与我无关的考试不再逐条刷「未找到关联答卷」
+// (考号没绑定的学生此前看到的是满屏噪音,分不清"没考"和"账号没绑号"),改为一条汇总数。
 func handleStudentExams(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	type item struct {
 		ID        string  `json:"id"`
@@ -148,14 +150,18 @@ func handleStudentExams(w http.ResponseWriter, r *http.Request, store *Store, u 
 		Total     float64 `json:"total"`
 		Rank      int     `json:"rank"`
 		ClassMean float64 `json:"classMean"`
+		HasReply  bool    `json:"hasReply,omitempty"` // 有复核申请已回复(列表角标)
+		HasOpen   bool    `json:"hasOpen,omitempty"`  // 有待处理的复核申请
 	}
 	regs := myRegs(u)
 	out := []item{}
+	unmatched := 0 // 已发布但没有我(子女)答卷的场数:可能未参加,或考号未绑定
 	for _, ex := range store.List() {
 		if !ex.Published {
 			continue // 成绩发布控制:未发布不可查
 		}
 		it := item{ID: ex.ID, CreatedAt: ex.CreatedAt.Format("2006-01-02 15:04"), Subject: ex.Subject}
+		found := false
 		for _, reg := range regs {
 			idx := findIndex(ex, reg)
 			if idx == 0 {
@@ -166,17 +172,36 @@ func handleStudentExams(w http.ResponseWriter, r *http.Request, store *Store, u 
 			if !ok {
 				continue
 			}
+			found = true
 			it.Found, it.Absent, it.Score, it.Total, it.Rank, it.Child = true, line.Absent, line.Score, line.Total, line.Rank, reg
+			cls := u.Class
+			if cls == "" {
+				cls = classOfReg(ex, reg) // 家长无班级:取子女班级
+			}
 			for _, c := range computeClassStats(ex, rep) {
-				if c.Class == u.Class {
+				if c.Class == cls {
 					it.ClassMean = c.Mean
+				}
+			}
+			for _, a := range ex.Appeals {
+				if a.By != reg {
+					continue
+				}
+				if a.Status == "resolved" {
+					it.HasReply = true
+				} else {
+					it.HasOpen = true
 				}
 			}
 			break
 		}
+		if !found {
+			unmatched++
+			continue
+		}
 		out = append(out, it)
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{"exams": out, "unmatched": unmatched})
 }
 
 // handleStudentExam GET /api/v1/student/exams/{id}?child=<reg>
@@ -226,6 +251,7 @@ func handleStudentExam(w http.ResponseWriter, r *http.Request, store *Store, u *
 		Right      bool    `json:"right,omitempty"`
 		MyScore    float64 `json:"myScore"`
 		Wrong      bool    `json:"wrong"`
+		Pending    bool    `json:"pending,omitempty"`    // 主观题评卷中(未评完不计错题,展示"评卷中")
 		Elective   string  `json:"elective,omitempty"`   // 选做组可选题号(如 "23/24");非空即选做题
 		NotCounted bool    `json:"notCounted,omitempty"` // 选做题未被所选:不计分、不进错题本
 	}
@@ -240,6 +266,10 @@ func handleStudentExam(w http.ResponseWriter, r *http.Request, store *Store, u *
 		my := ""
 		if qi < len(res.Answers) {
 			my = res.Answers[qi]
+		}
+		if ex.ObjectiveKey[qi] == "" { // 答案未录(该题不判分):不判对错、不进错题本
+			questions = append(questions, qItem{Index: qi + 1, Kind: spec.Kind, Max: max, MyAnswer: my})
+			continue
 		}
 		right := my == ex.ObjectiveKey[qi]
 		if !right {
@@ -267,8 +297,15 @@ func handleStudentExam(w http.ResponseWriter, r *http.Request, store *Store, u *
 			continue
 		}
 		myScore := 0.0
-		if s, done, _ := score.SubjectiveScore(spec, ex.Grades, idx, qi+1); done {
-			myScore = s
+		done := false
+		if s, d, _ := score.SubjectiveScore(spec, ex.Grades, idx, qi+1); d {
+			myScore, done = s, true
+		}
+		if !done {
+			// 未评完(复核改分窗口/撤回重阅):不按 0 分进错题本,明示「评卷中」
+			questions = append(questions, qItem{Index: qNo, Kind: spec.Kind, Max: max,
+				Pending: true, Elective: elective})
+			continue
 		}
 		if myScore < max {
 			wrongs = append(wrongs, qNo)
@@ -282,29 +319,29 @@ func handleStudentExam(w http.ResponseWriter, r *http.Request, store *Store, u *
 		classRates[fmt.Sprintf("q%d", q.Index)] = q.Rate
 	}
 
-	// 本班排名:只统计本班学生(家长/学生看到班级维度)
+	// 本班排名:只统计本班学生(并列同名次;家长无班级时取子女班级)
 	classRank := line.Rank
-	if u.Class != "" {
-		clsOf := map[string]string{}
-		for _, st := range ex.Roster {
-			clsOf[st.Reg] = st.Class
-		}
+	cls := u.Class
+	if cls == "" {
+		cls = classOfReg(ex, reg)
+	}
+	if cls != "" {
 		same := []score.StudentLine{}
 		for _, l := range rep.Students {
 			if l.Absent {
 				continue // 缺考不参与班级排名
 			}
-			if clsOf[l.RegNumber] == u.Class {
+			if inClassOfReg(ex, l.RegNumber, cls) {
 				same = append(same, l)
 			}
 		}
-		sort.Slice(same, func(i, j int) bool { return same[i].Score > same[j].Score })
-		for i, l := range same {
-			if l.RegNumber == line.RegNumber {
-				classRank = i + 1
-				break
+		rank := 1
+		for _, l := range same {
+			if l.Score > line.Score {
+				rank++
 			}
 		}
+		classRank = rank
 	}
 
 	out := map[string]any{
@@ -312,7 +349,7 @@ func handleStudentExam(w http.ResponseWriter, r *http.Request, store *Store, u *
 		"createdAt":      ex.CreatedAt.Format("2006-01-02 15:04"),
 		"subject":        ex.Subject,
 		"reg":            reg,
-		"class":          u.Class,
+		"class":          cls,
 		"objective":      line.Objective,
 		"subjective":     line.Subjective,
 		"score":          line.Score,
@@ -421,26 +458,20 @@ func handleStudentReportPDF(w http.ResponseWriter, r *http.Request, store *Store
 	}
 	res := ex.Results[idx-1]
 
-	// 班级排名
+	// 班级排名(并列同名次;家长无班级时取子女班级)
 	classRank := 0
-	if u.Class != "" {
-		clsOf := map[string]string{}
-		for _, st := range ex.Roster {
-			clsOf[st.Reg] = st.Class
-		}
-		same := []score.StudentLine{}
+	cls := u.Class
+	if cls == "" {
+		cls = classOfReg(ex, reg)
+	}
+	if cls != "" {
+		greater := 0
 		for _, l := range rep.Students {
-			if !l.Absent && clsOf[l.RegNumber] == u.Class {
-				same = append(same, l)
+			if !l.Absent && inClassOfReg(ex, l.RegNumber, cls) && l.Score > line.Score {
+				greater++
 			}
 		}
-		sort.Slice(same, func(i, j int) bool { return same[i].Score > same[j].Score })
-		for i, l := range same {
-			if l.RegNumber == line.RegNumber {
-				classRank = i + 1
-				break
-			}
-		}
+		classRank = greater + 1
 	}
 
 	kindName := func(k string) string {
@@ -500,7 +531,7 @@ func handleStudentReportPDF(w http.ResponseWriter, r *http.Request, store *Store
 	rankText := fmt.Sprintf("第 %d 名 / 共 %d 人", line.Rank, rep.Count)
 	card := export.ReportCard{
 		Title: ex.Layout.Title, Subject: ex.Subject,
-		Student: nameOfReg(ex, reg), Reg: reg, Class: nonEmptyStr(u.Class, "-"),
+		Student: nameOfReg(ex, reg), Reg: reg, Class: nonEmptyStr(cls, "-"),
 		Date:      ex.CreatedAt.Format("2006-01-02"),
 		Score:     fmt.Sprintf("%s / %s", trimMaxF(line.Score), trimMaxF(line.Total)),
 		Rank:      rankText,

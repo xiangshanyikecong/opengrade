@@ -59,6 +59,7 @@
       <input id="nu_grades" placeholder="管辖年级(组长,逗号分隔;配合组织架构)">
       <input id="nu_children" placeholder="子女考号(家长,逗号分隔)">
       <button class="primary" id="userFormBtn" onclick="submitUser()">创建账号</button>
+      <button class="ghost" id="userFormCancel" onclick="cancelEdit()" hidden style="border:1px solid var(--line);border-radius:8px;background:#fff;padding:9px 14px;cursor:pointer;font-size:13px">取消编辑</button>
     </div>
     <div class="err" id="msg"></div>
     <p class="hint">学生账号绑定考号后,可在「学生端」免费查分、看错题本与答卷回溯;家长账号绑定子女考号后,只能查看已发布成绩的子女数据。班主任/学科组长字段决定教师跨学科、跨班级的可见范围(常规"班主任看本班全科、组长看本学科")。</p>
@@ -229,13 +230,18 @@ async function editUser(username) {
   document.getElementById("nu_username").disabled = true;
   document.getElementById("userFormTitle").textContent = `编辑账号 ${username}`;
   document.getElementById("userFormBtn").textContent = "保存修改";
+  document.getElementById("userFormCancel").hidden = false;
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 function cancelEdit() {
   editingUser = null;
   document.getElementById("nu_username").disabled = false;
+  // 清空表单:取消编辑后必须能直接新建账号,否则填好的新账号资料会覆盖进刚才编辑的人
+  ["nu_display", "nu_reg", "nu_class", "nu_subjects", "nu_head", "nu_lead", "nu_grades", "nu_children", "nu_password"].forEach(id => { document.getElementById(id).value = ""; });
+  document.getElementById("nu_role").value = "teacher";
   document.getElementById("userFormTitle").textContent = "新建账号";
   document.getElementById("userFormBtn").textContent = "创建账号";
+  document.getElementById("userFormCancel").hidden = true;
 }
 async function resetPwd(username) {
   const np = prompt(`为 ${username} 设置新密码(至少 5 位):`);

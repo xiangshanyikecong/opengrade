@@ -64,6 +64,13 @@ type Exam struct {
 	KeyB          []string          `json:"keyB,omitempty"`          // B 卷客观题参考答案(已归一为规范题号序)
 	OrderB        []int             `json:"orderB,omitempty"`        // B 卷题序对照:卡面第 i 题对应规范题号 OrderB[i-1]
 	AssignVariant map[string]string `json:"assignVariant,omitempty"` // 人工指派卷种:"s{卷号}" → "A"/"B"(卷种判不出时裁决)
+
+	// 发布后语义:Dirty = 发布之后又发生过改分/补传/改答案等数据变更。
+	// 学生端看到的是实时重算,发布方需要「重新发布」收口(清 Dirty、刷新发布时间)。
+	Dirty bool `json:"dirty,omitempty"`
+	// Acked 是残卷告警(缺页/页序不可信)的人工接受标记:"s{卷号}" → true。
+	// 已接受的卷不再计入「异常待处理」阶段(重扫整份或作废可真正解决)。
+	Acked map[string]bool `json:"acked,omitempty"`
 }
 
 // Appeal 是一条成绩复核申请:学生/家长在成绩发布后发起,教师裁决(回复/改分)。
@@ -153,7 +160,7 @@ type Store struct {
 	mu       sync.Mutex
 	dir      string
 	exams    map[string]*Exam
-	shortSeq int // 考试短号发号器(1000 起,重启后按存量去重续发)
+	shortSeq int     // 考试短号发号器(1000 起,重启后按存量去重续发)
 	School   *School // 组织架构(年级↔班级),newServer 装配;nil=未配置(权限判定按全看兜底)
 }
 
@@ -196,6 +203,10 @@ func (s *Store) Create(ne NewExam) (*Exam, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "slices"), 0o755); err != nil {
 		return nil, err
 	}
+	shortID := ne.ShortID // 建考入参已预发(复合码核对要在入库生效)则复用,否则现场生成
+	if shortID == "" {
+		shortID = s.genShortIDLocked()
+	}
 	ex := &Exam{
 		ID:           id,
 		CreatedAt:    time.Now(),
@@ -214,7 +225,7 @@ func (s *Store) Create(ne NewExam) (*Exam, error) {
 		ExamGroup:    ne.ExamGroup,
 		Session:      ne.Session,
 		ManualFull:   ne.ManualFull,
-		ShortID:      s.genShortIDLocked(),
+		ShortID:      shortID,
 		LayoutB:      ne.LayoutB,
 		KeyB:         ne.KeyB,
 		OrderB:       ne.OrderB,
@@ -230,19 +241,14 @@ func (s *Store) Create(ne NewExam) (*Exam, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "pages"), 0o755); err != nil {
 		return nil, err
 	}
-	if ne.PageGroups != nil { // 多页版式:第 1 页用旧文件名,第 2+ 页加 _p 页号
+	if ne.PageGroups != nil { // 多页版式:按真实页号命名(第 1 页兼容旧文件名)
 		for si, group := range ne.PageGroups {
-			for k, pg := range group {
-				if pg == nil {
-					continue
-				}
-				name := fmt.Sprintf("s%02d.jpg", si+1)
-				if k > 0 {
-					name = fmt.Sprintf("s%02d_p%02d.jpg", si+1, k+1)
-				}
-				if err := saveJPEGFile(filepath.Join(dir, "pages", name), pg); err != nil {
-					return nil, err
-				}
+			var pn []int
+			if si < len(ne.Results) && ne.Results[si] != nil {
+				pn = ne.Results[si].PageNos
+			}
+			if err := writePageGroups(filepath.Join(dir, "pages"), si+1, group, pn); err != nil {
+				return nil, err
 			}
 		}
 	} else if len(ne.Pages) > 0 {
@@ -298,35 +304,45 @@ func (ex *Exam) maxScoreOf(question, part int) float64 {
 	return score.SubjectiveMax(spec)
 }
 
+// markDirtyLocked 记录「发布后数据已变更」(调用方持锁):补传/改分/改答案/作废/指派都会触发。
+// 学生端是实时口径,发布方据此收到「重新发布」信号。
+func markDirtyLocked(ex *Exam) {
+	if ex.Published {
+		ex.Dirty = true
+	}
+}
+
 // SetGrade 写入一条主观题整题评分并落盘。by 为操作者账号(审计留痕)。
 // 拆分了小问的题目(版式 v3)必须走 SetGradePart 逐问评分。
-// ver > 0 时启用乐观锁:与当前版本不一致返回 *ConflictError(防双开互踩)。
+// 乐观锁:目标已有「已评」记录时,请求必须携带与服务器一致的 ver(ver<=0 视为未携带,拒绝)——
+// 防止批注/标记等旁路路径以旧分静默覆盖他人刚改的分。首次评分无需 ver。
 // 分数越界(负分或超过满分)直接拒绝 —— 评分颗粒度修复的服务端兜底。
-func (s *Store) SetGrade(id string, student, question int, g score.Grade, by string, ver int) error {
+// 返回写入后的新版本号(前端回填本地 ver,后续批注/改分才能带上)。
+func (s *Store) SetGrade(id string, student, question int, g score.Grade, by string, ver int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ex, ok := s.exams[id]
 	if !ok {
-		return fmt.Errorf("考试 %s 不存在", id)
+		return 0, fmt.Errorf("考试 %s 不存在", id)
 	}
 	if student < 1 || student > len(ex.Results) {
-		return fmt.Errorf("学生序号 %d 越界(共 %d 卷)", student, len(ex.Results))
+		return 0, fmt.Errorf("学生序号 %d 越界(共 %d 卷)", student, len(ex.Results))
 	}
 	if question < 1 || question > len(ex.Layout.Subjectives) {
-		return fmt.Errorf("主观题序号 %d 越界(共 %d 道)", question, len(ex.Layout.Subjectives))
+		return 0, fmt.Errorf("主观题序号 %d 越界(共 %d 道)", question, len(ex.Layout.Subjectives))
 	}
 	if parts := len(ex.Layout.Subjectives[question-1].Parts); parts > 0 {
-		return fmt.Errorf("第 %d 题已拆分为 %d 个小问,请逐小问评分(part 参数)", question, parts)
+		return 0, fmt.Errorf("第 %d 题已拆分为 %d 个小问,请逐小问评分(part 参数)", question, parts)
 	}
 	max := ex.maxScoreOf(question, 0)
 	if g.Score < -0.001 || g.Score > max+0.001 {
-		return fmt.Errorf("分数 %.1f 超出范围(0 ~ 满分 %g)", g.Score, max)
+		return 0, fmt.Errorf("分数 %.1f 超出范围(0 ~ 满分 %g)", g.Score, max)
 	}
 	key := score.GradeKey(student, question)
 	verb := "评分"
 	if old, exists := ex.Grades[key]; exists && old.Graded {
-		if ver > 0 && old.Ver != ver {
-			return &ConflictError{Current: old, Msg: fmt.Sprintf("该卷刚被他人改过(当前 %g 分),请刷新后重试", old.Score)}
+		if ver <= 0 || old.Ver != ver {
+			return 0, &ConflictError{Current: old, Msg: fmt.Sprintf("该卷刚被他人改过(当前 %g 分),请刷新后重试", old.Score)}
 		}
 		if old.Score != g.Score {
 			verb = fmt.Sprintf("改分(%.1f → %.1f)", old.Score, g.Score)
@@ -339,41 +355,42 @@ func (s *Store) SetGrade(id string, student, question int, g score.Grade, by str
 	}
 	g.By = by
 	ex.Grades[key] = g
+	markDirtyLocked(ex)
 	ex.log(by, "setGrade", fmt.Sprintf("第 %d 卷 主观题 %d:%s %.1f 分", student, question, verb, g.Score))
-	return s.save(ex)
+	return g.Ver, s.save(ex)
 }
 
 // SetGradePart 写入一条小问评分(版式 v3 拆分题):大题总分由统分层自动求和。
-// ver > 0 时启用乐观锁;分数越界拒绝。
-func (s *Store) SetGradePart(id string, student, question, part int, g score.Grade, by string, ver int) error {
+// 乐观锁口径与 SetGrade 一致(已评过的小问必须带匹配 ver);分数越界拒绝。
+func (s *Store) SetGradePart(id string, student, question, part int, g score.Grade, by string, ver int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ex, ok := s.exams[id]
 	if !ok {
-		return fmt.Errorf("考试 %s 不存在", id)
+		return 0, fmt.Errorf("考试 %s 不存在", id)
 	}
 	if student < 1 || student > len(ex.Results) {
-		return fmt.Errorf("学生序号 %d 越界(共 %d 卷)", student, len(ex.Results))
+		return 0, fmt.Errorf("学生序号 %d 越界(共 %d 卷)", student, len(ex.Results))
 	}
 	if question < 1 || question > len(ex.Layout.Subjectives) {
-		return fmt.Errorf("主观题序号 %d 越界(共 %d 道)", question, len(ex.Layout.Subjectives))
+		return 0, fmt.Errorf("主观题序号 %d 越界(共 %d 道)", question, len(ex.Layout.Subjectives))
 	}
 	parts := len(ex.Layout.Subjectives[question-1].Parts)
 	if parts == 0 {
-		return fmt.Errorf("第 %d 题未拆分小问,应整题评分", question)
+		return 0, fmt.Errorf("第 %d 题未拆分小问,应整题评分", question)
 	}
 	if part < 1 || part > parts {
-		return fmt.Errorf("小问序号 %d 越界(共 %d 问)", part, parts)
+		return 0, fmt.Errorf("小问序号 %d 越界(共 %d 问)", part, parts)
 	}
 	max := ex.maxScoreOf(question, part)
 	if g.Score < -0.001 || g.Score > max+0.001 {
-		return fmt.Errorf("分数 %.1f 超出范围(0 ~ 小问满分 %g)", g.Score, max)
+		return 0, fmt.Errorf("分数 %.1f 超出范围(0 ~ 小问满分 %g)", g.Score, max)
 	}
 	key := score.GradePartKey(student, question, part)
 	verb := "评分"
 	if old, exists := ex.Grades[key]; exists && old.Graded {
-		if ver > 0 && old.Ver != ver {
-			return &ConflictError{Current: old, Msg: fmt.Sprintf("该小问刚被他人改过(当前 %g 分),请刷新后重试", old.Score)}
+		if ver <= 0 || old.Ver != ver {
+			return 0, &ConflictError{Current: old, Msg: fmt.Sprintf("该小问刚被他人改过(当前 %g 分),请刷新后重试", old.Score)}
 		}
 		if old.Score != g.Score {
 			verb = fmt.Sprintf("改分(%.1f → %.1f)", old.Score, g.Score)
@@ -386,37 +403,50 @@ func (s *Store) SetGradePart(id string, student, question, part int, g score.Gra
 	}
 	g.By = by
 	ex.Grades[key] = g
+	markDirtyLocked(ex)
 	label := ex.Layout.Subjectives[question-1].Parts[part-1].Label
 	ex.log(by, "setGrade", fmt.Sprintf("第 %d 卷 主观题 %d 小问%s:%s %.1f 分", student, question, label, verb, g.Score))
-	return s.save(ex)
+	return g.Ver, s.save(ex)
 }
 
 // SetObjectiveKey 修正客观题参考答案并落盘(答案键录错时的补救,自动触发全班重统)。
-func (s *Store) SetObjectiveKey(id string, key []string, by string) error {
+// variant 为 "B" 时修正 B 卷答案(建考时留空的“后补”出口;规范题号序)。
+func (s *Store) SetObjectiveKey(id string, key []string, by string, variant string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ex, ok := s.exams[id]
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
-	if len(key) != len(ex.ObjectiveKey) {
-		return fmt.Errorf("参考答案 %d 道,与本卷客观题 %d 道不一致", len(key), len(ex.ObjectiveKey))
+	target := &ex.ObjectiveKey
+	label := "客观题参考答案"
+	if variant == "B" {
+		if ex.LayoutB == nil {
+			return fmt.Errorf("本场考试未配置 B 卷版式,无 B 卷答案可修正")
+		}
+		target = &ex.KeyB
+		label = "B 卷客观题参考答案"
+	}
+	if len(key) != len(*target) {
+		return fmt.Errorf("参考答案 %d 道,与本卷客观题 %d 道不一致", len(key), len(*target))
 	}
 	changed := 0
 	for i := range key {
-		if key[i] != ex.ObjectiveKey[i] {
+		if key[i] != (*target)[i] {
 			changed++
 		}
 	}
 	if changed == 0 {
 		return fmt.Errorf("参考答案无变化")
 	}
-	ex.ObjectiveKey = key
-	ex.log(by, "setKey", fmt.Sprintf("修正客观题参考答案(%d 道变更),全班重统", changed))
+	*target = key
+	markDirtyLocked(ex)
+	ex.log(by, "setKey", fmt.Sprintf("修正%s(%d 道变更),全班重统", label, changed))
 	return s.save(ex)
 }
 
 // SetPublished 设置成绩发布开关(published=false 时学生/家长端不可查)。
+// 发布(含重新发布)会清掉 Dirty 标记并刷新发布时间。
 func (s *Store) SetPublished(id string, pub bool, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -427,8 +457,14 @@ func (s *Store) SetPublished(id string, pub bool, by string) error {
 	ex.Published = pub
 	now := time.Now()
 	if pub {
+		wasDirty := ex.Dirty
 		ex.PublishedAt = &now
-		ex.log(by, "publish", "发布成绩")
+		ex.Dirty = false
+		verb := "发布成绩"
+		if wasDirty {
+			verb = "重新发布成绩(同步发布后变更)"
+		}
+		ex.log(by, "publish", verb)
 	} else {
 		ex.PublishedAt = nil
 		ex.log(by, "unpublish", "撤回成绩发布")
@@ -448,6 +484,8 @@ func (ex *Exam) log(by, action, detail string) {
 }
 
 // SetAssignment 人工确认某学生的考号(异常卷自愈)并落盘。by 为操作者账号。
+// 查重:目标考号已被其它未作废卷占用时拒绝(防止造出同考号双卷导致统计双计);
+// 名册已知时,考号必须在名册内(手滑输错考号在这里拦下)。
 func (s *Store) SetAssignment(id string, student int, reg string, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -457,6 +495,28 @@ func (s *Store) SetAssignment(id string, student int, reg string, by string) err
 	}
 	if student < 1 || student > len(ex.Results) {
 		return fmt.Errorf("学生序号 %d 越界(共 %d 卷)", student, len(ex.Results))
+	}
+	if reg != "" {
+		if len(ex.Roster) > 0 {
+			inRoster := false
+			for _, st := range ex.Roster {
+				if st.Reg == reg {
+					inRoster = true
+					break
+				}
+			}
+			if !inRoster {
+				return fmt.Errorf("考号 %s 不在名册中,请核对(名册共 %d 人)", reg, len(ex.Roster))
+			}
+		}
+		for i := range ex.Results {
+			if i+1 == student || ex.Results[i] == nil || ex.Results[i].Voided {
+				continue // 作废卷对外语义是"不存在"
+			}
+			if ex.AssignedReg(i+1) == reg {
+				return fmt.Errorf("考号 %s 已被第 %d 卷使用;如需调整请先作废/改派那张卷", reg, i+1)
+			}
+		}
 	}
 	if ex.Assignments == nil {
 		ex.Assignments = map[string]string{}
@@ -468,6 +528,7 @@ func (s *Store) SetAssignment(id string, student int, reg string, by string) err
 		ex.Assignments[fmt.Sprintf("s%d", student)] = reg
 		ex.log(by, "assign", fmt.Sprintf("第 %d 卷考号指派为 %s", student, reg))
 	}
+	markDirtyLocked(ex)
 	return s.save(ex)
 }
 
@@ -570,10 +631,43 @@ func (s *Store) PageDir(id string) string {
 	return filepath.Join(s.dir, id, "pages")
 }
 
+// pageFileName 整卷回溯图文件名:第 1 页兼容旧名 sNN.jpg;第 pageNo(>1)页用真实页号
+// sNN_p{页号}.jpg(页号未知时退回到达位置 pos+1)。按真实页号命名后,缺页残卷的
+// 第 2 张图不再冒充第 2 页,卷种重读/跨批合并都能对上版式。
+func pageFileName(student, pos, pageNo int) string {
+	if pos == 0 {
+		return fmt.Sprintf("s%02d.jpg", student)
+	}
+	p := pageNo
+	if p <= 1 {
+		p = pos + 1 // 页号未知/单页:按到达位置(旧语义)
+	}
+	return fmt.Sprintf("s%02d_p%02d.jpg", student, p)
+}
+
+// writePageGroups 落盘一组的整卷回溯图;pageNos 与 group 按到达序对齐(可为 nil)。
+func writePageGroups(pageDir string, student int, group []*image.Gray, pageNos []int) error {
+	for k, pg := range group {
+		if pg == nil {
+			continue
+		}
+		var pn int
+		if k < len(pageNos) {
+			pn = pageNos[k]
+		}
+		if err := saveJPEGFile(filepath.Join(pageDir, pageFileName(student, k, pn)), pg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // AppendScans 补传扫描件(批量扫描会话/断点续传的核心):把新建考之后又扫完的一批卷
 // 续接到既有会话——结果按现有卷序追加,切片与整卷回溯图落盘,学生号接着排。
-// 调用方已逐卷完成 OMR 判读;本方法只做追加与持久化。返回追加后的总卷数。
-func (s *Store) AppendScans(id, by string, results []*omr.Result, slices [][]omr.Slice, pageGroups [][]*image.Gray) (int, error) {
+// oldBase 是调用方判读时看到的存量卷数;若期间有并发写入,这里在锁内按实际 base
+// 平移切片/页图的卷号,消除"锁外读 base"竞态。写入失败回滚:不留半截数据。
+// 返回追加后的总卷数。
+func (s *Store) AppendScans(id, by string, oldBase int, results []*omr.Result, slices [][]omr.Slice, pageGroups [][]*image.Gray, pageNos [][]int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ex, ok := s.exams[id]
@@ -586,40 +680,193 @@ func (s *Store) AppendScans(id, by string, results []*omr.Result, slices [][]omr
 		return 0, err
 	}
 	base := len(ex.Results)
+	if delta := base - oldBase; delta != 0 {
+		for _, sls := range slices {
+			for i := range sls {
+				sls[i].StudentIndex += delta
+			}
+		}
+	}
+	var written []string
+	cleanup := func() {
+		for _, p := range written {
+			_ = os.Remove(p)
+		}
+	}
 	for _, sls := range slices {
 		for _, sl := range sls {
 			p := filepath.Join(sliceDir, fmt.Sprintf("s%02d_q%02d.png", sl.StudentIndex, sl.QuestionIndex))
 			if err := savePNGFile(p, sl.Image); err != nil {
+				cleanup()
 				return 0, err
 			}
+			written = append(written, p)
 		}
 	}
 	if len(pageGroups) > 0 {
 		pageDir := filepath.Join(dir, "pages")
 		if err := os.MkdirAll(pageDir, 0o755); err != nil {
+			cleanup()
 			return 0, err
 		}
 		for i, group := range pageGroups {
+			var pn []int
+			if i < len(pageNos) {
+				pn = pageNos[i]
+			}
 			for k, pg := range group {
 				if pg == nil {
 					continue
 				}
-				name := fmt.Sprintf("s%02d.jpg", base+i+1)
-				if k > 0 {
-					name = fmt.Sprintf("s%02d_p%02d.jpg", base+i+1, k+1)
+				var p1 int
+				if k < len(pn) {
+					p1 = pn[k]
 				}
-				if err := saveJPEGFile(filepath.Join(pageDir, name), pg); err != nil {
+				p := filepath.Join(pageDir, pageFileName(base+i+1, k, p1))
+				if err := saveJPEGFile(p, pg); err != nil {
+					cleanup()
 					return 0, err
 				}
+				written = append(written, p)
 			}
 		}
 	}
 	ex.Results = append(ex.Results, results...)
+	markDirtyLocked(ex)
 	ex.log(by, "appendScans", fmt.Sprintf("补传扫描件 %d 卷,共 %d 卷", len(results), len(ex.Results)))
 	if err := s.save(ex); err != nil {
+		ex.Results = ex.Results[:base] // 回滚内存,避免与磁盘分叉
+		cleanup()
 		return 0, err
 	}
 	return len(ex.Results), nil
+}
+
+// ReplaceResult 跨批残卷合并:用合并后的新卷原地替换第 student 卷(卷号不变,
+// 已评分数天然保留迁移),重写其切片与整卷图。res.PageNos 提供真实页号。
+func (s *Store) ReplaceResult(id string, student int, res *omr.Result, slices []omr.Slice, pages []*image.Gray, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return fmt.Errorf("考试 %s 不存在", id)
+	}
+	if student < 1 || student > len(ex.Results) {
+		return fmt.Errorf("学生序号 %d 越界(共 %d 卷)", student, len(ex.Results))
+	}
+	dir := filepath.Join(s.dir, id)
+	sliceDir := filepath.Join(dir, "slices")
+	// 先清旧文件(切片 + 整卷图),再写新文件;任何一步失败把内存留在原状。
+	old := ex.Results[student-1]
+	pat := fmt.Sprintf("s%02d_", student)
+	if entries, err := os.ReadDir(sliceDir); err == nil {
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), pat) {
+				_ = os.Remove(filepath.Join(sliceDir, e.Name()))
+			}
+		}
+	}
+	if entries, err := os.ReadDir(filepath.Join(dir, "pages")); err == nil {
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), pat) {
+				_ = os.Remove(filepath.Join(dir, "pages", e.Name()))
+			}
+		}
+	}
+	for _, sl := range slices {
+		p := filepath.Join(sliceDir, fmt.Sprintf("s%02d_q%02d.png", sl.StudentIndex, sl.QuestionIndex))
+		if err := savePNGFile(p, sl.Image); err != nil {
+			return err
+		}
+	}
+	if len(pages) > 0 {
+		pageDir := filepath.Join(dir, "pages")
+		if err := os.MkdirAll(pageDir, 0o755); err != nil {
+			return err
+		}
+		if err := writePageGroups(pageDir, student, pages, res.PageNos); err != nil {
+			return err
+		}
+	}
+	ex.Results[student-1] = res
+	// 残卷告警已人工接受的标记随替换清理(新卷若仍缺页会重新挂告警)
+	if ex.Acked != nil {
+		delete(ex.Acked, fmt.Sprintf("s%d", student))
+	}
+	markDirtyLocked(ex)
+	detail := fmt.Sprintf("第 %d 卷(考号 %s)跨批合并残卷:%d 页 → %d 页", student, res.RegNumber, len(old.PageNos), len(res.PageNos))
+	ex.log(by, "replaceResult", detail)
+	return s.save(ex)
+}
+
+// SetSheetAck 残卷告警人工接受/撤销:接受后该卷不再阻塞「异常待处理」阶段
+// (操作员已线下核对该生各页;真正修复=整份重扫自动合并,或作废)。
+func (s *Store) SetSheetAck(id string, student int, ack bool, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return fmt.Errorf("考试 %s 不存在", id)
+	}
+	if student < 1 || student > len(ex.Results) {
+		return fmt.Errorf("学生序号 %d 越界(共 %d 卷)", student, len(ex.Results))
+	}
+	if ex.Acked == nil {
+		ex.Acked = map[string]bool{}
+	}
+	k := fmt.Sprintf("s%d", student)
+	if ack == ex.Acked[k] {
+		return fmt.Errorf("接受状态无变化")
+	}
+	if ack {
+		ex.Acked[k] = true
+	} else {
+		delete(ex.Acked, k)
+	}
+	verb := "接受残卷(已人工核对页序)"
+	if !ack {
+		verb = "撤销接受残卷"
+	}
+	ex.log(by, "ackSheet", fmt.Sprintf("第 %d 卷(考号 %s)%s", student, ex.AssignedReg(student), verb))
+	return s.save(ex)
+}
+
+// ClearFlagMarks 清除某卷某题的 ⚑ 待复核标记(整题键 + 全部小问键),分数保持不变。
+// 版本号自增:打开中的阅卷页再提交会 409,强制其拉取最新状态。
+func (s *Store) ClearFlagMarks(id string, student, question int, by string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return 0, fmt.Errorf("考试 %s 不存在", id)
+	}
+	cleared := 0
+	bump := func(key string) {
+		g, exists := ex.Grades[key]
+		if !exists || g.Mark != "flag" {
+			return
+		}
+		g.Mark = ""
+		g.Ver++
+		ex.Grades[key] = g
+		cleared++
+	}
+	bump(score.GradeKey(student, question))
+	for pi := 1; pi <= len(ex.Layout.Subjectives[question-1].Parts); pi++ {
+		bump(score.GradePartKey(student, question, pi))
+	}
+	if cleared == 0 {
+		return 0, fmt.Errorf("该卷该题没有 ⚑ 标记")
+	}
+	ex.log(by, "clearFlag", fmt.Sprintf("清除第 %d 卷主观题 %d 的 ⚑ 待复核标记(%d 处)", student, question, cleared))
+	return cleared, s.save(ex)
+}
+
+// NextShortID 预发一个考试短号(建考时复合码核对要在入库前生效;Create 会复用它)。
+func (s *Store) NextShortID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.genShortIDLocked()
 }
 
 // AppendManual 手工补录一名学生(漏扫/答题卡作废的补救语义):
@@ -635,7 +882,12 @@ func (s *Store) AppendManual(id, reg string, absent bool, answers []string, by s
 	if reg == "" {
 		return 0, fmt.Errorf("考号不能为空")
 	}
+	// 查重:作废卷对外语义是"不存在"(先作废坏卷再补录是最自然的顺序,不能被死卷挡住)
 	for i := range ex.Results {
+		res := ex.Results[i]
+		if res == nil || res.Voided {
+			continue
+		}
 		if ex.AssignedReg(i+1) == reg {
 			return 0, fmt.Errorf("考号 %s 已有答卷(第 %d 卷),无需补录", reg, i+1)
 		}
@@ -647,6 +899,7 @@ func (s *Store) AppendManual(id, reg string, absent bool, answers []string, by s
 	copy(ans, answers)
 	ex.Results = append(ex.Results, &omr.Result{RegNumber: reg, RegValid: true, Answers: ans, Absent: absent, Manual: true})
 	student := len(ex.Results)
+	markDirtyLocked(ex)
 	action, detail := "补录答卷", fmt.Sprintf("手工补录考号 %s(第 %d 卷,客观题 %d 道手输)", reg, student, len(answers))
 	if absent {
 		action, detail = "补录缺考", fmt.Sprintf("手工登记缺考:考号 %s(第 %d 卷)", reg, student)
@@ -679,6 +932,7 @@ func (s *Store) SetAbsent(id string, student int, absent bool, by string) error 
 	if !absent {
 		verb = "取消缺考"
 	}
+	markDirtyLocked(ex)
 	ex.log(by, "setAbsent", fmt.Sprintf("第 %d 卷(考号 %s)%s", student, ex.AssignedReg(student), verb))
 	return s.save(ex)
 }
@@ -707,6 +961,7 @@ func (s *Store) SetVoid(id string, student int, voided bool, by string) error {
 	if !voided {
 		verb = "恢复"
 	}
+	markDirtyLocked(ex)
 	ex.log(by, "setVoid", fmt.Sprintf("第 %d 卷(考号 %s)%s", student, ex.AssignedReg(student), verb))
 	return s.save(ex)
 }
@@ -760,7 +1015,7 @@ func (s *Store) AssignVariant(id string, student int, variant, by string) error 
 	if err != nil {
 		return fmt.Errorf("卷版式编译失败: %w", err)
 	}
-	pages := s.loadPageGroups(id, student) // 已存矫正图(pages/sNN.jpg、sNN_pKK.jpg)
+	pages := s.loadPageGroups(id, student) // 已存矫正图(按真实页号命名;旧数据按位置)
 	if len(pages) > 0 {
 		opt := omr.Options{Threshold: ex.Threshold}
 		var scans []pageScan
@@ -768,14 +1023,19 @@ func (s *Store) AssignVariant(id string, student int, variant, by string) error 
 			if rect == nil {
 				continue
 			}
-			if k >= len(book) {
-				break
+			// 页号对齐:残卷缺页时第 k 张图不一定是第 k 页,按入库时记录的真实页号选版式
+			pageNo := k + 1
+			if k < len(res.PageNos) && res.PageNos[k] >= 1 && res.PageNos[k] <= len(book) {
+				pageNo = res.PageNos[k]
 			}
-			r, _, err := omr.ReadRectified(book[k], rect, opt)
+			if pageNo > len(book) {
+				continue
+			}
+			r, _, err := omr.ReadRectified(book[pageNo-1], rect, opt)
 			if err != nil {
-				return fmt.Errorf("按 %s 卷重读第 %d 页失败: %w", variant, k+1, err)
+				return fmt.Errorf("按 %s 卷重读第 %d 页失败: %w", variant, pageNo, err)
 			}
-			scans = append(scans, pageScan{res: r, dbg: &omr.Debug{Rectified: rect}, sheet: book[k], subOffset: subjectiveOffset(book, k)})
+			scans = append(scans, pageScan{res: r, dbg: &omr.Debug{Rectified: rect}, sheet: book[pageNo-1], subOffset: subjectiveOffset(book, pageNo-1)})
 		}
 		if len(scans) == 0 {
 			return fmt.Errorf("第 %d 卷没有可重读的矫正图", student)
@@ -802,6 +1062,7 @@ func (s *Store) AssignVariant(id string, student int, variant, by string) error 
 		ex.AssignVariant = map[string]string{}
 	}
 	ex.AssignVariant[fmt.Sprintf("s%d", student)] = variant
+	markDirtyLocked(ex)
 	ex.log(by, "assignVariant", fmt.Sprintf("第 %d 卷(考号 %s)指派为 %s 卷并重读客观题", student, ex.AssignedReg(student), variant))
 	return s.save(ex)
 }

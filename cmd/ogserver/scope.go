@@ -167,8 +167,9 @@ func scopeExamToClasses(ex *Exam, classes []string) *Exam {
 //   - 不可见(不存在)→ (nil,false),对外一律 404,不泄露考试存在性;
 //   - 年级组长按组织架构收敛到管辖年级的班级(未配置年级=全量);
 //   - grading=true 时教师获得全量视图(跨班阅卷职责),否则按任教班级过滤;
-//   - 按班分配模式(TaskMode=class)下,被分到某班(含教学班)的教师,
-//     阅卷流只看到所分班级学生的卷(多班教师不再按全部任教班放行);
+//   - 按班分配模式(TaskMode=class)下,被分到班级(含教学班)的教师,
+//     阅卷流只看到所分班级学生的卷 —— 被分到多个班时合并可见(全部所分班),
+//     否则第二个班的任务在阅卷端永远无解;
 //   - 管理员恒为全量。
 func (s *Store) openExamFor(r *http.Request, u *auth.User, grading bool) (*Exam, bool) {
 	ex, ok := s.Get(r.PathValue("id"))
@@ -177,8 +178,8 @@ func (s *Store) openExamFor(r *http.Request, u *auth.User, grading bool) (*Exam,
 	}
 	if u.Role == auth.RoleTeacher {
 		if grading {
-			if c := assignedClassFor(ex, u); c != "" {
-				return scopeExamToClasses(ex, []string{c}), true
+			if cs := assignedClassesFor(ex, u); len(cs) > 0 {
+				return scopeExamToClasses(ex, cs), true
 			}
 			return ex, true
 		}
@@ -210,16 +211,27 @@ func classAssigned(ex *Exam, u *auth.User) bool {
 	return false
 }
 
-// assignedClassFor 返回按班分配模式下教师被分的班级(用于切片过滤的口径提示)。
+// assignedClassFor 返回按班分配模式下教师被分的第一个班级(提示口径用)。
 // 未被分班返回空串。
 func assignedClassFor(ex *Exam, u *auth.User) string {
-	if u == nil || ex.TaskMode != "class" {
+	cs := assignedClassesFor(ex, u)
+	if len(cs) == 0 {
 		return ""
 	}
+	return cs[0]
+}
+
+// assignedClassesFor 返回按班分配模式下教师被分到的全部班级(走班可多班;
+// 阅卷切片过滤合并全部所分班 —— 只取第一个会让第二个班的任务永远完不成)。
+func assignedClassesFor(ex *Exam, u *auth.User) []string {
+	if u == nil || ex.TaskMode != "class" {
+		return nil
+	}
+	var out []string
 	for _, c := range u.AllClasses() {
 		if ex.ClassTasks[c] == u.Username {
-			return c
+			out = append(out, c)
 		}
 	}
-	return ""
+	return out
 }

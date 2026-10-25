@@ -52,12 +52,20 @@ func handleAggregate(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		return
 	}
 	var exams []*Exam
-	totalExams := 0 // 该分组的全部考试数(不论当前账号是否可见;前端据此提示口径)
+	totalExams := 0   // 该分组的全部考试数(不论当前账号是否可见;前端据此提示口径)
+	pendingExams := 0 // 其中未发布/发布后有变更的科目数:不进总分排名,未收敛前排名会失真
 	for _, ex := range store.List() {
 		if ex.ExamGroup != group {
 			continue
 		}
 		totalExams++
+		if !ex.Published {
+			pendingExams++
+			continue // 未发布科目不进总分:阅卷中/扫描中的列会把总分排名拉错,且无「口径未收敛」可言
+		}
+		if ex.Dirty {
+			pendingExams++ // 发布后又有变更:数字可用但提示需重新发布收口
+		}
 		if canOpenExam(u, ex, store.School) {
 			exams = append(exams, ex)
 		}
@@ -78,9 +86,7 @@ func handleAggregate(w http.ResponseWriter, r *http.Request, store *Store, u *au
 			if res == nil || res.Voided || !res.Absent {
 				continue
 			}
-			if findIndex(ex, ex.AssignedReg(i+1)) != 0 {
-				absent++
-			}
+			absent++ // 缺考人数按登记口径全量计(与考试列表/详情一致);考号未指派的缺考卷也是缺考
 		}
 		cols = append(cols, aggregateExam{
 			ID: ex.ID, Subject: ex.Subject, Date: examDateOf(ex),
@@ -208,10 +214,11 @@ func handleAggregate(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		cols = []aggregateExam{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"group":      group,
-		"exams":      cols,
-		"totalExams": totalExams, // 分组内考试总数;与 exams 数量不一致 = 当前账号不可见部分科目,总分/排名仅按可见科目
-		"students":   all,
+		"group":        group,
+		"exams":        cols,
+		"totalExams":   totalExams, // 分组内考试总数;与 exams 数量不一致 = 当前账号不可见部分科目,总分/排名仅按可见科目
+		"pendingExams": pendingExams,
+		"students":     all,
 	})
 }
 

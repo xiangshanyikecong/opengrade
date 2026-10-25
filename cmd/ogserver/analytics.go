@@ -16,19 +16,25 @@ import (
 	"github.com/opengrade/opengrade/score"
 )
 
-// handleSetKey 修正客观题参考答案:POST /api/v1/exams/{id}/key {"key":["A","B",...]}
+// handleSetKey 修正客观题参考答案:POST /api/v1/exams/{id}/key {"key":["A","B",...],"variant":"A"|"B"}
 // 管理员/年级组长/建卷教师可操作;修正后全班客观题分自动重统。
+// variant="B" 修正 B 卷答案(建考时「留空=后补」的出口;key 按规范题号序)。
 func handleSetKey(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	var req struct {
-		Key []string `json:"key"`
+		Key     []string `json:"key"`
+		Variant string   `json:"variant"` // ""/"A" = A 卷;“B” = B 卷
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
 	ex, ok := store.Get(r.PathValue("id"))
-	if !ok || !canOpenExam(u, ex, store.School) {
+	if !ok {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
+		return
+	}
+	if !canOpenExam(u, ex, store.School) {
+		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在或无权访问该考试(不在你的任教/管辖范围)"))
 		return
 	}
 	// 仅管理员/年级组长/建卷人可改标准答案(普通任课教师不可动他人卷的答案键)
@@ -36,7 +42,7 @@ func handleSetKey(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 		httpError(w, http.StatusForbidden, fmt.Errorf("仅管理员、年级组长或建卷教师可修正参考答案"))
 		return
 	}
-	if err := store.SetObjectiveKey(ex.ID, req.Key, u.Username); err != nil {
+	if err := store.SetObjectiveKey(ex.ID, req.Key, u.Username, req.Variant); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -45,6 +51,8 @@ func handleSetKey(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 
 // handlePublish 成绩发布控制:POST /api/v1/exams/{id}/publish {"published":true}
 // 仅管理员/年级组长/建卷教师可发布或撤回(他人考试不可代发布)。
+// 发布门禁(数据即状态的收口):异常卷未裁决/主观题未评完(含半阅)/客观题答案未录齐
+// 一律 422 拒绝并说明差什么 —— 未评按 0 分进排名与错题本,是最伤学生的错数。
 func handlePublish(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	var req struct {
 		Published bool `json:"published"`
@@ -54,19 +62,48 @@ func handlePublish(w http.ResponseWriter, r *http.Request, store *Store, u *auth
 		return
 	}
 	ex, ok := store.Get(r.PathValue("id"))
-	if !ok || !canOpenExam(u, ex, store.School) {
+	if !ok {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
+		return
+	}
+	if !canOpenExam(u, ex, store.School) {
+		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在或无权访问该考试(不在你的任教/管辖范围)"))
 		return
 	}
 	if !(u.Role == auth.RoleAdmin || u.Role == auth.RoleLeader || ex.CreatedBy == u.Username) {
 		httpError(w, http.StatusForbidden, fmt.Errorf("仅管理员、年级组长或建卷教师可控制成绩发布"))
 		return
 	}
+	if req.Published && ex.ManualFull == 0 { // 手工成绩科目没有异常/主观/答案概念,不设门禁
+		stage := examStage(ex)
+		if stage.Students == 0 {
+			httpError(w, http.StatusUnprocessableEntity,
+				fmt.Errorf("这场考试还没有任何卷(已扫 0/名册 %d 人),发布空考试没有意义——先上传扫描件,或对全员登记缺考", stage.Expected))
+			return
+		}
+		if stage.Warnings > 0 {
+			httpError(w, http.StatusUnprocessableEntity,
+				fmt.Errorf("还有 %d 张异常卷未裁决(%s),处理完才能发布——考试详情「异常清单」", stage.Warnings, examBlockingWarningSamples(ex, 3)))
+			return
+		}
+		if stage.Ungraded > 0 {
+			httpError(w, http.StatusUnprocessableEntity,
+				fmt.Errorf("主观题还有 %d 份切片未评完(含半阅),评完才能发布——未评按 0 分进排名与错题本会误导学生", stage.Ungraded))
+			return
+		}
+		for i, k := range ex.ObjectiveKey {
+			if k == "" {
+				httpError(w, http.StatusUnprocessableEntity,
+					fmt.Errorf("第 %d 题客观题参考答案未录入,补齐后才能发布(考试详情「客观题参考答案」;空答案题不判分)", i+1))
+				return
+			}
+		}
+	}
 	if err := store.SetPublished(ex.ID, req.Published, u.Username); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"published": req.Published})
+	writeJSON(w, http.StatusOK, map[string]any{"published": req.Published, "dirty": false})
 }
 
 // handleAudit 操作审计日志:GET /api/v1/exams/{id}/audit(管理员/年级组长)。
@@ -218,6 +255,9 @@ func perClassQuestionRates(ex *Exam) map[string][]float64 {
 		for _, c := range cls {
 			accs := get(c)
 			for qi := 0; qi < nObj && qi < len(res.Answers); qi++ {
+				if ex.ObjectiveKey[qi] == "" {
+					continue // 空键题不判分:不进班级逐题口径(与全体统计一致)
+				}
 				accs[qi].count++
 				if res.Answers[qi] == ex.ObjectiveKey[qi] {
 					accs[qi].correct++
