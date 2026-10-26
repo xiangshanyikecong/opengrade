@@ -96,12 +96,25 @@
     </label>
     <div class="group-title">客观题(一题一行:可单独删除 / 上下移动 / 改分值;批量插入一次加一段)</div>
     <div id="objSpecs"></div>
-    <button class="secondary" onclick="addObj()">+ 加 1 道客观题</button>
-    <button class="secondary" onclick="batchObj()">⇩ 批量插入客观题…</button>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="secondary" onclick="addObj()">+ 加 1 道客观题</button>
+      <button class="secondary" onclick="batchObj()">⇩ 批量插入客观题…</button>
+      <span class="hint">批量设分:</span>
+      <input id="objScoreAll" type="number" step="0.5" min="0" value="2" style="width:60px">
+      <button class="secondary" onclick="setAllObjScore()">全部应用</button>
+    </div>
     <div class="group-title">主观题(留白作答区,切片后人工阅卷)</div>
     <div id="subSpecs"></div>
     <div class="totalbar">卷面合计 <b id="totalScore">-</b><span class="hint" id="totalDetail"></span></div>
-    <button class="secondary" onclick="addSub()">+ 加一道主观题</button>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="secondary" onclick="addSub()">+ 加一道主观题</button>
+      <span class="hint">批量设分:</span>
+      <input id="subScoreAll" type="number" step="0.5" min="0" value="10" style="width:60px">
+      <button class="secondary" onclick="setAllSubScore()">全部应用</button>
+      <span class="hint">批量设留白高(mm):</span>
+      <input id="subHeightAll" type="number" step="1" min="8" value="40" style="width:60px">
+      <button class="secondary" onclick="setAllSubHeight()">全部应用</button>
+    </div>
     <button class="secondary" id="bankPickBtn" onclick="pickBank()">⇩ 从题库选题</button>
     <div id="bankPick" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px;max-height:300px;overflow:auto"></div>
     <button class="secondary" onclick="toggleImportPanel()">⇩ 导入版式 JSON</button>
@@ -127,7 +140,7 @@
     </div>
     <button class="secondary" onclick="togglePaperScan()">⇩ 从试卷扫描识别版式(半自动)</button>
     <div id="paperScan" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px;display:grid;gap:8px">
-      <p class="hint">上传试卷照片/扫描件(PNG/JPG/多页 PDF),自动检测题目构成(客观题题型/选项数、留白作答区高度)并生成叠加标注图;<b>半自动</b>:「应用到表单」后请逐题核对题型/选项数/分值再出卡。适用:A4 单栏印刷体、倾斜 ≤±5°;双栏试卷请逐栏裁剪分次识别;多选与单选结构相同(默认按单选导入);判断题请印 A/B 选项;填空的下划线会当作文字行,需手工补题。</p>
+      <p class="hint">上传试卷照片/扫描件(PNG/JPG/多页 PDF),自动检测题目构成(客观题题型/选项数/题号、留白作答区高度),并裁出每题<b>题干截图</b>供核对与导入题库;<b>半自动</b>:「应用到表单」后请逐题核对题型/选项数/分值再出卡。适用:A4 单栏或标准双栏印刷体、倾斜 ≤±5°;判断题印 A/B 或「对/错」均可识别;多选与单选结构相同(默认按单选导入);填空的下划线会当作文字行,需手工补题;手机照片请正对拍摄(强透视矫正属后续版本)。</p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <input id="paperFile" type="file" accept="image/png,image/jpeg,application/pdf" multiple>
         <button class="primary" id="paperAnalyzeBtn" onclick="analyzePaper()">开始识别</button>
@@ -325,7 +338,7 @@ async function pickBank() {
   const kn = { choice: "单选", judge: "判断", multiple: "多选", fillblank: "填空", subjective: "解答" };
   box.innerHTML = bankCache.map(it => `<label style="display:block;font-size:13px;padding:3px 0">
       <input type="checkbox" data-id="${it.id}">
-      [${kn[it.kind] || it.kind}${it.options ? " " + it.options + "选" : ""} ${it.score || "?"} 分] ${it.stem || "(无题干)"}
+      [${kn[it.kind] || it.kind}${it.options ? " " + it.options + "选" : ""} ${it.score || "?"} 分] ${it.stem || "(无题干)"}${it.stemImage ? ` <img src="/api/v1/bank/${it.id}/stem" onclick="OG.lightbox(this.src,'题干截图');return false" style="height:22px;vertical-align:middle;border:1px solid var(--line);border-radius:3px;cursor:zoom-in">` : ""}
       <span class="hint">答:${it.answer || "-"} · ${it.knowledge || ""}${it.difficulty ? " · " + it.difficulty : ""}</span>
     </label>`).join("") + `<button class="primary" onclick="insertBank()">插入所选</button> <span class="hint" id="pickMsg"></span>`;
 }
@@ -452,7 +465,7 @@ async function analyzePaper() {
   $("paperAnalyzeBtn").disabled = true;
   const box = $("paperResult");
   try {
-    if (!paperDraft) paperDraft = { questions: [], subjectives: [], notes: [], overlays: [] };
+    if (!paperDraft) paperDraft = { questions: [], subjectives: [], notes: [], overlays: [], skews: [] };
     const images = await OG.collectScanFiles(files, box);
     let page = 0;
     for (const img of images) {
@@ -466,6 +479,7 @@ async function analyzePaper() {
       paperDraft.questions.push(...(j.questions || []));
       paperDraft.subjectives.push(...(j.subjectives || []));
       paperDraft.notes.push(...(j.notes || []));
+      paperDraft.skews.push(+(j.skewDeg || 0));
       if (j.overlay) paperDraft.overlays.push(j.overlay);
     }
     renderPaperDraft();
@@ -479,16 +493,92 @@ function renderPaperDraft() {
     box.innerHTML = `<span class="hint">未检测到题目构成。</span>`;
     return;
   }
-  const objTotal = d.questions.reduce((a, q) => a + (+q.score || 0), 0);
+  const kn = { choice: "单选", judge: "判断" };
+  const qRows = d.questions.map((q, i) => {
+    const warn = q.note ? ` <span class="err">⚠ ${OG.esc(q.note)}</span>` : "";
+    const stem = q.stem ? ` <img src="data:image/jpeg;base64,${q.stem}" onclick="OG.lightbox(this.src,'第 ${i + 1} 题题干截图')" style="height:26px;vertical-align:middle;border:1px solid var(--line);border-radius:3px;cursor:zoom-in">` : "";
+    return `<div>第 ${i + 1} 题:${kn[q.kind] || q.kind} × ${q.options} 选项,分值待改${warn}${stem}</div>`;
+  }).join("");
+  const subRows = d.subjectives.map((s, i) => {
+    const warn = s.note ? ` <span class="err">⚠ ${OG.esc(s.note)}</span>` : "";
+    const stem = s.stem ? ` <img src="data:image/jpeg;base64,${s.stem}" onclick="OG.lightbox(this.src,'留白区 ${i + 1} 上方题干截图')" style="height:26px;vertical-align:middle;border:1px solid var(--line);border-radius:3px;cursor:zoom-in">` : "";
+    return `<div>留白区 ${i + 1}:高 ${s.heightMM}mm(扣书写边距)${warn}${stem}</div>`;
+  }).join("");
+  const skew = (d.skews || []).filter(v => Math.abs(v) >= 0.2).map(v => `页面倾斜 ${v}°(已自动矫正)`);
   box.innerHTML = `
-    <div class="ok">累计检测:客观 ${d.questions.length} 题(${objTotal} 分,统一 1 分待改)、留白作答区 ${d.subjectives.length} 处。</div>
+    <div class="ok">累计检测:客观 ${d.questions.length} 题、留白作答区 ${d.subjectives.length} 处。点缩略图可放大核对题干截图;「应用到表单」后请逐题核对题型/选项数/分值。</div>
+    ${skew.map(t => `<div class="hint">${OG.esc(t)}</div>`).join("")}
     ${(d.notes || []).map(n => `<div class="hint">⚠ ${OG.esc(n)}</div>`).join("")}
-    ${(d.overlays || []).map((b64, i) => `<img src="data:image/jpeg;base64,${b64}" alt="第${i + 1}页标注" style="max-width:100%;border:1px solid var(--line);border-radius:6px">`).join("")}
-    <div style="display:flex;gap:8px">
+    <div style="border:1px dashed var(--line);border-radius:6px;padding:8px;display:grid;gap:2px;font-size:13px">${qRows}${subRows}</div>
+    ${(d.overlays || []).map((b64, i) => `<img src="data:image/jpeg;base64,${b64}" alt="第${i + 1}页标注" onclick="OG.lightbox(this.src,'第 ${i + 1} 页检测标注')" style="max-width:100%;border:1px solid var(--line);border-radius:6px;cursor:zoom-in">`).join("")}
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button class="primary" onclick="applyPaperDraft()">应用到表单(替换当前题目)</button>
       <button class="secondary" onclick="paperDraft=null;document.getElementById('paperResult').innerHTML='';document.getElementById('paperFile').value=''">清空结果</button>
+      <button class="secondary" onclick="importDraftToBank()">⇩ 把这 ${d.questions.length + d.subjectives.length} 题导入题库…</button>
+      <span class="hint">学科 <input id="paperBankSubject" placeholder="如 数学" style="width:80px"> 知识点 <input id="paperBankKnowledge" placeholder="如 函数" style="width:100px">(可选)</span>
+      <span class="hint" id="paperBankMsg"></span>
     </div>`;
 }
+
+// importDraftToBank 把识别出的题目批量导入校本题库(题干截图随题上传)。
+// 部分失败不回滚:截图失败只影响该题无缩略图,可到题库手工补。
+async function importDraftToBank() {
+  const d = paperDraft;
+  if (!d || (!d.questions.length && !d.subjectives.length)) return;
+  const subject = ($("paperBankSubject")?.value || "").trim();
+  const knowledge = ($("paperBankKnowledge")?.value || "").trim();
+  const box = $("paperBankMsg");
+  const items = [
+    ...d.questions.map(q => ({ kind: q.kind, options: q.options, score: q.score || 1, stem: q.stem || "" })),
+    ...d.subjectives.map(s => ({ kind: "subjective", options: 0, score: 10, stem: s.stem || "" })),
+  ];
+  let ok = 0, fail = 0;
+  for (let i = 0; i < items.length; i++) {
+    box.textContent = `导入题库 ${i + 1}/${items.length}…`;
+    try {
+      const r = await fetch("/api/v1/bank", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: items[i].kind, options: items[i].options, score: items[i].score, subject, knowledge, stem: "" }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+      if (items[i].stem) {
+        try {
+          const fd = new FormData();
+          fd.append("image", stemBlob(items[i].stem));
+          await fetch(`/api/v1/bank/${j.id}/stem`, { method: "POST", body: fd });
+        } catch (_) { /* 截图失败不阻断:题已入库 */ }
+      }
+      ok++;
+    } catch (e) { fail++; }
+  }
+  box.textContent = `已导入 ${ok} 题${fail ? `,失败 ${fail}(请检查登录状态后重试)` : ""}。到「教师工作台 → 校本题库」查看。`;
+}
+
+// stemBlob base64 JPEG → Blob(题干截图上传)。
+function stemBlob(b64) {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return new Blob([arr], { type: "image/jpeg" });
+}
+// —— 批量设分值 / 留白高:识别导入后逐格改分太痛,一键按当前行序全量套用 ——
+function setAllObjScore() {
+  const v = +$("objScoreAll").value;
+  if (!(v >= 0)) return;
+  [...$("objSpecs").children].forEach(d => { d.querySelector(".s").value = v; });
+  updateTotal();
+}
+function setAllSubScore() {
+  const v = +$("subScoreAll").value;
+  if (!(v >= 0)) return;
+  [...$("subSpecs").children].forEach(d => { d.querySelector(".s").value = v; });
+  updateTotal();
+}
+function setAllSubHeight() {
+  const v = +$("subHeightAll").value;
+  if (!(v >= 8)) return;
+  [...$("subSpecs").children].forEach(d => { d.querySelector(".h").value = v; });
+  updateTotal();
+}
+
 function applyPaperDraft() {
   const d = paperDraft;
   if (!d) return;

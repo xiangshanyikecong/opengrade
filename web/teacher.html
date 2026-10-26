@@ -1525,7 +1525,7 @@ async function renderBank() {
   for (const it of items) {
     const mine = it.createdBy === OG.me.username;
     html += `<tr><td>${it.subject || "-"}</td><td>${bankKinds[it.kind] || it.kind}${it.options ? "(" + it.options + "选)" : ""}</td>
-      <td>${it.score || "-"}</td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${OG.esc(it.stem || "")}">${OG.esc(it.stem) || "-"}</td>
+      <td>${it.score || "-"}</td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${OG.esc(it.stem || "")}">${OG.esc(it.stem) || "-"}${it.stemImage ? ` <img src="/api/v1/bank/${it.id}/stem" onclick="OG.lightbox(this.src,'题干截图');return false" style="height:24px;vertical-align:middle;border:1px solid var(--line);border-radius:3px;cursor:zoom-in" alt="题干截图">` : ""}</td>
       <td>${it.answer || "-"}</td><td>${it.knowledge || "-"}</td><td>${it.difficulty || "-"}</td><td>${(it.usedIn || []).length ? (it.usedIn.length + " 场") : "-"}</td><td>${it.createdBy || "-"}</td>
       <td>${mine || OG.is("admin", "leader") ? `<a href="#" class="danger" onclick="delBankQuestion('${it.id}');return false">删除</a>` : ""}</td></tr>`;
   }

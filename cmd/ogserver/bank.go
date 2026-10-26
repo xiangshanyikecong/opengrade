@@ -9,10 +9,13 @@ package main
 // 都以这份"题 → 知识点/答案"数据为共同底座。
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,11 +31,12 @@ import (
 // BankQuestion 是校本题库的一道题(学校自录)。
 type BankQuestion struct {
 	ID         string    `json:"id"`
-	Subject    string    `json:"subject,omitempty"`    // 学科(过滤用)
-	Kind       string    `json:"kind"`                 // choice | judge | multiple | fillblank | subjective
-	Options    int       `json:"options,omitempty"`    // 客观题选项数 2~6;判断题恒为 2
-	Score      float64   `json:"score,omitempty"`      // 建议分值(插入版式时带出)
-	Stem       string    `json:"stem,omitempty"`       // 题干文本(可空:主观题可用截图/教辅编号代替)
+	Subject    string    `json:"subject,omitempty"`  // 学科(过滤用)
+	Kind       string    `json:"kind"`               // choice | judge | multiple | fillblank | subjective
+	Options    int       `json:"options,omitempty"`  // 客观题选项数 2~6;判断题恒为 2
+	Score      float64   `json:"score,omitempty"`    // 建议分值(插入版式时带出)
+	Stem       string    `json:"stem,omitempty"`     // 题干文本(可空:主观题可用截图/教辅编号代替)
+	StemImage  string    `json:"stemImage,omitempty"` // 题干截图文件名(data/bank/ 下;试卷识别导入题库时上传)
 	Answer     string    `json:"answer,omitempty"`     // 参考答案:客观题为选项字母(如 "A"/"AC"),主观题为答案要点
 	Knowledge  string    `json:"knowledge,omitempty"`  // 知识点标签(多个用 , 、 分隔)
 	Difficulty string    `json:"difficulty,omitempty"` // 难度先验:容易 | 中等 | 较难 | 难(可空,统计难度仍以实考得分率准)
@@ -41,16 +45,17 @@ type BankQuestion struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
-// BankStore 是题库的文件存储(data/bank.json,单文件整读整写)。
+// BankStore 是题库的文件存储(data/bank.json,单文件整读整写;题干截图在 data/bank/)。
 type BankStore struct {
 	mu    sync.Mutex
 	path  string
+	dir   string // 题干截图目录 data/bank/
 	items []BankQuestion
 }
 
 // LoadBank 从数据目录加载题库;文件不存在时返回空库。
 func LoadBank(dataDir string) (*BankStore, error) {
-	s := &BankStore{path: filepath.Join(dataDir, "bank.json")}
+	s := &BankStore{path: filepath.Join(dataDir, "bank.json"), dir: filepath.Join(dataDir, "bank")}
 	b, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -173,11 +178,50 @@ func (s *BankStore) Delete(id string) error {
 	defer s.mu.Unlock()
 	for i := range s.items {
 		if s.items[i].ID == id {
+			if s.items[i].StemImage != "" {
+				_ = os.Remove(filepath.Join(s.dir, s.items[i].StemImage)) // 截图孤儿文件清理
+			}
 			s.items = append(s.items[:i], s.items[i+1:]...)
 			return s.save()
 		}
 	}
 	return fmt.Errorf("题目 %s 不存在", id)
+}
+
+// SetStemImage 保存题干截图(data/bank/<id>.jpg,原子落盘)并回写 StemImage 字段。
+func (s *BankStore) SetStemImage(id string, jpg []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items {
+		if s.items[i].ID == id {
+			if err := os.MkdirAll(s.dir, 0o755); err != nil {
+				return err
+			}
+			name := id + ".jpg"
+			if err := writeFileAtomic(filepath.Join(s.dir, name), jpg, 0o644); err != nil {
+				return err
+			}
+			s.items[i].StemImage = name
+			return s.save()
+		}
+	}
+	return fmt.Errorf("题目 %s 不存在", id)
+}
+
+// StemImagePath 返回题干截图落盘路径(未上传返回 false)。
+func (s *BankStore) StemImagePath(id string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items {
+		if s.items[i].ID == id {
+			if s.items[i].StemImage == "" {
+				return "", false
+			}
+			// 文件名由服务端生成(<id>.jpg),不含用户输入,无目录穿越面
+			return filepath.Join(s.dir, s.items[i].StemImage), true
+		}
+	}
+	return "", false
 }
 
 // validateBankQuestion 校验题型契约(客观题答案必须是合法选项字母组合)。
@@ -295,4 +339,55 @@ func handleBankDelete(w http.ResponseWriter, r *http.Request, bank *BankStore, u
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// handleBankStemUpload 上传题干截图:POST /api/v1/bank/{id}/stem(multipart 字段 image)。
+// 试卷识别确认页「导入题库」把每题的题干截图落到 data/bank/<id>.jpg。
+func handleBankStemUpload(w http.ResponseWriter, r *http.Request, bank *BankStore, u *auth.User) {
+	q, ok := bank.Get(r.PathValue("id"))
+	if !ok {
+		httpError(w, http.StatusNotFound, fmt.Errorf("题目不存在"))
+		return
+	}
+	if !canManageBank(u, q) {
+		httpError(w, http.StatusForbidden, fmt.Errorf("仅题目创建者、管理员或年级组长可上传"))
+		return
+	}
+	if err := r.ParseMultipartForm(16 << 20); err != nil {
+		httpError(w, http.StatusBadRequest, fmt.Errorf("解析 multipart 失败: %w", err))
+		return
+	}
+	file, _, err := r.FormFile("image")
+	if err != nil {
+		httpError(w, http.StatusBadRequest, fmt.Errorf("缺少 image 字段: %w", err))
+		return
+	}
+	defer file.Close()
+	img, _, err := image.Decode(file)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, fmt.Errorf("图像解码失败: %w", err))
+		return
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
+		httpError(w, http.StatusInternalServerError, fmt.Errorf("截图编码失败: %w", err))
+		return
+	}
+	if err := bank.SetStemImage(q.ID, buf.Bytes()); err != nil {
+		httpError(w, http.StatusInternalServerError, err)
+		return
+	}
+	updated, _ := bank.Get(q.ID)
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// handleBankStemGet 读取题干截图:GET /api/v1/bank/{id}/stem(staff 可读)。
+func handleBankStemGet(w http.ResponseWriter, r *http.Request, bank *BankStore, _ *auth.User) {
+	p, ok := bank.StemImagePath(r.PathValue("id"))
+	if !ok {
+		httpError(w, http.StatusNotFound, fmt.Errorf("该题没有题干截图"))
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	http.ServeFile(w, r, p)
 }

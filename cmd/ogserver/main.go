@@ -155,6 +155,8 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	mux.HandleFunc("POST /api/v1/bank", staff(withBank(handleBankCreate)))
 	mux.HandleFunc("POST /api/v1/bank/{id}", staff(withBank(handleBankUpdate)))
 	mux.HandleFunc("DELETE /api/v1/bank/{id}", staff(withBank(handleBankDelete)))
+	mux.HandleFunc("POST /api/v1/bank/{id}/stem", staff(withBank(handleBankStemUpload)))
+	mux.HandleFunc("GET /api/v1/bank/{id}/stem", staff(withBank(handleBankStemGet)))
 
 	// —— 管理员/年级组长 ——
 	manage := guard(authStore, auth.RoleAdmin, auth.RoleLeader)
