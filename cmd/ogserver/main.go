@@ -111,6 +111,7 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	mux.HandleFunc("GET /api/v1/exams/{id}/slices", staff(withStore(handleSlices)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/slice/{student}/{q}", staff(withStore(handleSliceImage)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/page/{student}", staff(withStore(handleExamPageStaff)))
+	mux.HandleFunc("GET /api/v1/exams/{id}/overlay/{student}", staff(withStore(handleExamOverlayStaff)))
 	mux.HandleFunc("POST /api/v1/grades", staff(withStore(handleSetGrade)))
 	mux.HandleFunc("POST /api/v1/assign", staff(withStore(handleAssign)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/suggest/{student}", staff(withStore(handleSuggest)))
@@ -638,7 +639,8 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 	// 按考号逐页归组入库:每页独立判读考号+页点页号+卷种,按考号分组合并。
 	// 不再要求总张数是页数的整数倍 —— 卡纸跳页只产生缺页告警,不再全局错位。
 	ing := ingestScanImages(imgs, book, opt, 0, ab)
-	if len(imgs) > 0 && len(ing.results) == 0 {
+	if len(imgs) > 0 && len(ing.results) == 0 && len(ing.keyCards) == 0 {
+		// 整批没有任何学生卷:仅答案卡(考号全 9)的建考批也合法(参考答案由卡录入)
 		httpError(w, http.StatusUnprocessableEntity,
 			fmt.Errorf("全部扫描件识别失败:%s", failSummary(ing.failed)))
 		return
@@ -671,11 +673,15 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		Session:   session,
 		LayoutB:   layoutB, KeyB: keyBCanon, OrderB: orderB, ShortID: shortID,
 		Preprocess: preprocessFrom(opt),
+		Overlays:   ing.overlays,
 	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err)
 		return
 	}
+	// 随批扫入的教师答案卡(考号全 9):建考后录入参考答案(与表单 key 的冲突
+	// 由 ApplyKeySheet 的"已有答案不覆盖"语义兜底,差异进审计与响应提示)
+	applyKeyCards(store, ex.ID, &ing, u.Username)
 	// 校本题库回记:版式里来自题库的题标记「被本场考试使用」
 	if bank != nil {
 		for _, q := range ex.Layout.Questions {

@@ -10,9 +10,12 @@ package main
 // 兼容回退:版式无考号通道,或整批考号全部不可读且张数恰为整数倍时,退回位置分组。
 
 import (
+	"bytes"
 	"fmt"
 	"image"
+	"image/png"
 	"sort"
+	"strings"
 
 	"github.com/opengrade/opengrade/card"
 	"github.com/opengrade/opengrade/omr"
@@ -24,6 +27,13 @@ type scanFail struct {
 	Error string `json:"error"`
 }
 
+// keyCard 是批内识别出的教师答案卡(考号全 9 的约定卷,吸收自 open-mcr 的
+// key sheet):不进学生卷流,由服务端录入客观题参考答案。
+type keyCard struct {
+	SheetNo int      // 批内答案卡序号(1-based,反馈提示用)
+	Answers []string // 判读出的逐题作答(AB 卷已归一到规范题号序)
+}
+
 // ingestResult 是一批扫描件的入库产物。
 type ingestResult struct {
 	results        []*omr.Result
@@ -33,7 +43,10 @@ type ingestResult struct {
 	pageNos        [][]int      // 每生逐页(按合并序)的真实页号;0=未知(页点不可信/旧卡)
 	mergedStudents []int        // 跨批合并进的存量卷号(响应提示用)
 	failed         []scanFail
-	notes          []string // 缺页/多余页/回退说明,前端展示在扫描反馈里
+	notes          []string       // 缺页/多余页/回退说明,前端展示在扫描反馈里
+	keyCards       []keyCard      // 教师答案卡(考号全 9),交 applyKeyCards 录入参考答案
+	overlays       [][][]byte     // 与 pageGroups 平行:逐生逐页判读叠加图(PNG 编码;nil=未生成)
+	overlaySeq     int            // 正常卷叠加图抽样计数器(异常卷必存,正常卷 1/20)
 }
 
 // pageIdent 是一页扫描件的"身份判读":矫正图 + 考号 + 页点页号 + 卷种(AB 卷)。
@@ -63,7 +76,7 @@ func ingestScanImages(imgs []image.Image, book []*card.Sheet, opt omr.Options, b
 				fail(i+1, fmt.Errorf("识别失败: %w", err))
 				continue
 			}
-			res, _, err := omr.ReadRectified(book[0], rect, opt)
+			res, dbg, err := omr.ReadRectified(book[0], rect, opt)
 			if err != nil {
 				fail(i+1, fmt.Errorf("判读失败: %w", err))
 				continue
@@ -73,7 +86,7 @@ func ingestScanImages(imgs []image.Image, book []*card.Sheet, opt omr.Options, b
 			if res.Variant == "B" && (ab == nil || !ab.hasB) {
 				res.Warnings = append(res.Warnings, "卷面为 B 卡但本场未配置 B 卷版式,已按 A 版式判读,客观题作答可疑——请核对纸质卷或作废")
 			}
-			ps := pageScan{res: res, dbg: &omr.Debug{Rectified: rect}, sheet: book[0]}
+			ps := pageScan{res: res, dbg: dbg, sheet: book[0]}
 			out.appendStudent([]pageScan{ps}, base, ab, opt, nil, nil)
 		}
 		return out
@@ -323,6 +336,17 @@ func (io *ingestResult) appendStudent(pages []pageScan, base int, ab *abSupport,
 	if len(pageNos) == len(pages) {
 		merged.PageNos = pageNos
 	}
+	// 教师答案卡(考号全 9 的约定卷):不进学生卷流,交 applyKeyCards 录入参考答案。
+	// 硬校验:考号必须逐位精确判读(RegValid 保证唯一判读),否则按正常学生卷走;
+	// 卷种待指派的卡不充当答案卡(身份不明)。
+	if len(pages) > 0 {
+		if digits := pages[0].sheet.Layout.RegDigits; digits > 0 && merged.RegValid &&
+			merged.RegNumber == strings.Repeat("9", digits) && !merged.PendingVariant {
+			io.keyCards = append(io.keyCards, keyCard{SheetNo: len(io.keyCards) + 1, Answers: merged.Answers})
+			return
+		}
+	}
+	io.overlays = append(io.overlays, renderOverlays(pages, merged, opt, io))
 	io.results = append(io.results, merged)
 	io.slices = append(io.slices, slicesOfPageScans(pages, base+len(io.results), merged.RegNumber))
 	rects := make([]*image.Gray, len(pages))
@@ -332,6 +356,37 @@ func (io *ingestResult) appendStudent(pages []pageScan, base int, ab *abSupport,
 	io.pageGroups = append(io.pageGroups, rects)
 	io.pages = append(io.pages, pages)
 	io.pageNos = append(io.pageNos, merged.PageNos)
+}
+
+// overlaySampleEvery 正常卷判读叠加图的抽样间隔(异常卷必存,不受抽样影响)。
+const overlaySampleEvery = 20
+
+// renderOverlays 渲染一名学生逐页的判读叠加图并编码为 PNG(吸收自 OMRChecker
+// 的 CheckedOMRs:复核时直接看"机器看到了什么",处理争议极快)。
+// 异常卷(有告警)必存;正常卷按 1/overlaySampleEvery 抽样存档。
+// 逐页产物与 pages 对齐,无矫正图/编码失败的页为 nil。
+func renderOverlays(pages []pageScan, merged *omr.Result, opt omr.Options, io *ingestResult) [][]byte {
+	sampled := io.overlaySeq%overlaySampleEvery == 0
+	io.overlaySeq++
+	if len(merged.Warnings) == 0 && !sampled {
+		return nil
+	}
+	out := make([][]byte, len(pages))
+	for k, p := range pages {
+		if p.dbg == nil || p.dbg.Rectified == nil || p.dbg.ChoiceRatio == nil {
+			continue // 位置分组回退等极少数无逐泡比值的页:不出叠加图
+		}
+		ov := omr.RenderDebugOverlay(p.dbg, p.sheet, opt.MarkThreshold)
+		if ov == nil {
+			continue
+		}
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, ov); err != nil {
+			continue
+		}
+		out[k] = buf.Bytes()
+	}
+	return out
 }
 
 // mergeStudentOnly 供跨批残卷合并复用:只做合并与 AB 归一,不追加进批次产物。

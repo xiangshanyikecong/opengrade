@@ -8,10 +8,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/opengrade/opengrade/card"
 )
 
 func TestNewFeaturesE2E(t *testing.T) {
@@ -297,6 +300,90 @@ func TestNewFeaturesE2E(t *testing.T) {
 			t.Fatalf("恢复后卷面满分应还原: %v != %v", rep2["total"], total0)
 		}
 	})
+
+	t.Run("G9_答案卡与判读叠加图", func(t *testing.T) {
+		// 教师答案卡(考号全 9)随批扫入:不进学生卷流,自动录入/核对参考答案;
+		// 判读叠加图:异常卷必存、正常卷按 1/20 抽样,复核接口可取。
+		sheet, err := fx.layout.Build()
+		if err != nil {
+			t.Fatal(err)
+		}
+		renderCard := func(reg string, answers []string) []byte {
+			f := card.Filling{Answers: answers}
+			for _, ch := range reg {
+				f.Reg = append(f.Reg, int(ch-'0'))
+			}
+			var buf bytes.Buffer
+			if err := png.Encode(&buf, card.RenderPNG(sheet, &f)); err != nil {
+				t.Fatal(err)
+			}
+			return buf.Bytes()
+		}
+		keyReg := strings.Repeat("9", fx.layout.RegDigits)
+
+		// 与现有参考答案完全一致的答案卡:提示"一致",答案不变
+		files := []multipartFile{{field: "images", name: "key_match.png", ctype: "image/png", data: renderCard(keyReg, fx.key)}}
+		var body bytes.Buffer
+		writeScanForm(&body, files)
+		resp, data := teacher.do("POST", "/api/v1/exams/"+examID+"/scans", &body, "multipart/form-data; boundary="+multipartBoundary)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("上传答案卡: %d\n%s", resp.StatusCode, data)
+		}
+		if !strings.Contains(string(data), "与现有参考答案一致") {
+			t.Fatalf("一致答案卡应提示一致: %s", data)
+		}
+
+		// 与现有答案冲突的答案卡(翻转第 1 题):不覆盖,提示手动核对
+		conflict := append([]string(nil), fx.key...)
+		if conflict[0] == "A" {
+			conflict[0] = "B"
+		} else {
+			conflict[0] = "A"
+		}
+		files = []multipartFile{{field: "images", name: "key_conflict.png", ctype: "image/png", data: renderCard(keyReg, conflict)}}
+		body.Reset()
+		writeScanForm(&body, files)
+		resp, data = teacher.do("POST", "/api/v1/exams/"+examID+"/scans", &body, "multipart/form-data; boundary="+multipartBoundary)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("上传冲突答案卡: %d\n%s", resp.StatusCode, data)
+		}
+		if !strings.Contains(string(data), "不一致,未覆盖") {
+			t.Fatalf("冲突答案卡应提示未覆盖: %s", data)
+		}
+		d := teacher.json("GET", "/api/v1/exams/"+examID, nil, http.StatusOK)
+		if got := d["key"].([]any); got[0] != fx.key[0] {
+			t.Fatalf("冲突答案卡不得覆盖现有答案: 第 1 题 = %v", got[0])
+		}
+
+		// 叠加图:正常未抽样卷 404;抽样卷(每批第 1 张)与异常卷(空白卡)200
+		if got := teacher.code("GET", "/api/v1/exams/"+examID+"/overlay/2", nil, "application/json"); got != http.StatusNotFound {
+			t.Fatalf("正常卷默认无叠加图应 404,得到 %d", got)
+		}
+		blank := renderCard("00000006", make([]string, len(fx.key))) // 全空作答 → 空白卡告警 → 异常卷必存
+		files = []multipartFile{{field: "images", name: "blank.png", ctype: "image/png", data: blank}}
+		body.Reset()
+		writeScanForm(&body, files)
+		resp, data = teacher.do("POST", "/api/v1/exams/"+examID+"/scans", &body, "multipart/form-data; boundary="+multipartBoundary)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("上传空白卡: %d\n%s", resp.StatusCode, data)
+		}
+		if got := teacher.code("GET", "/api/v1/exams/"+examID+"/overlay/2", nil, "application/json"); got != http.StatusNotFound {
+			t.Fatalf("卷 2 仍未抽样应 404,得到 %d", got)
+		}
+		// 空白卡卷号 = 既有学生数(答案卡不占学生号);空白卡必为异常卷 → 叠加图必存
+		nStudents := int(teacher.json("GET", "/api/v1/exams/"+examID, nil, http.StatusOK)["students"].(float64))
+		last := fmt.Sprintf("/api/v1/exams/%s/overlay/%d", examID, nStudents)
+		if got := teacher.code("GET", last, nil, "application/json"); got != http.StatusOK {
+			t.Fatalf("异常卷(空白卡)叠加图应 200,得到 %d", got)
+		}
+	})
+}
+
+// writeScanForm 构造补传扫描件的 multipart 表单(仅 images 字段)。
+func writeScanForm(body *bytes.Buffer, files []multipartFile) {
+	writeExamForm(body, card.Layout{}, nil, "[]", files...)
+	body.Truncate(body.Len() - len(fmt.Sprintf("--%s--\r\n", multipartBoundary)))
+	fmt.Fprintf(body, "--%s--\r\n", multipartBoundary)
 }
 
 // jsonBody 把 map 序列化为请求体。

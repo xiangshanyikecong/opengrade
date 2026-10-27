@@ -169,5 +169,8 @@ func handleStudentDetailStaff(w http.ResponseWriter, r *http.Request, store *Sto
 	}
 	out["pages"] = pages
 	out["pageURL"] = fmt.Sprintf("/api/v1/exams/%s/page/%d", ex.ID, idx)
+	if fileExists(filepath.Join(store.OverlayDir(ex.ID), fmt.Sprintf("s%02d.png", idx))) {
+		out["overlayURL"] = fmt.Sprintf("/api/v1/exams/%s/overlay/%d", ex.ID, idx)
+	}
 	writeJSON(w, http.StatusOK, out)
 }

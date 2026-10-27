@@ -24,6 +24,24 @@ import (
 // 多页版式下先做跨批残卷合并:同一考号已有缺页残卷、且本批又扫到该生的页时,
 // 两批页按真实页号拼成一份完整卷,原地替换旧卷(卷号不变 → 已评分数自动保留),
 // 不再把同一学生拆成两个残卷、也不再误报「疑似重答」。
+// applyKeyCards 处理本批判读出的教师答案卡(考号全 9,appendStudent 拦截产物):
+// 录入参考答案并把结果写进扫描反馈 notes(异常清单/提示条展示)。
+func applyKeyCards(store *Store, examID string, ing *ingestResult, by string) {
+	for _, kc := range ing.keyCards {
+		applied, diff, err := store.ApplyKeySheet(examID, kc.Answers, by)
+		switch {
+		case err != nil:
+			ing.notes = append(ing.notes, fmt.Sprintf("答案卡(卷 %d)未录入: %v", kc.SheetNo, err))
+		case applied:
+			ing.notes = append(ing.notes, fmt.Sprintf("已从答案卡(卷 %d)录入客观题参考答案", kc.SheetNo))
+		case diff > 0:
+			ing.notes = append(ing.notes, fmt.Sprintf("答案卡(卷 %d)与现有参考答案有 %d 处不一致,未覆盖——请到「客观题参考答案」手动核对", kc.SheetNo, diff))
+		default:
+			ing.notes = append(ing.notes, fmt.Sprintf("答案卡(卷 %d)与现有参考答案一致", kc.SheetNo))
+		}
+	}
+}
+
 func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, ok := store.Get(r.PathValue("id"))
 	if !ok {
@@ -74,10 +92,12 @@ func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *
 	// 单页判读失败只丢那一张,缺页只告警对应学生,不再连坐整批。
 	oldBase := len(ex.Results)
 	ing := ingestScanImages(imgs, book, opt, oldBase, ab)
+	applyKeyCards(store, ex.ID, &ing, u.Username) // 答案卡录入(在 notes 捕获前,反馈随响应返回)
 	results, slices, pageGroups, pageNos := ing.results, ing.slices, ing.pageGroups, ing.pageNos
 	failed = append(failed, ing.failed...)
 	notes := ing.notes
-	if len(imgs) > 0 && len(results) == 0 && len(ing.mergedStudents) == 0 {
+	if len(imgs) > 0 && len(results) == 0 && len(ing.mergedStudents) == 0 && len(ing.keyCards) == 0 {
+		// 整批没有任何学生卷:答案卡批(全 9 考号)是合法批,放行走录入流程
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"added": 0, "failed": failed, "notes": notes})
 		return
 	}
@@ -90,7 +110,7 @@ func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *
 	}
 
 	markDuplicateRegs(ex, ex.Results, results) // 与存量(含人工指派考号)/批内重复 → 告警(疑似重答)
-	total, err := store.AppendScans(ex.ID, u.Username, oldBase, results, slices, pageGroups, pageNos)
+	total, err := store.AppendScans(ex.ID, u.Username, oldBase, results, slices, pageGroups, pageNos, ing.overlays)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err)
 		return

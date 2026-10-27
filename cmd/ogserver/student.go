@@ -701,3 +701,32 @@ func pageImagePath(store *Store, examID string, idx int, pageParam string) strin
 	}
 	return filepath.Join(store.PageDir(examID), name)
 }
+
+// handleExamOverlayStaff 教师查看判读叠加图(复核"机器看到了什么",处理涂卡争议):
+// GET /api/v1/exams/{id}/overlay/{student}?p=页号。仅异常卷与抽样卷有产物,
+// 404 表示未生成(正常卷不落盘)。
+func handleExamOverlayStaff(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
+	ex, ok := store.openExamFor(r, u, false)
+	if !ok {
+		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
+		return
+	}
+	idx, err := strconv.Atoi(r.PathValue("student"))
+	if err != nil || idx < 1 || idx > len(ex.Results) || ex.Results[idx-1] == nil {
+		httpError(w, http.StatusNotFound, fmt.Errorf("无权查看该生叠加图"))
+		return
+	}
+	name := fmt.Sprintf("s%02d.png", idx)
+	if pv := r.URL.Query().Get("p"); pv != "" {
+		if k, err := strconv.Atoi(pv); err == nil && k > 1 {
+			name = fmt.Sprintf("s%02d_p%02d.png", idx, k)
+		}
+	}
+	p := filepath.Join(store.OverlayDir(ex.ID), name)
+	if !fileExists(p) {
+		httpError(w, http.StatusNotFound, fmt.Errorf("该卷未生成判读叠加图(仅异常卷与抽样卷落盘)"))
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	http.ServeFile(w, r, p)
+}

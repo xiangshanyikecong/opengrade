@@ -140,6 +140,8 @@ type NewExam struct {
 	ManualFull float64 // 手工成绩考试满分(>0 = 手工成绩考试)
 
 	ShortID string       // 考试短号(AB 卷复合码)
+
+	Overlays [][][]byte // 逐生逐页判读叠加图(PNG 编码,与 PageGroups 平行;nil=未生成)
 	LayoutB *card.Layout // B 卷版式
 	KeyB    []string     // B 卷答案(规范序)
 	OrderB  []int        // B 卷题序对照
@@ -283,6 +285,22 @@ func (s *Store) Create(ne NewExam) (*Exam, error) {
 				continue
 			}
 			if err := saveJPEGFile(filepath.Join(dir, "pages", fmt.Sprintf("s%02d.jpg", si+1)), pg); err != nil {
+				return nil, err
+			}
+		}
+	}
+	overlayDir := filepath.Join(dir, "overlays")
+	if len(ne.Overlays) > 0 {
+		if err := os.MkdirAll(overlayDir, 0o755); err != nil {
+			return nil, err
+		}
+	}
+	for si, ovs := range ne.Overlays { // 判读叠加图(异常卷/抽样卷)
+		for k, data := range ovs {
+			if len(data) == 0 {
+				continue
+			}
+			if err := os.WriteFile(filepath.Join(overlayDir, overlayFileName(si+1, k, pageNoOf(ne.Results, si, k))), data, 0o644); err != nil {
 				return nil, err
 			}
 		}
@@ -672,6 +690,61 @@ func (s *Store) PageDir(id string) string {
 	return filepath.Join(s.dir, id, "pages")
 }
 
+// OverlayDir 返回判读叠加图所在目录。
+func (s *Store) OverlayDir(id string) string {
+	return filepath.Join(s.dir, id, "overlays")
+}
+
+// ApplyKeySheet 从教师答案卡(考号全 9 的约定卷,见 appendStudent 的拦截)录入
+// 客观题参考答案。已有参考答案且与卡不一致时不覆盖 —— 返回 applied=false 与差异
+// 题数,交教师在「客观题参考答案」里手动核对(open-mcr 的教训:答案卡判错一位
+// 就静默变成学生卡;这里宁可不上效也不静默覆盖)。AB 卷共用规范答案键,同此同步。
+// 返回 (是否录入, 与现有答案的差异数, 错误)。
+func (s *Store) ApplyKeySheet(id string, key []string, by string) (bool, int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return false, 0, fmt.Errorf("考试 %s 不存在", id)
+	}
+	if len(key) != len(ex.ObjectiveKey) {
+		return false, 0, fmt.Errorf("答案卡 %d 道,与本卷客观题 %d 道不一致", len(key), len(ex.ObjectiveKey))
+	}
+	nonEmpty := 0
+	diff := 0
+	for i, a := range key {
+		if a != "" {
+			nonEmpty++
+		}
+		if a != ex.ObjectiveKey[i] {
+			diff++
+		}
+	}
+	if nonEmpty == 0 {
+		return false, 0, fmt.Errorf("答案卡上没有作答,拒绝作为参考答案录入")
+	}
+	hasExisting := false
+	for _, k := range ex.ObjectiveKey {
+		if k != "" {
+			hasExisting = true
+			break
+		}
+	}
+	if hasExisting && diff > 0 {
+		return false, diff, nil
+	}
+	if hasExisting { // 完全一致:无需变更
+		return false, 0, nil
+	}
+	ex.ObjectiveKey = cloneStrSlice(key)
+	if ex.LayoutB != nil {
+		ex.KeyB = cloneStrSlice(key) // 两卷共用答案键:KeyB 恒等于 ObjectiveKey
+	}
+	markDirtyLocked(ex)
+	ex.log(by, "keySheet", fmt.Sprintf("从答案卡录入参考答案(%d 题作答)", nonEmpty))
+	return true, 0, s.save(ex)
+}
+
 // pageFileName 整卷回溯图文件名:第 1 页兼容旧名 sNN.jpg;第 pageNo(>1)页用真实页号
 // sNN_p{页号}.jpg(页号未知时退回到达位置 pos+1)。按真实页号命名后,缺页残卷的
 // 第 2 张图不再冒充第 2 页,卷种重读/跨批合并都能对上版式。
@@ -684,6 +757,26 @@ func pageFileName(student, pos, pageNo int) string {
 		p = pos + 1 // 页号未知/单页:按到达位置(旧语义)
 	}
 	return fmt.Sprintf("s%02d_p%02d.jpg", student, p)
+}
+
+// overlayFileName 判读叠加图文件名,与整卷回溯图同构(sNN.png / sNN_p{页号}.png)。
+func overlayFileName(student, pos, pageNo int) string {
+	if pos == 0 {
+		return fmt.Sprintf("s%02d.png", student)
+	}
+	p := pageNo
+	if p <= 1 {
+		p = pos + 1
+	}
+	return fmt.Sprintf("s%02d_p%02d.png", student, p)
+}
+
+// pageNoOf 取第 si 个结果组第 k 页的真实页号(越界安全)。
+func pageNoOf(results []*omr.Result, si, k int) int {
+	if si < len(results) && results[si] != nil && k < len(results[si].PageNos) {
+		return results[si].PageNos[k]
+	}
+	return 0
 }
 
 // writePageGroups 落盘一组的整卷回溯图;pageNos 与 group 按到达序对齐(可为 nil)。
@@ -708,7 +801,7 @@ func writePageGroups(pageDir string, student int, group []*image.Gray, pageNos [
 // oldBase 是调用方判读时看到的存量卷数;若期间有并发写入,这里在锁内按实际 base
 // 平移切片/页图的卷号,消除"锁外读 base"竞态。写入失败回滚:不留半截数据。
 // 返回追加后的总卷数。
-func (s *Store) AppendScans(id, by string, oldBase int, results []*omr.Result, slices [][]omr.Slice, pageGroups [][]*image.Gray, pageNos [][]int) (int, error) {
+func (s *Store) AppendScans(id, by string, oldBase int, results []*omr.Result, slices [][]omr.Slice, pageGroups [][]*image.Gray, pageNos [][]int, overlays [][][]byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ex, ok := s.exams[id]
@@ -745,6 +838,25 @@ func (s *Store) AppendScans(id, by string, oldBase int, results []*omr.Result, s
 				return 0, err
 			}
 			written = append(written, p)
+		}
+	}
+	overlayDir := filepath.Join(dir, "overlays")
+	if len(overlays) > 0 {
+		if err := os.MkdirAll(overlayDir, 0o755); err != nil {
+			return 0, err
+		}
+	}
+	for si, ovs := range overlays { // 判读叠加图(异常卷/抽样卷);学生号按并发平移后的 base 对齐
+		for k, data := range ovs {
+			if len(data) == 0 {
+				continue
+			}
+			fp := filepath.Join(overlayDir, overlayFileName(base+si+1, k, pageNoOf(results, si, k)))
+			if err := os.WriteFile(fp, data, 0o644); err != nil {
+				cleanup()
+				return 0, err
+			}
+			written = append(written, fp)
 		}
 	}
 	if len(pageGroups) > 0 {

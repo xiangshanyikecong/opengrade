@@ -173,7 +173,7 @@ function render() {
   // —— 整卷原图(多页可切换,点击放大)——
   if (d.pages > 0) {
     html += `<div class="panel">
-      <div class="group-title">整卷原图(矫正后扫描件 · 点击放大)</div>
+      <div class="group-title">整卷原图(矫正后扫描件 · 点击放大)${d.overlayURL ? ` · <a href="${d.overlayURL}${d.pages > 1 ? "?p=" + curPage : ""}" target="_blank">查看判读叠加图(机器视角)</a>` : ""}</div>
       <div class="page-tabs">${Array.from({ length: d.pages }, (_, i) =>
         `<button class="${curPage === i + 1 ? "cur" : ""}" onclick="curPage=${i + 1};render()">${d.pages > 1 ? "第 " + (i + 1) + " 页" : "整卷"}</button>`).join("")}</div>
       <div class="slice-wrap"><img src="${d.pageURL}${d.pages > 1 ? "?p=" + curPage : ""}" alt="整卷第${curPage}页"
