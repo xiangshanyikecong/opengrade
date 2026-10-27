@@ -69,6 +69,11 @@ type Debug struct {
 	Locators    [4]image.Point
 	ChoiceRatio [][]float64
 	RegRatio    [][]float64
+	// Thresholds/RegThresholds 是逐行(客观题/考号位)自适应判读阈值,与
+	// ChoiceRatio/RegRatio 同维度;回退全局阈值的行取值即全局阈值。
+	// 供叠加图与排障使用,不进 Result(开放数据格式)。
+	Thresholds    []float64
+	RegThresholds []float64
 }
 
 // Read 完整读卡:灰度化 → Otsu 二值化 → 定位角标 → 透视矫正回 300 DPI 标准版面 → 涂卡判读。
@@ -209,10 +214,16 @@ func rectify(gray *image.Gray, h Homography, w, hh int) *image.Gray {
 }
 
 // readMarks 在矫正后的二值图上,按共享几何逐圆判读。
+// 判读阈值为"全局 + 逐行自适应"两级(见 adaptive.go):行内跳变统计给出该行
+// 的局部阈值,干净行自动回退全局;全卡过半行显著偏移时追加复印件/褪色告警。
 func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 	th := opt.MarkThreshold
 	res := &Result{RegValid: true}
-	dbg := &Debug{ChoiceRatio: make([][]float64, len(sheet.Choice))}
+	dbg := &Debug{
+		ChoiceRatio: make([][]float64, len(sheet.Choice)),
+		Thresholds:  make([]float64, len(sheet.Choice)),
+	}
+	deviated, totalRows := 0, len(sheet.Choice)
 
 	sampleR := func(r int) int { return int(float64(r) * 0.8) } // 只看涂卡圆内部,避开描边
 
@@ -245,15 +256,23 @@ func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 
 	for qi, opts := range sheet.Choice {
 		dbg.ChoiceRatio[qi] = make([]float64, len(opts))
+		ratios := make([]float64, len(opts))
+		for oi, p := range opts {
+			ratios[oi] = inkRatio(bin, p.X, p.Y, sampleR(sheet.ChoiceR))
+			dbg.ChoiceRatio[qi][oi] = ratios[oi]
+		}
+		thQ := rowThreshold(ratios, th)
+		dbg.Thresholds[qi] = thQ
+		if diff := thQ - th; diff > adaptiveDeviation || diff < -adaptiveDeviation {
+			deviated++
+		}
 		letters := card.OptionLetters(sheet.ChoiceKinds[qi], len(opts))
 		var marked []string
-		for oi, p := range opts {
-			ratio := inkRatio(bin, p.X, p.Y, sampleR(sheet.ChoiceR))
-			dbg.ChoiceRatio[qi][oi] = ratio
+		for oi, ratio := range ratios {
 			switch {
-			case ratio >= th:
+			case ratio >= thQ:
 				marked = append(marked, letters[oi])
-			case ratio >= th-0.12:
+			case ratio >= thQ-0.12:
 				res.Warnings = append(res.Warnings, fmt.Sprintf("第 %d 题 %s 选项涂写偏浅,建议人工复核", qi+1, letters[oi]))
 			}
 		}
@@ -274,19 +293,30 @@ func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 	if len(sheet.Reg) == 0 || !sheet.Layout.RegHasFill() {
 		// 无考号区,或纯码制通道(卡面未印填涂区,不做涂卡判读)
 		readElectives(bin, sheet, opt, res, dbg)
+		maybeThresholdDeviationWarning(res, deviated, totalRows)
 		return res, dbg
 	}
 
 	digits := make([]int, len(sheet.Reg))
 	res.RegMarks = make([][]int, len(sheet.Reg))
 	dbg.RegRatio = make([][]float64, len(sheet.Reg))
+	dbg.RegThresholds = make([]float64, len(sheet.Reg))
 	for ci, col := range sheet.Reg {
 		dbg.RegRatio[ci] = make([]float64, len(col))
-		marked := []int{}
+		ratios := make([]float64, len(col))
 		for d, p := range col {
-			ratio := inkRatio(bin, p.X, p.Y, sampleR(sheet.RegR))
-			dbg.RegRatio[ci][d] = ratio
-			if ratio >= th {
+			ratios[d] = inkRatio(bin, p.X, p.Y, sampleR(sheet.RegR))
+			dbg.RegRatio[ci][d] = ratios[d]
+		}
+		thC := rowThreshold(ratios, th)
+		dbg.RegThresholds[ci] = thC
+		if diff := thC - th; diff > adaptiveDeviation || diff < -adaptiveDeviation {
+			deviated++
+		}
+		totalRows++
+		marked := []int{}
+		for d, ratio := range ratios {
+			if ratio >= thC {
 				marked = append(marked, d)
 			}
 		}
@@ -310,7 +340,17 @@ func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 		res.RegNumber = sb.String()
 	}
 	readElectives(bin, sheet, opt, res, dbg)
+	maybeThresholdDeviationWarning(res, deviated, totalRows)
 	return res, dbg
+}
+
+// maybeThresholdDeviationWarning 全卡过半行的自适应阈值显著偏离全局阈值时,
+// 追加一条复印件/褪色告警 —— 整卡墨迹水平系统性漂移的典型特征;逐行刷屏
+// 会淹没重点,故只做一次汇总提示。
+func maybeThresholdDeviationWarning(res *Result, deviated, total int) {
+	if total > 0 && deviated*2 > total {
+		res.Warnings = append(res.Warnings, "逐题判读阈值整体偏移,疑似复印件或褪色打印,建议人工复核")
+	}
 }
 
 // readElectives 判读选做题号区(版式 v3):逐涂点按墨迹占比判定,

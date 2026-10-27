@@ -39,20 +39,30 @@ func RenderDebugOverlay(d *Debug, sheet *card.Sheet, th float64) *image.RGBA {
 		}
 	}
 
+	// 行阈值:优先取判读时的逐行自适应阈值,缺省(旧 Debug/回退行)用全局 th。
+	rowTh := func(i int, ths []float64) float64 {
+		if i < len(ths) && ths[i] > 0 {
+			return ths[i]
+		}
+		return th
+	}
+
 	for qi, opts := range sheet.Choice {
+		thQ := rowTh(qi, d.Thresholds)
 		for oi, p := range opts {
 			ratio := d.ChoiceRatio[qi][oi]
 			switch {
-			case ratio >= th:
+			case ratio >= thQ:
 				ring(p.X, p.Y, sheet.ChoiceR+4, green)
-			case ratio >= th-0.12:
+			case ratio >= thQ-0.12:
 				ring(p.X, p.Y, sheet.ChoiceR+4, amber)
 			}
 		}
 	}
 	for ci, col := range sheet.Reg {
+		thC := rowTh(ci, d.RegThresholds)
 		for di, p := range col {
-			if ci < len(d.RegRatio) && di < len(d.RegRatio[ci]) && d.RegRatio[ci][di] >= th {
+			if ci < len(d.RegRatio) && di < len(d.RegRatio[ci]) && d.RegRatio[ci][di] >= thC {
 				ring(p.X, p.Y, sheet.RegR+4, blue)
 			}
 		}
