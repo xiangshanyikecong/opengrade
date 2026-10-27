@@ -129,12 +129,9 @@ func handleLogin(w http.ResponseWriter, r *http.Request, authStore *auth.Store) 
 	}
 	loginOK(username)
 	setSessionCookie(w, token, false)
-	redirect := "/"
-	switch u.Role {
-	case auth.RoleStudent, auth.RoleParent:
+	redirect := "/teacher.html"
+	if u.Role == auth.RoleStudent || u.Role == auth.RoleParent {
 		redirect = "/student.html"
-	default:
-		redirect = "/teacher.html"
 	}
 	resp := map[string]any{
 		"username": u.Username, "displayName": u.DisplayName, "role": u.Role, "redirect": redirect,
