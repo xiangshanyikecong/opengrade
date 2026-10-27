@@ -13,6 +13,8 @@ const usage = `ogctl — OpenGrade 开源答题卡工具(纯 Go,单二进制)
   ogctl gen    生成答题卡(可选:模拟涂卡学生卷;支持 -layout-file 传入 v2 版式)
   ogctl read   识别答题卡扫描件(PNG/JPEG,支持 EXIF 转正/旋转/透视/光照不均)
   ogctl key    扫读教师答案卡(考号全 9),输出逐题作答 JSON
+  ogctl read 目录批量模式:-image 指向目录时读目录内全部扫描件,
+               版式与参数取自目录(或祖先)的 ogctl.json,结果写 results.csv
   ogctl slice  从扫描件裁出主观题切片(阅卷工作台的数据源)
   ogctl score  按参考答案统分,输出逐题得分率
   ogctl demo   端到端演示:出卡 → 模拟扫描 → OMR → 切片 → 阅卷 → 统分 → 讲评建议

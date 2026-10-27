@@ -87,26 +87,31 @@ func ScoresXlsxZip(rep *score.Report, questionLabels []string, knowledge ...[]sc
 	if len(knowledge) > 0 {
 		kstats = knowledge[0]
 	}
-	sheet1 := buildScoresSheet(rep)
-	sheet2 := buildDetailSheet(rep, questionLabels)
+	sheetParts := [][2]string{
+		{"xl/worksheets/sheet1.xml", buildScoresSheet(rep)},
+		{"xl/worksheets/sheet2.xml", buildDetailSheet(rep, questionLabels)},
+	}
 	sheets := `<sheet name="成绩单" sheetId="1" r:id="rId1"/>
 <sheet name="细目表" sheetId="2" r:id="rId2"/>`
 	rels := `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
 <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>`
 	ct := `<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
 <Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
-	parts := [][2]string{}
 	if len(kstats) > 0 {
-		sheet3 := buildKnowledgeSheet(kstats)
+		sheetParts = append(sheetParts, [2]string{"xl/worksheets/sheet3.xml", buildKnowledgeSheet(kstats)})
 		sheets += `
 <sheet name="知识点" sheetId="3" r:id="rId3"/>`
 		rels += `
 <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/>`
 		ct += `
 <Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
-		parts = append(parts, [2]string{"xl/worksheets/sheet3.xml", sheet3})
 	}
-	parts = append(parts, [][2]string{
+	return zipXlsx(sheetParts, sheets, rels, ct)
+}
+
+// zipXlsx 组装 OPC 包(共享部件:Content_Types/rels/workbook/styles + 传入的工作表)。
+func zipXlsx(sheetParts [][2]string, sheets, rels, ct string) ([]byte, error) {
+	parts := append([][2]string{
 		{"[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -137,9 +142,7 @@ func ScoresXlsxZip(rep *score.Report, questionLabels []string, knowledge ...[]sc
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
 <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
 </styleSheet>`},
-		{"xl/worksheets/sheet1.xml", sheet1},
-		{"xl/worksheets/sheet2.xml", sheet2},
-	}...)
+	}, sheetParts...)
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	for _, p := range parts {
@@ -151,6 +154,24 @@ func ScoresXlsxZip(rep *score.Report, questionLabels []string, knowledge ...[]sc
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// ExplainXlsxZip 生成单工作表的通用网格 xlsx(表头 rows[0],数据行接续)。
+// 供逐题得分解释表等轻量导出复用,避免每类导出各写一套 OPC 组装。
+func ExplainXlsxZip(rows [][]any) ([]byte, error) {
+	var rs []string
+	for i, r := range rows {
+		cells := make([]string, len(r))
+		for c, v := range r {
+			cells[c] = cell(c, i, v)
+		}
+		rs = append(rs, rowXML(i, cells...))
+	}
+	sheet := sheetHeader + strings.Join(rs, "") + sheetFooter
+	return zipXlsx([][2]string{{"xl/worksheets/sheet1.xml", sheet}},
+		`<sheet name="逐题解释" sheetId="1" r:id="rId1"/>`,
+		`<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>`,
+		`<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`)
 }
 
 // buildKnowledgeSheet 知识点掌握度表:名称/覆盖题数/掌握度/涉及总分/作答样本。

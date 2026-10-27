@@ -214,6 +214,62 @@ func handleExportXlsx(w http.ResponseWriter, r *http.Request, store *Store, u *a
 	_, _ = w.Write(data)
 }
 
+// handleExplainXlsx 单卷逐题得分解释表(吸收自 OMRChecker should_explain_scoring):
+// GET /api/v1/exams/{id}/explain.xlsx —— 每行一名学生一道客观题的
+// 作答/参考答案/判定/得分,判分争议(尤其带漏选部分分/倒扣方案时)一查便知。
+// 访问范围与匿名保护与成绩册导出同口径(exportReport)。
+func handleExplainXlsx(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
+	ex, rep, labels, ok := store.exportReport(r, u)
+	if !ok {
+		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
+		return
+	}
+	ar := assignedResults(ex)
+	labelByIndex := map[int]string{}
+	for i, q := range rep.PerQuestion {
+		if i < len(labels) {
+			labelByIndex[q.Index] = labels[i]
+		}
+	}
+	rows := [][]any{{"卷号", "考号", "姓名", "班级", "题号", "题目", "满分", "我的作答", "参考答案", "判定", "得分"}}
+	for _, l := range rep.Students {
+		if l.Absent {
+			continue
+		}
+		var res *omr.Result
+		if l.Index >= 1 && l.Index-1 < len(ar) {
+			res = ar[l.Index-1]
+		}
+		for qi := 0; qi < len(ex.ObjectiveKey) && qi < len(ex.Layout.Questions); qi++ {
+			key := ex.ObjectiveKey[qi]
+			if key == "" {
+				continue // 空键题不判分,无解释意义
+			}
+			ans := ""
+			if res != nil && qi < len(res.Answers) {
+				ans = res.Answers[qi]
+			}
+			spec := ex.Layout.Questions[qi]
+			rule := ex.Layout.Scoring.RuleFor(qi + 1)
+			earned, verdict := score.Evaluate(spec, rule, ans, key)
+			label := labelByIndex[qi+1]
+			if label == "" {
+				label = fmt.Sprintf("%d(客观)", qi+1)
+			}
+			rows = append(rows, []any{l.Index, l.RegNumber, l.Name, l.ClassInfo, qi + 1, label,
+				score.FullScore(spec, rule), ans, key, score.VerdictLabel(verdict), earned})
+		}
+	}
+	data, err := export.ExplainXlsxZip(rows)
+	if err != nil {
+		httpError(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=explain-%s.xlsx", ex.ID))
+	_, _ = w.Write(data)
+}
+
 // handleExportCSV 成绩册 CSV 导出(与 xlsx 同口径:可见行 + 全卷排名 + 匿名保护)。
 func handleExportCSV(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	ex, rep, _, ok := store.exportReport(r, u)

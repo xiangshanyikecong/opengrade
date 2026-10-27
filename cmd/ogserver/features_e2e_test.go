@@ -377,6 +377,17 @@ func TestNewFeaturesE2E(t *testing.T) {
 			t.Fatalf("异常卷(空白卡)叠加图应 200,得到 %d", got)
 		}
 	})
+
+	t.Run("G10_逐题解释表", func(t *testing.T) {
+		// 单卷逐题得分解释表(OMRChecker should_explain_scoring):判分争议一查便知
+		resp, data := teacher.do("GET", "/api/v1/exams/"+examID+"/explain.xlsx", nil, "")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("explain.xlsx: %d %s", resp.StatusCode, data)
+		}
+		if len(data) < 1000 || string(data[:2]) != "PK" {
+			t.Fatalf("explain.xlsx 应为非空 xlsx(zip): %d 字节", len(data))
+		}
+	})
 }
 
 // writeScanForm 构造补传扫描件的 multipart 表单(仅 images 字段)。

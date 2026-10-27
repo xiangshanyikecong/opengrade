@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -41,6 +42,12 @@ func cmdScore(args []string) error {
 		matches, err := filepath.Glob(seg)
 		if err != nil || len(matches) == 0 {
 			matches = []string{seg}
+		}
+		// 目录批量:read 目录模式的 results.json 逐张落盘时,直接喂目录
+		if st, err2 := os.Stat(seg); err2 == nil && st.IsDir() {
+			ms, _ := filepath.Glob(filepath.Join(seg, "*.json"))
+			sort.Strings(ms)
+			matches = ms
 		}
 		for _, m := range matches {
 			var r omr.Result

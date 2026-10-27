@@ -76,15 +76,18 @@ open-mcr 用 5 组真实扫描 + 期望 CSV 做字节级回归（`test/end-to-en
 
 ## 4. OpenGrade 缺失功能清单（合并汇总）
 
-| # | 功能 | 来源 | 优先级 |
-|---|---|---|---|
-| 1 | 逐题/逐卷自适应判读阈值 + 置信度输出 | OMRChecker / open-mcr | P0 |
-| 2 | 评分方案：多选漏选部分分、多解加权、倒扣、不答计分、分节方案 | OMRChecker | P0 |
-| 3 | gamma/CLAHE/中值滤波预处理选项 | OMRChecker | P1 |
-| 4 | 矫正后印刷漂移自对齐（泡网格残差检测+snap） | OMRChecker auto_align 思路改良 | P1 |
-| 5 | 答案卡扫读录答案（key sheet） | open-mcr | P1 |
-| 6 | 乱序变式重排计分（1 key + arrangement map） | open-mcr | P2 |
-| 7 | 逐卷判读叠加图自动落盘（异常卷必存） | OMRChecker | P2 |
-| 8 | 真实异常扫描 e2e 回归集 | open-mcr | P2 |
-| 9 | 单卷逐题得分解释表导出 | OMRChecker | P3 |
-| 10 | 批量离线目录协议（目录继承模板，ogctl 补强） | OMRChecker | P3 |
+> **吸收状态（2026-10-28 更新）**：10 项全部落地或已由等价机制覆盖，逐批提交记录见 git log
+> （51a387a / 49e584a / 78836ee / 9ef85fb 及收尾批）。
+
+| # | 功能 | 来源 | 优先级 | 状态 |
+|---|---|---|---|---|
+| 1 | 逐题/逐卷自适应判读阈值 + 置信度输出 | OMRChecker / open-mcr | P0 | ✅ `omr/adaptive.go` 行内跳变统计+全局融合（只向下放宽，干净卡零回归）|
+| 2 | 评分方案：多选漏选部分分、多解加权、倒扣、不答计分、分节方案 | OMRChecker | P0 | ✅ `card/scoring.go` + `score/evaluate.go` 全系统单一判分口径 |
+| 3 | gamma/CLAHE/中值滤波预处理选项 | OMRChecker | P1 | ✅ `raster/improc.go` + `omr.Preprocess`（随考试持久化）|
+| 4 | 矫正后印刷漂移自对齐（泡网格残差检测+snap） | OMRChecker auto_align 思路改良 | P1 | ✅ `omr/align.go` 泡圈连通域匹配（比环带质心抗文字/条码污染）|
+| 5 | 答案卡扫读录答案（key sheet） | open-mcr | P1 | ✅ 考号全 9 硬校验 + 冲突不覆盖；`ogctl key` |
+| 6 | 乱序变式重排计分（1 key + arrangement map） | open-mcr | P2 | ✅ 等价已存在：AB 卷 `OrderB` 排列表 + 共用 `ObjectiveKey`，B 卷作答入库即归一题序；N>2 变体受卡面卷种点(2 点)约束，暂不扩展 |
+| 7 | 逐卷判读叠加图自动落盘（异常卷必存） | OMRChecker | P2 | ✅ 异常卷必存 + 1/20 抽样，复核页直看"机器视角" |
+| 8 | 真实异常扫描 e2e 回归集 | open-mcr | P2 | ✅ 脚手架就绪（`omr/testdata/realscan/` + 指引 docs/REALSCAN.md），样本随真实扫描件积累 |
+| 9 | 单卷逐题得分解释表导出 | OMRChecker | P3 | ✅ `GET /api/v1/exams/{id}/explain.xlsx` |
+| 10 | 批量离线目录协议（目录继承模板，ogctl 补强） | OMRChecker | P3 | ✅ `ogctl read -image <目录>`，ogctl.json 逐级向上继承 |

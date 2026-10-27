@@ -117,6 +117,7 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	mux.HandleFunc("GET /api/v1/exams/{id}/suggest/{student}", staff(withStore(handleSuggest)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/roster", staff(withStore(handleRosterSearch)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/export.xlsx", staff(withStore(handleExportXlsx)))
+	mux.HandleFunc("GET /api/v1/exams/{id}/explain.xlsx", staff(withStore(handleExplainXlsx)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/export.csv", staff(withStore(handleExportCSV)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/export.zip", staff(withStore(handleExportFullZip)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/review.pptx", staff(withStore(handleReviewPPTX)))

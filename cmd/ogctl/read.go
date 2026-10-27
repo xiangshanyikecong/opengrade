@@ -27,6 +27,11 @@ func cmdRead(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// 目录批量模式:目录继承 ogctl.json 配置,结果写 results.csv
+	if st, err := os.Stat(*imagePath); err == nil && st.IsDir() {
+		return cmdReadDir(*imagePath, *layoutPath, *out, *th, *mode,
+			omr.Options{Gamma: *gamma, Median: *median, CLAHE: *clahe})
+	}
 	if *layoutPath == "" || *imagePath == "" {
 		return fmt.Errorf("必须提供 -layout 与 -image")
 	}
