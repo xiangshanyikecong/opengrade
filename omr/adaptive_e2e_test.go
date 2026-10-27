@@ -2,10 +2,12 @@ package omr_test
 
 import (
 	"image"
+	"math/rand"
 	"testing"
 
 	"github.com/opengrade/opengrade/card"
 	"github.com/opengrade/opengrade/omr"
+	"github.com/opengrade/opengrade/synth"
 )
 
 // TestReadAdaptiveThresholdFadedMark 验证逐题自适应阈值的核心收益:
@@ -59,6 +61,44 @@ func diluteDisk(g *image.Gray, cx, cy, r int) {
 			if (x+y)%3 != 0 {
 				g.Pix[y*w+x] = 255
 			}
+		}
+	}
+}
+
+// TestReadPrintDrift 验证印刷漂移自对齐:逐行走位的卡面经单应矫正后仍残留
+// 条带级偏移 —— 饱满涂点仍可读回(回归),而淡涂点会因此掉出判读阈值,
+// 自对齐把每行"量出来"的偏移修掉后应能找回。
+func TestReadPrintDrift(t *testing.T) {
+	sheet, f := makeFixture(t)
+
+	// 纯漂移回归:饱满涂点在 ±6px 走位下不丢题
+	rng := rand.New(rand.NewSource(99))
+	drifted := synth.Drift(card.RenderPNG(sheet, f).ToGray(), rng, 6)
+	res, _, err := omr.Read(sheet, drifted, omr.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for qi, want := range f.Answers {
+		if res.Answers[qi] != want {
+			t.Fatalf("漂移下第 %d 题识别 = %q, 期望 %q", qi+1, res.Answers[qi], want)
+		}
+	}
+
+	// 漂移 + 淡涂点:第 5 题冲淡到 1/3 密度,自对齐修正条带偏移后应可读回
+	gray := card.RenderPNG(sheet, f).ToGray()
+	p := sheet.Choice[4][0]
+	diluteDisk(gray, p.X, p.Y, int(float64(sheet.ChoiceR)*0.8))
+	drifted2 := synth.Drift(gray, rand.New(rand.NewSource(99)), 6)
+	res2, _, err := omr.Read(sheet, drifted2, omr.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Answers[4] != "A" {
+		t.Fatalf("漂移下淡涂点应被自对齐找回: 第 5 题识别 = %q, 警告=%v", res2.Answers[4], res2.Warnings)
+	}
+	for qi, want := range f.Answers {
+		if res2.Answers[qi] != want {
+			t.Fatalf("漂移+淡涂第 %d 题识别 = %q, 期望 %q", qi+1, res2.Answers[qi], want)
 		}
 	}
 }

@@ -53,7 +53,7 @@ func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
-	opt := omr.Options{Threshold: ex.Threshold}
+	opt := ex.omrOptions()
 	var failed []scanFail
 	var imgs []image.Image
 	for i, fh := range files {

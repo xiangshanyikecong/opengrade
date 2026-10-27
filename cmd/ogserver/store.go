@@ -31,6 +31,7 @@ type Exam struct {
 	Results      []*omr.Result          `json:"results"`      // 按上传顺序排列;下标+1 = 学生号
 	Grades       map[string]score.Grade `json:"grades"`       // key: score.GradeKey(s, q)
 	Threshold    string                 `json:"threshold"`    // 读卡二值化方式
+	Preprocess   *omr.Preprocess        `json:"preprocess,omitempty"` // 判读前灰度预处理链(中值/伽马/CLAHE)
 	Roster       []roster.Student       `json:"roster,omitempty"`
 	Assignments  map[string]string      `json:"assignments,omitempty"` // "s{学生号}" → 人工确认的考号
 	CreatedBy    string                 `json:"createdBy,omitempty"`   // 建考账号
@@ -126,6 +127,7 @@ type NewExam struct {
 	Pages      []*image.Gray   // 矫正后的整卷图(答卷回溯;单页版式每生一张)
 	PageGroups [][]*image.Gray // 多页版式:每生按页序的矫正图组(第 1 页兼容旧文件名)
 	Threshold  string
+	Preprocess *omr.Preprocess
 	CreatedBy  string
 	Subject    string
 	Roster     []roster.Student
@@ -238,6 +240,7 @@ func (s *Store) Create(ne NewExam) (*Exam, error) {
 		Results:      ne.Results,
 		Grades:       map[string]score.Grade{},
 		Threshold:    ne.Threshold,
+		Preprocess:   ne.Preprocess,
 		Roster:       ne.Roster,
 		Assignments:  map[string]string{},
 		CreatedBy:    ne.CreatedBy,
@@ -1060,7 +1063,7 @@ func (s *Store) AssignVariant(id string, student int, variant, by string) error 
 	}
 	pages := s.loadPageGroups(id, student) // 已存矫正图(按真实页号命名;旧数据按位置)
 	if len(pages) > 0 {
-		opt := omr.Options{Threshold: ex.Threshold}
+		opt := ex.omrOptions()
 		var scans []pageScan
 		for k, rect := range pages {
 			if rect == nil {
@@ -1173,6 +1176,12 @@ func (s *Store) SetTaskDue(id, key, due, by string) error {
 	}
 	ex.log(by, "setTaskDue", fmt.Sprintf("任务 %s 截止时间 → %s", key, nonEmptyStr(due, "(清除)")))
 	return s.save(ex)
+}
+
+// omrOptions 返回本场考试的读卡选项(二值化方式 + 持久化预处理链)。
+// 重读/卷种指派/跨批合并等服务端判读路径统一从这里取参,保证逐卷配置一致。
+func (ex *Exam) omrOptions() omr.Options {
+	return ex.Preprocess.Options(ex.Threshold)
 }
 
 // SetKnowledge 写入逐题知识点标签(题号为 1-based 全卷序:客观在前,主观接续)。

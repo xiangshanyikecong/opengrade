@@ -422,7 +422,17 @@ func formLayoutAndImage(r *http.Request) (io.ReadCloser, *card.Sheet, omr.Option
 	return file, sheet, opt, nil
 }
 
+// preprocessFrom 从读卡选项提取需持久化的预处理链(全零返回 nil,不落盘)。
+func preprocessFrom(opt omr.Options) *omr.Preprocess {
+	if opt.Gamma == 0 && opt.Median == 0 && opt.CLAHE == 0 {
+		return nil
+	}
+	return &omr.Preprocess{Gamma: opt.Gamma, Median: opt.Median, CLAHE: opt.CLAHE}
+}
+
 // formLayout 从 multipart 表单提取并编译版式与读卡选项(不要求图像,建考用)。
+// 读卡选项含二值化方式(threshold)与可选预处理链(gamma/median/clahe),
+// 建考时一并持久化到考试会话,重读路径经 Exam.omrOptions 复用同一配置。
 func formLayout(r *http.Request) (*card.Sheet, omr.Options, error) {
 	var layout card.Layout
 	if err := json.Unmarshal([]byte(r.FormValue("layout")), &layout); err != nil {
@@ -432,7 +442,17 @@ func formLayout(r *http.Request) (*card.Sheet, omr.Options, error) {
 	if err != nil {
 		return nil, omr.Options{}, err
 	}
-	return sheet, omr.Options{Threshold: r.FormValue("threshold")}, nil
+	opt := omr.Options{Threshold: r.FormValue("threshold")}
+	if v, err := strconv.ParseFloat(r.FormValue("gamma"), 64); err == nil {
+		opt.Gamma = v
+	}
+	if v, err := strconv.Atoi(r.FormValue("median")); err == nil {
+		opt.Median = v
+	}
+	if v, err := strconv.Atoi(r.FormValue("clahe")); err == nil {
+		opt.CLAHE = v
+	}
+	return sheet, opt, nil
 }
 
 // handleCreateExam 创建考试会话:multipart 字段 layout(版式 JSON)、key(客观题答案 JSON 数组)、
@@ -650,6 +670,7 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		ExamGroup: strings.TrimSpace(r.FormValue("examGroup")),
 		Session:   session,
 		LayoutB:   layoutB, KeyB: keyBCanon, OrderB: orderB, ShortID: shortID,
+		Preprocess: preprocessFrom(opt),
 	})
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err)

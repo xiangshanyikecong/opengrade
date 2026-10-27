@@ -68,3 +68,41 @@ func Distort(src *image.Gray, rng *rand.Rand) *image.Gray {
 	}
 	return out
 }
+
+// Drift 模拟打印/复印的逐行走位:把卡面按水平条带做随机横向平移(±maxPx),
+// 条带间线性过渡防撕裂。定位角标与正文随所在条带一起偏移 —— 单应矫正吸收
+// 角标处的全局几何后,离角标远的区域仍残留该偏移,正是印刷漂移自对齐
+// (omr.align)要量出来修掉的对象。maxPx<=0 时原样返回。
+func Drift(src *image.Gray, rng *rand.Rand, maxPx float64) *image.Gray {
+	w, h := src.Rect.Dx(), src.Rect.Dy()
+	if maxPx <= 0 {
+		return src
+	}
+	const band = 40 // 条带高度(px):打印行走位的空间尺度
+	n := h/band + 2
+	offs := make([]float64, n)
+	for i := range offs {
+		offs[i] = (rng.Float64()*2 - 1) * maxPx
+	}
+	out := image.NewGray(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		f := float64(y) / float64(band)
+		i := int(f)
+		if i > n-2 {
+			i = n - 2
+		}
+		t := f - float64(i)
+		dx := offs[i]*(1-t) + offs[i+1]*t
+		base := y * w
+		for x := 0; x < w; x++ {
+			sx := int(float64(x) - dx + 0.5)
+			if sx < 0 {
+				sx = 0
+			} else if sx >= w {
+				sx = w - 1
+			}
+			out.Pix[base+x] = src.Pix[base+sx]
+		}
+	}
+	return out
+}

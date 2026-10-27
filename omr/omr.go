@@ -3,9 +3,11 @@ package omr
 import (
 	"fmt"
 	"image"
+	"math"
 	"strings"
 
 	"github.com/opengrade/opengrade/card"
+	"github.com/opengrade/opengrade/raster"
 )
 
 // Options 控制读卡行为;零值即合理默认。
@@ -15,6 +17,58 @@ type Options struct {
 	// Threshold 二值化方式:"otsu"(默认,全局)或 "adaptive"(局部自适应,
 	// 推荐用于强阴影/污渍/翻拍光照不均的场景)。
 	Threshold string
+	// 可选灰度预处理链(见 Preprocess):中值去噪 → 伽马 → CLAHE。
+	// 全零 = 不启用,行为与未加预处理链的旧版完全一致。
+	Gamma float64
+	Median int
+	CLAHE int
+}
+
+// Preprocess 是判读前的灰度预处理链配置,可随考试持久化、逐卷复用。
+// 与 Exam 上的 Threshold(二值化方式)配对构成完整读卡配置。
+type Preprocess struct {
+	Gamma  float64 `json:"gamma,omitempty"`  // 伽马(<1 提亮阴影/褪色件,>1 压暗);0=不启用
+	Median int     `json:"median,omitempty"` // 中值滤波窗口(3/5,去椒盐噪声);0=不启用
+	CLAHE  int     `json:"clahe,omitempty"`  // CLAHE 分块数(常用 8,弱光/低对比增墨);0=不启用
+}
+
+// Options 返回套用本预处理链的读卡选项;p 为 nil 时仅携带二值化方式。
+func (p *Preprocess) Options(threshold string) Options {
+	return Options{Threshold: threshold, Gamma: p.gamma(), Median: p.medianN(), CLAHE: p.claheN()}
+}
+
+func (p *Preprocess) gamma() float64 {
+	if p == nil {
+		return 0
+	}
+	return p.Gamma
+}
+func (p *Preprocess) medianN() int {
+	if p == nil {
+		return 0
+	}
+	return p.Median
+}
+func (p *Preprocess) claheN() int {
+	if p == nil {
+		return 0
+	}
+	return p.CLAHE
+}
+
+// preprocessGray 在二值化/定位前应用可选预处理链。
+// 顺序:中值(去椒盐,防统计增强把噪点放大)→ 伽马(单调 LUT)→ CLAHE(对比增强)。
+func preprocessGray(g *image.Gray, opt Options) *image.Gray {
+	if opt.Median == 3 || opt.Median == 5 {
+		g = raster.MedianGray(g, opt.Median)
+	}
+	if opt.Gamma > 0 && opt.Gamma != 1 {
+		g = raster.GammaGray(g, opt.Gamma)
+	}
+	if opt.CLAHE > 0 {
+		g = raster.CLAHEGray(g, opt.CLAHE, 0)
+	}
+	return g
 }
 
 func (o Options) withDefaults() Options {
@@ -97,7 +151,7 @@ func Read(sheet *card.Sheet, src image.Image, opt Options) (*Result, *Debug, err
 func locateAndRectify(sheet *card.Sheet, src image.Image, opt Options) (*image.Gray, [4]image.Point, error) {
 	opt = opt.withDefaults()
 
-	gray := ToGray(src)
+	gray := preprocessGray(ToGray(src), opt)
 	bin := binarizeFor(gray, opt)
 
 	locs, err := findLocators(bin, sheet)
@@ -213,9 +267,24 @@ func rectify(gray *image.Gray, h Homography, w, hh int) *image.Gray {
 	return out
 }
 
+// snapRow 印刷漂移自对齐:检测一行涂点印刷圆环的实际偏移,超过 snap 比例
+// 即整体平移采样点。返回平移后的采样点与是否需要漂移告警。
+func snapRow(bin *bitmap, pts []image.Point, r int) ([]image.Point, bool) {
+	dx, dy, ok := estimateRowShift(bin, pts, r)
+	if !ok {
+		return pts, false
+	}
+	dist := math.Hypot(dx, dy)
+	if dist <= alignSnapFrac*float64(r) {
+		return pts, false
+	}
+	return shiftPoints(pts, dx, dy), dist > alignWarnFrac*float64(r)
+}
+
 // readMarks 在矫正后的二值图上,按共享几何逐圆判读。
 // 判读阈值为"全局 + 逐行自适应"两级(见 adaptive.go):行内跳变统计给出该行
 // 的局部阈值,干净行自动回退全局;全卡过半行显著偏移时追加复印件/褪色告警。
+// 判读前逐行做印刷漂移自对齐(见 align.go)。
 func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 	th := opt.MarkThreshold
 	res := &Result{RegValid: true}
@@ -224,6 +293,7 @@ func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 		Thresholds:  make([]float64, len(sheet.Choice)),
 	}
 	deviated, totalRows := 0, len(sheet.Choice)
+	driftWarns := 0
 
 	sampleR := func(r int) int { return int(float64(r) * 0.8) } // 只看涂卡圆内部,避开描边
 
@@ -257,7 +327,11 @@ func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 	for qi, opts := range sheet.Choice {
 		dbg.ChoiceRatio[qi] = make([]float64, len(opts))
 		ratios := make([]float64, len(opts))
-		for oi, p := range opts {
+		sampled, warn := snapRow(bin, opts, sheet.ChoiceR)
+		if warn {
+			driftWarns++
+		}
+		for oi, p := range sampled {
 			ratios[oi] = inkRatio(bin, p.X, p.Y, sampleR(sheet.ChoiceR))
 			dbg.ChoiceRatio[qi][oi] = ratios[oi]
 		}
@@ -292,8 +366,9 @@ func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 
 	if len(sheet.Reg) == 0 || !sheet.Layout.RegHasFill() {
 		// 无考号区,或纯码制通道(卡面未印填涂区,不做涂卡判读)
-		readElectives(bin, sheet, opt, res, dbg)
+		driftWarns += readElectives(bin, sheet, opt, res, dbg)
 		maybeThresholdDeviationWarning(res, deviated, totalRows)
+		maybeDriftWarning(res, driftWarns)
 		return res, dbg
 	}
 
@@ -302,9 +377,13 @@ func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 	dbg.RegRatio = make([][]float64, len(sheet.Reg))
 	dbg.RegThresholds = make([]float64, len(sheet.Reg))
 	for ci, col := range sheet.Reg {
+		sampled, warn := snapRow(bin, col, sheet.RegR)
+		if warn {
+			driftWarns++
+		}
 		dbg.RegRatio[ci] = make([]float64, len(col))
 		ratios := make([]float64, len(col))
-		for d, p := range col {
+		for d, p := range sampled {
 			ratios[d] = inkRatio(bin, p.X, p.Y, sampleR(sheet.RegR))
 			dbg.RegRatio[ci][d] = ratios[d]
 		}
@@ -341,7 +420,15 @@ func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 	}
 	readElectives(bin, sheet, opt, res, dbg)
 	maybeThresholdDeviationWarning(res, deviated, totalRows)
+	maybeDriftWarning(res, driftWarns)
 	return res, dbg
+}
+
+// maybeDriftWarning 汇总印刷漂移告警(逐行刷屏会淹没重点,只报总数)。
+func maybeDriftWarning(res *Result, driftWarns int) {
+	if driftWarns > 0 {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("检测到 %d 处印刷偏移(已自动对齐),边缘题建议人工复核", driftWarns))
+	}
 }
 
 // maybeThresholdDeviationWarning 全卡过半行的自适应阈值显著偏离全局阈值时,
@@ -356,15 +443,20 @@ func maybeThresholdDeviationWarning(res *Result, deviated, total int) {
 // readElectives 判读选做题号区(版式 v3):逐涂点按墨迹占比判定,
 // 结果挂到 res.Electives(键 = 题号区所在主观题号)。漏涂/多涂不判失败,
 // 只给提示——统分层会按"组内恰一题已批阅则取该题"回退。
-func readElectives(bin *bitmap, sheet *card.Sheet, opt Options, res *Result, dbg *Debug) {
+// 返回印刷漂移告警数(与客观题/考号区同一套自对齐)。
+func readElectives(bin *bitmap, sheet *card.Sheet, opt Options, res *Result, dbg *Debug) (driftWarns int) {
 	if len(sheet.Electives) == 0 {
-		return
+		return 0
 	}
 	th := opt.MarkThreshold
 	sampleR := int(float64(sheet.RegR) * 0.8) // 与考号涂点同规格,同样只看内部
 	for _, row := range sheet.Electives {
+		sampled, warn := snapRow(bin, row.Points, sheet.RegR)
+		if warn {
+			driftWarns++
+		}
 		marked := []int{}
-		for oi, p := range row.Points {
+		for oi, p := range sampled {
 			if inkRatio(bin, p.X, p.Y, sampleR) >= th {
 				marked = append(marked, oi)
 			}
@@ -378,4 +470,5 @@ func readElectives(bin *bitmap, sheet *card.Sheet, opt Options, res *Result, dbg
 				fmt.Sprintf("第 %s 题选做题号区未唯一涂选(%d 处),判分按批阅结果计入", row.Labels[0], len(marked)))
 		}
 	}
+	return driftWarns
 }

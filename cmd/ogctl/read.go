@@ -21,6 +21,9 @@ func cmdRead(args []string) error {
 	debugDir := fs.String("debug", "", "调试产物目录(矫正图/叠加图)")
 	th := fs.Float64("threshold-value", 0.42, "涂卡判定阈值(墨迹占比 0~1)")
 	mode := fs.String("threshold", "otsu", "二值化方式:otsu | adaptive(强阴影/翻拍推荐)")
+	gamma := fs.Float64("gamma", 0, "灰度伽马(<1 提亮阴影/褪色件;0=不启用)")
+	median := fs.Int("median", 0, "中值滤波窗口(3/5 去椒盐噪声;0=不启用)")
+	clahe := fs.Int("clahe", 0, "CLAHE 分块数(常用 8,弱光/低对比增墨;0=不启用)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -41,7 +44,8 @@ func cmdRead(args []string) error {
 	if err != nil {
 		return err
 	}
-	res, dbg, err := omr.Read(sheet, img, omr.Options{MarkThreshold: *th, Threshold: *mode})
+	res, dbg, err := omr.Read(sheet, img, omr.Options{MarkThreshold: *th, Threshold: *mode,
+		Gamma: *gamma, Median: *median, CLAHE: *clahe})
 	if err != nil {
 		return err
 	}
