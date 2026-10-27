@@ -65,7 +65,9 @@ func TestTrendsAndSupplements(t *testing.T) {
 			t.Fatalf("建考: %d\n%s", resp.StatusCode, data)
 		}
 		var m map[string]any
-		json.Unmarshal(data, &m)
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("解析建考响应: %v\n%s", err, data)
+		}
 		return m["id"].(string)
 	}
 
@@ -103,7 +105,9 @@ func TestTrendsAndSupplements(t *testing.T) {
 			t.Fatalf("补传: %d\n%s", resp.StatusCode, data)
 		}
 		var m map[string]any
-		json.Unmarshal(data, &m)
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("解析补传响应: %v\n%s", err, data)
+		}
 		if m["added"].(float64) != 1 || m["students"].(float64) != 4 {
 			t.Fatalf("补传结果异常: %s", data)
 		}

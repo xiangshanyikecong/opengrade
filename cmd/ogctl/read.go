@@ -4,13 +4,13 @@ import (
 	"flag"
 	"fmt"
 	"image"
-	_ "image/jpeg"
 	"image/png"
 	"os"
 	"path/filepath"
 
 	"github.com/opengrade/opengrade/card"
 	"github.com/opengrade/opengrade/omr"
+	"github.com/opengrade/opengrade/raster"
 )
 
 func cmdRead(args []string) error {
@@ -78,18 +78,17 @@ func cmdRead(args []string) error {
 	return nil
 }
 
-// loadImage 解码 PNG/JPEG(含常见扫描导出格式)。
+// loadImage 解码 PNG/JPEG,手机直拍等带 EXIF Orientation 的图像自动转正。
 func loadImage(path string) (image.Image, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	img, format, err := image.Decode(f)
+	img, err := raster.DecodeImage(f)
 	if err != nil {
 		return nil, fmt.Errorf("解码 %s 失败: %w", path, err)
 	}
-	_ = format
 	return img, nil
 }
 

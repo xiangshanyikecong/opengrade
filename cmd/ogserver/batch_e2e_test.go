@@ -48,8 +48,10 @@ func TestSubQuestionGrading(t *testing.T) {
 		t.Fatalf("建考: %d\n%s", resp.StatusCode, data)
 	}
 	var m map[string]any
-	json.Unmarshal(data, &m)
-	examID := m["id"].(string)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("解析建考响应: %v\n%s", err, data)
+	}
+	examID, _ := m["id"].(string)
 
 	// 整题评分对拆分题应被拒绝
 	admin.json("POST", "/api/v1/grades", map[string]any{

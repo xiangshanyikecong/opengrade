@@ -16,8 +16,11 @@ func TestPasswordHashRoundtrip(t *testing.T) {
 	if u.CheckPassword("secret2") {
 		t.Fatal("错误口令不应通过")
 	}
-	if u.Salt == "" || u.Hash == "" || u.Salt == u.Hash {
-		t.Fatal("盐值与散列应非空且不同")
+	if !isArgon2ID(u.Hash) {
+		t.Fatalf("新散列应为 Argon2id PHC 串, 得到 %q", u.Hash)
+	}
+	if u.Salt != "" || u.Iter != 0 {
+		t.Fatalf("PBKDF2 遗留字段应置空: salt=%q iter=%d", u.Salt, u.Iter)
 	}
 	// RFC 6070 风格的已知答案测试(小迭代,验证 PBKDF2 实现正确性)
 	got := pbkdf2Key([]byte("password"), []byte("salt"), 1, 20)
@@ -29,6 +32,85 @@ func TestPasswordHashRoundtrip(t *testing.T) {
 	want2 := "ae4d0c95af6b46d32d0adff928f06dd02a303f8e"
 	if hex.EncodeToString(got2) != want2 {
 		t.Fatalf("PBKDF2(iter=2) 已知答案不匹配: %x", got2)
+	}
+}
+
+// Argon2id 已知答案:固定盐/口令/参数的 PHC 串(独立 base64 实现生成后嵌入),
+// 锚住散列格式与推导口径 —— 若上游实现或编码方式变化,存量散列将无法登录,这里第一时间报警。
+func TestArgon2idKnownAnswer(t *testing.T) {
+	const phc = "$argon2id$v=19$m=32768,t=3,p=2$MDEyMzQ1Njc4OWFiY2RlZg$dzQvjxZdx5X3q1AAgEoDvysYgrIOUUVEp5GY+1/F/S0"
+	if !argon2idVerify("password123", phc) {
+		t.Fatal("Argon2id 已知答案应通过校验")
+	}
+	if argon2idVerify("password124", phc) {
+		t.Fatal("错口令不应通过已知答案校验")
+	}
+}
+
+// 存量迁移:两种 PBKDF2 强度的散列都能校验,登录后被升级为 Argon2id,旧字段清空。
+func TestLegacyPasswordUpgrade(t *testing.T) {
+	mkLegacy := func(iter int) *User {
+		salt, _ := hex.DecodeString("0123456789abcdef0123456789abcdef")
+		return &User{
+			Username: "t",
+			Salt:     "0123456789abcdef0123456789abcdef",
+			Hash:     hex.EncodeToString(pbkdf2Key([]byte("oldpass1"), salt, iter, 32)),
+			Iter:     iter,
+		}
+	}
+	for _, iter := range []int{pbkdf2IterLegacy, pbkdf2Iter} {
+		s, err := Load(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		u := mkLegacy(iter)
+		if !u.CheckPassword("oldpass1") {
+			t.Fatalf("PBKDF2(iter=%d) 存量散列应可校验", iter)
+		}
+		s.Users["t"] = u
+		if _, _, err := s.Login("t", "oldpass1"); err != nil {
+			t.Fatalf("存量账号登录失败: %v", err)
+		}
+		up := s.Users["t"]
+		if !isArgon2ID(up.Hash) || up.Salt != "" || up.Iter != 0 {
+			t.Fatalf("登录后应升级为 Argon2id 并清空遗留字段: %+v", up)
+		}
+		if !up.CheckPassword("oldpass1") || up.CheckPassword("oldpass2") {
+			t.Fatal("升级后散列口径不一致")
+		}
+		// 升级结果应已落盘,重开库直接按 Argon2id 校验
+		s2, err := Load(s.path[:len(s.path)-len("org.json")])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if u2 := s2.Users["t"]; u2 == nil || !isArgon2ID(u2.Hash) || !u2.CheckPassword("oldpass1") {
+			t.Fatal("升级后的 Argon2id 散列应已持久化且可校验")
+		}
+	}
+}
+
+// 损坏/被篡改的 PHC 串必须安静地返回 false:登录路径不能被一行坏数据 panic 或 OOM。
+func TestArgon2idVerifyMalformed(t *testing.T) {
+	cases := []string{
+		"",
+		"$argon2id$",
+		"plain-hex-not-phc",
+		"$argon2i$v=19$m=32768,t=3,p=2$MDEyMzQ1Njc4OWFiY2RlZg$dzQvjxZdx5X3q1AAgEoDvysYgrIOUUVEp5GY+1/F/S0", // 非变体
+		"$argon2id$v=16$m=32768,t=3,p=2$MDEyMzQ1Njc4OWFiY2RlZg$dzQvjxZdx5X3q1AAgEoDvysYgrIOUUVEp5GY+1/F/S0", // 未知版本
+		"$argon2id$19$m=32768,t=3,p=2$MDEyMzQ1Njc4OWFiY2RlZg$dzQvjxZdx5X3q1AAgEoDvysYgrIOUUVEp5GY+1/F/S0",   // 缺 v=
+		"$argon2id$v=19$m=32768,t=3$MDEyMzQ1Njc4OWFiY2RlZg$dzQvjxZdx5X3q1AAgEoDvysYgrIOUUVEp5GY+1/F/S0",     // 缺 p
+		"$argon2id$v=19$m=32768,t=0,p=2$MDEyMzQ1Njc4OWFiY2RlZg$dzQvjxZdx5X3q1AAgEoDvysYgrIOUUVEp5GY+1/F/S0", // t=0 上游会 panic
+		"$argon2id$v=19$m=32768,t=3,p=0$MDEyMzQ1Njc4OWFiY2RlZg$dzQvjxZdx5X3q1AAgEoDvysYgrIOUUVEp5GY+1/F/S0", // p=0 上游会 panic
+		"$argon2id$v=19$m=99999999999,t=3,p=2$MDEyMzQ1Njc4OWFiY2RlZg$dzQvjxZdx5X3q1AAgEoDvysYgrIOUUVEp5GY+1/F/S0", // m 无上限会 OOM
+		"$argon2id$v=19$m=32768,t=3,p=2$!!!bad-base64!!!$dzQvjxZdx5X3q1AAgEoDvysYgrIOUUVEp5GY+1/F/S0",             // 盐非法
+		"$argon2id$v=19$m=32768,t=3,p=2$MDEyMzQ1Njc4OWFiY2RlZg$!!!bad-base64!!!",                                  // 散列非法
+		"$argon2id$v=19$m=32768,t=3,p=2$MDEy$dzQvjxZdx5X3q1AAgEoDvysYgrIOUUVEp5GY+1/F/S0",                         // 盐过短
+		"$argon2id$v=19$m=32768,t=3,p=2$MDEyMzQ1Njc4OWFiY2RlZg$dzQ",                                               // 散列过短
+	}
+	for _, phc := range cases {
+		if argon2idVerify("password123", phc) {
+			t.Fatalf("畸形串不应通过校验: %q", phc)
+		}
 	}
 }
 

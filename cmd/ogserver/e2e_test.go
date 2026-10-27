@@ -361,8 +361,10 @@ func TestFullSystemReview(t *testing.T) {
 			t.Fatalf("建考: %d\n%s", resp.StatusCode, data)
 		}
 		var m map[string]any
-		json.Unmarshal(data, &m)
-		examID = m["id"].(string)
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("解析建考响应: %v\n%s", err, data)
+		}
+		examID, _ = m["id"].(string)
 		if m["students"].(float64) != 5 || m["roster"].(float64) != 5 {
 			t.Fatalf("建考返回异常: %s", data)
 		}
@@ -800,8 +802,10 @@ func TestFullSystemReview(t *testing.T) {
 			t.Fatalf("建语文考试: %d\n%s", resp.StatusCode, data)
 		}
 		var m map[string]any
-		json.Unmarshal(data, &m)
-		cnExam := m["id"].(string)
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("解析建考响应: %v\n%s", err, data)
+		}
+		cnExam, _ := m["id"].(string)
 		defer leader.json("DELETE", "/api/v1/exams/"+cnExam, nil, http.StatusOK)
 		if got := teacher2.code("GET", "/api/v1/exams/"+cnExam, nil, ""); got != http.StatusOK {
 			t.Fatalf("语文教师应可见语文校级卷,得到 %d", got)

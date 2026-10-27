@@ -120,7 +120,7 @@ func TestLocateRescueScenarios(t *testing.T) { // nolint: gocritic // 表驱动�
 			distorted = sc.post(distorted)
 		}
 		var jbuf bytes.Buffer
-		jpeg.Encode(&jbuf, distorted, &jpeg.Options{Quality: 85})
+		_ = jpeg.Encode(&jbuf, distorted, &jpeg.Options{Quality: 85})
 		dec, _ := jpeg.Decode(bytes.NewReader(jbuf.Bytes()))
 		res, _, err := omr.Read(sheet, dec, omr.Options{})
 		if err != nil {

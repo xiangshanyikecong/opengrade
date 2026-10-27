@@ -84,8 +84,10 @@ func TestElectiveQuestionsE2E(t *testing.T) {
 		t.Fatalf("建考: %d\n%s", resp.StatusCode, data)
 	}
 	var m map[string]any
-	json.Unmarshal(data, &m)
-	examID := m["id"].(string)
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("解析建考响应: %v\n%s", err, data)
+	}
+	examID, _ := m["id"].(string)
 
 	// 考试详情:进度带选做标签
 	d := admin.json("GET", "/api/v1/exams/"+examID, nil, http.StatusOK)

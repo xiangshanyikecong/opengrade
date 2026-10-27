@@ -10,7 +10,6 @@ package main
 import (
 	"fmt"
 	"image"
-	_ "image/jpeg"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"github.com/opengrade/opengrade/auth"
 	"github.com/opengrade/opengrade/card"
 	"github.com/opengrade/opengrade/omr"
+	"github.com/opengrade/opengrade/raster"
 )
 
 // handleAppendScans 补传扫描件:POST /api/v1/exams/{id}/scans(multipart images=多张扫描件)。
@@ -62,7 +62,7 @@ func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *
 			failed = append(failed, scanFail{i + 1, err.Error()})
 			continue
 		}
-		img, _, err := image.Decode(f)
+		img, err := raster.DecodeImage(f)
 		f.Close()
 		if err != nil {
 			failed = append(failed, scanFail{i + 1, fmt.Sprintf("图像解码失败: %v", err)})

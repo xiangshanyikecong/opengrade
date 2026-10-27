@@ -5,7 +5,7 @@
 新一代 **答题卡设计 → 扫描解析 → 极速阅卷 → 统分讲评 → 纵向学情** 一体化基础设施。
 采用 **Open-Core(开源内核 + 商业增值)** 双轨模式:
 
-- **开源社区版(本仓库)**:单校/年级完整可用,完全免费,数据 100% 本地化,零第三方依赖;
+- **开源社区版(本仓库)**:单校/年级完整可用,完全免费,数据 100% 本地化,纯 Go 单二进制(唯一第三方依赖:golang.org/x/crypto 的 Argon2id);
 - **商业企业版**:多校联考调度、双评仲裁、AI 深度阅卷与讲评课件、信创私有化交付(见 [docs/roadmap.md](docs/roadmap.md))。
 
 我们坚决不做"向家长收查分费"的模式:基础查分与答卷回溯免费开放,原始数据归属学校,随时可整包导出。
@@ -14,7 +14,7 @@
 
 ## 当前进度:现实对齐批次(评分颗粒度 + 按页归组 + 卷生命周期 + 元数据/手工成绩/复核)
 
-纯 Go、**零第三方依赖**(web 内置 pdf.js 亦为本地文件)、单二进制部署。已完成端到端验证:
+纯 Go、单二进制部署(唯一第三方依赖为 golang.org/x/crypto 的 Argon2id 口令散列,无 cgo;web 内置 pdf.js 亦为本地文件)。已完成端到端验证:
 
 ```
 出卡(v2 题型 + 中文字体位图渲染)
@@ -57,7 +57,7 @@ ogctl gen -o og_out -layout-file my-layout.json -students 30
 #   og_out/sheet.svg          ← 可打印矢量母版(浏览器打开直接打印 A4,支持中文卷头)
 #   og_out/sheet.layout.json  ← 开放版式格式(读卡/切片的几何契约)
 
-# 2. 读卡:任意尺寸扫描件/照片,自动旋转/透视矫正;强阴影场景加 -threshold adaptive
+# 2. 读卡:任意尺寸扫描件/照片(手机直拍按 EXIF 自动转正),自动旋转/透视矫正;强阴影场景加 -threshold adaptive
 ogctl read -layout og_out/sheet.layout.json -image scan.jpg -out r.json
 
 # 3. 主观题切片(离线路径)
@@ -285,7 +285,7 @@ DPI/照片留白)→ 多尺度实心窗模板(粘连/裁切)→ 位置吸附 →
 ## 目录结构
 
 ```
-auth/    账号与角色权限:PBKDF2 口令散列、会话、四级角色(admin/leader/teacher/student)
+auth/    账号与角色权限:Argon2id 口令散列(存量 PBKDF2 登录自动升级)、会话、四级角色(admin/leader/teacher/student)
 card/    答题卡版式模型 v2(几何真源,题型化)+ SVG/PNG 双渲染器(中文位图)
 font/    零依赖 TrueType 解析器 + 光栅化器 + 系统中文字体发现
 omr/     高容错 OMR 内核:自适应二值化/定位/单应矫正/判读 + 考号逐位明细 + 主观题切片

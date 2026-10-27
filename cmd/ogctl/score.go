@@ -63,7 +63,7 @@ func cmdScore(args []string) error {
 	for _, s := range rep.Students {
 		fmt.Fprintf(w, "%d\t%s\t%v\t%.0f/%.0f\n", s.Index, s.RegNumber, s.RegValid, s.Score, s.Total)
 	}
-	w.Flush()
+	_ = w.Flush() // 写 stdout,无后续动作
 	fmt.Printf("共 %d 卷,均分 %.1f/%.0f\n", rep.Count, rep.Mean, rep.Total)
 	lowQs := score.LowRateQuestions(rep, *low)
 	if len(lowQs) > 0 {

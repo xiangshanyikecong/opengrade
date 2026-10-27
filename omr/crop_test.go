@@ -47,9 +47,9 @@ func TestReadCroppedAndFramed(t *testing.T) { // nolint: gocritic // 表驱动�
 	mmY := func(mm int) int { return mm * H / 297 }
 
 	cases := []struct {
-		name                  string
-		l, t, r, b            int
-		frame                 int
+		name       string
+		l, t, r, b int
+		frame      int
 	}{
 		{"无裁切基准", 0, 0, 0, 0, 0},
 		{"裁边6mm(定位块内缩10mm内)", mmX(6), mmY(6), mmX(6), mmY(6), 0},
@@ -59,7 +59,6 @@ func TestReadCroppedAndFramed(t *testing.T) { // nolint: gocritic // 表驱动�
 		{"黑边+裁边组合", mmX(8), mmY(8), mmX(8), mmY(8), 30},
 	}
 	for _, c := range cases {
-		img := image.Image(distorted)
 		g := distorted
 		if c.l+c.r+c.t+c.b > 0 {
 			g = cropGray(distorted, c.l, c.t, c.r, c.b)
@@ -67,9 +66,8 @@ func TestReadCroppedAndFramed(t *testing.T) { // nolint: gocritic // 表驱动�
 		if c.frame > 0 {
 			g = addBlackFrame(g, c.frame)
 		}
-		img = g
 		var jbuf bytes.Buffer
-		jpeg.Encode(&jbuf, img, &jpeg.Options{Quality: 85})
+		_ = jpeg.Encode(&jbuf, g, &jpeg.Options{Quality: 85})
 		dec, _ := jpeg.Decode(bytes.NewReader(jbuf.Bytes()))
 		res, _, err := omr.Read(sheet, dec, omr.Options{})
 		if err != nil {
@@ -83,4 +81,4 @@ func TestReadCroppedAndFramed(t *testing.T) { // nolint: gocritic // 表驱动�
 			t.Errorf("%-32s 客观题判读 %d 题,期望 30", c.name, len(res.Answers))
 		}
 	}
-	}
+}

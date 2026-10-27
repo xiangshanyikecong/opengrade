@@ -30,6 +30,25 @@ func setSessionCookie(w http.ResponseWriter, token string, expire bool) {
 	http.SetCookie(w, c)
 }
 
+// bearerToken 从 Authorization: Bearer 头解析会话令牌(原生客户端通道,如鸿蒙 App)。
+// 原生 HTTP 客户端没有浏览器 Cookie 罐,改用标准 Bearer 头携带同一份会话令牌;
+// 令牌仍落在 sessions.json,生命周期/吊销语义与 Cookie 完全一致。
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	if len(h) > 7 && strings.EqualFold(h[:7], "bearer ") {
+		return strings.TrimSpace(h[7:])
+	}
+	return ""
+}
+
+// sessionToken 解析本次请求的会话令牌:Cookie 优先(web 路径零变化),缺省回退 Bearer(原生客户端)。
+func sessionToken(r *http.Request) string {
+	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
+		return c.Value
+	}
+	return bearerToken(r)
+}
+
 // loginLimiter 登录失败限速(A-6):按用户名滚动窗口计数,连错达阈值即临时锁定。
 // 内存态、单实例口径 —— 目的是把在线爆破拖到不可行,不做审计。
 var loginLimiter = struct {
@@ -85,8 +104,14 @@ func loginOK(username string) {
 }
 
 // handleLogin POST /api/v1/auth/login {username, password} → {role, displayName, redirect}
+// 可选 native:true(鸿蒙等原生客户端):响应附 token 字段,客户端以 Bearer 头携带;
+// web 端不传 native 字段,响应不含 token(Cookie 仍 HttpOnly,不暴露给页面脚本)。
 func handleLogin(w http.ResponseWriter, r *http.Request, authStore *auth.Store) {
-	var req struct{ Username, Password string }
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Native   bool   `json:"native"`
+	}
 	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
@@ -111,16 +136,20 @@ func handleLogin(w http.ResponseWriter, r *http.Request, authStore *auth.Store) 
 	default:
 		redirect = "/teacher.html"
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"username": u.Username, "displayName": u.DisplayName, "role": u.Role, "redirect": redirect,
 		"mustChangePassword": u.MustChangePassword, // 首登强制改密(前端落地到改密页)
-	})
+	}
+	if req.Native {
+		resp["token"] = token
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleLogout POST /api/v1/auth/logout
 func handleLogout(w http.ResponseWriter, r *http.Request, authStore *auth.Store, u *auth.User) {
-	if c, err := r.Cookie(sessionCookie); err == nil {
-		authStore.Logout(c.Value)
+	if tok := sessionToken(r); tok != "" {
+		authStore.Logout(tok)
 	}
 	setSessionCookie(w, "", true)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -147,10 +176,7 @@ func handlePasswordChange(w http.ResponseWriter, r *http.Request, authStore *aut
 		httpError(w, http.StatusForbidden, fmt.Errorf("原密码不正确"))
 		return
 	}
-	keepToken := ""
-	if c, err := r.Cookie(sessionCookie); err == nil {
-		keepToken = c.Value // 保留当前会话,其余(疑似泄露的)会话随改密吊销
-	}
+	keepToken := sessionToken(r) // 保留当前会话(Cookie 或 Bearer),其余(疑似泄露的)会话随改密吊销
 	if err := authStore.SetPasswordSelf(u.Username, req.NewPassword, keepToken); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return

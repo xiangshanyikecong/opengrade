@@ -14,6 +14,7 @@ import (
 
 	"github.com/opengrade/opengrade/auth"
 	"github.com/opengrade/opengrade/omr"
+	"github.com/opengrade/opengrade/raster"
 )
 
 // handleLayoutAnalyze POST /api/v1/layout/analyze:multipart 字段 image(单页 PNG/JPEG)。
@@ -34,7 +35,7 @@ func handleLayoutAnalyze(w http.ResponseWriter, r *http.Request, u *auth.User) {
 		return
 	}
 	defer file.Close()
-	img, _, err := image.Decode(file)
+	img, err := raster.DecodeImage(file)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, fmt.Errorf("图像解码失败: %w", err))
 		return

@@ -57,7 +57,9 @@ func cmdDemo(args []string) error {
 		{Reg: fmt.Sprintf("%0*d", gr.sheet.Layout.RegDigits, 15), Name: "干扰项甲", Class: "三年三班"},
 		{Reg: fmt.Sprintf("%0*d", gr.sheet.Layout.RegDigits, 35), Name: "干扰项乙", Class: "三年三班"},
 	}
-	writeJSON(filepath.Join(gr.outDir, "roster.json"), rosterStudents)
+	if err := writeJSON(filepath.Join(gr.outDir, "roster.json"), rosterStudents); err != nil {
+		return err
+	}
 
 	rng := rand.New(rand.NewSource(lf.seed*31 + 7))
 	var results []*omr.Result
@@ -170,7 +172,7 @@ func cmdDemo(args []string) error {
 		fmt.Fprintf(w, "%d\t%s\t%s\t%.0f\t%.1f\t%.1f/%.0f\t%s\n",
 			s.Index, gr.regNums[i], s.RegNumber, s.Objective, s.Subjective, s.Score, rep.Total, flagText(s.Flagged))
 	}
-	w.Flush()
+	_ = w.Flush() // 写 stdout,无后续动作
 	fmt.Printf("   卷面满分 %.0f,均分 %.1f\n", rep.Total, rep.Mean)
 
 	fmt.Printf("\n④ 引擎识别对账:客观涂卡判读 %d/%d = %.1f%%\n", recognized, expect, 100*float64(recognized)/float64(expect))

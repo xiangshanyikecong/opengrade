@@ -1382,7 +1382,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // rename 成功后 Remove 报错,无碍
+	defer func() { _ = os.Remove(tmpName) }() // rename 成功后 Remove 报错,无碍(纯清理)
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return err

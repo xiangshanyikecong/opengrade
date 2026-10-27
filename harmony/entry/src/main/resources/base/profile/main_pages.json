@@ -1,0 +1,26 @@
+{
+  "src": [
+    "pages/Index",
+    "pages/LoginPage",
+    "pages/ForcePwdPage",
+    "pages/MePage",
+    "pages/common/ImageViewerPage",
+    "pages/student/StudentHomePage",
+    "pages/student/StudentExamDetailPage",
+    "pages/student/StudentTrendsPage",
+    "pages/student/PracticePage",
+    "pages/teacher/TaskListPage",
+    "pages/teacher/ExamListPage",
+    "pages/teacher/ExamHubPage",
+    "pages/teacher/GraderPage",
+    "pages/teacher/AnalyticsPage",
+    "pages/teacher/StaffTrendsPage",
+    "pages/teacher/AggregatePage",
+    "pages/teacher/AssignPage",
+    "pages/teacher/CreateExamPage",
+    "pages/teacher/UploadScansPage",
+    "pages/teacher/ManualScoresPage",
+    "pages/teacher/BankListPage",
+    "pages/admin/UserListPage"
+  ]
+}

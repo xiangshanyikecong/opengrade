@@ -23,12 +23,12 @@ import (
 	"strings"
 	"time"
 
-	_ "image/jpeg"
 	"image/png"
 
 	"github.com/opengrade/opengrade/auth"
 	"github.com/opengrade/opengrade/card"
 	"github.com/opengrade/opengrade/omr"
+	"github.com/opengrade/opengrade/raster"
 	"github.com/opengrade/opengrade/roster"
 	"github.com/opengrade/opengrade/score"
 )
@@ -276,12 +276,13 @@ type authedHandler func(w http.ResponseWriter, r *http.Request, u *auth.User)
 func guard(authStore *auth.Store, roles ...auth.Role) func(authedHandler) http.HandlerFunc {
 	return func(h authedHandler) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			c, err := r.Cookie(sessionCookie)
-			if err != nil {
+			// 双通道鉴权:Cookie(web,零变化)优先,Bearer(鸿蒙等原生客户端)回退。
+			tok := sessionToken(r)
+			if tok == "" {
 				httpError(w, http.StatusUnauthorized, fmt.Errorf("未登录"))
 				return
 			}
-			u, ok := authStore.SessionUser(c.Value)
+			u, ok := authStore.SessionUser(tok)
 			if !ok {
 				httpError(w, http.StatusUnauthorized, fmt.Errorf("未登录或会话已过期"))
 				return
@@ -391,7 +392,7 @@ func handleOMR(w http.ResponseWriter, r *http.Request, u *auth.User) {
 		return
 	}
 	defer file.Close()
-	img, _, err := image.Decode(file)
+	img, err := raster.DecodeImage(file)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, fmt.Errorf("图像解码失败: %w", err))
 		return
@@ -602,7 +603,7 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 				httpError(w, http.StatusBadRequest, err)
 				return
 			}
-			img, _, err := image.Decode(f)
+			img, err := raster.DecodeImage(f)
 			f.Close()
 			if err != nil {
 				httpError(w, http.StatusBadRequest, fmt.Errorf("第 %d 张图像解码失败: %w", i+1, err))

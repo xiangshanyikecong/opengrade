@@ -38,12 +38,12 @@ import (
 
 // PaperQuestion 是检测出的客观题草稿(题型/选项数/原卷题号;分值卷面不可靠,恒 1 待人工改)。
 type PaperQuestion struct {
-	Kind    string      `json:"kind"`           // choice | judge
-	Options int         `json:"options"`        // 选项数(判断恒 2)
-	Score   float64     `json:"score"`          // 恒 1,设计器确认页批量改
+	Kind    string      `json:"kind"`             // choice | judge
+	Options int         `json:"options"`          // 选项数(判断恒 2)
+	Score   float64     `json:"score"`            // 恒 1,设计器确认页批量改
 	Number  int         `json:"number,omitempty"` // 原卷题号(0=行首未识别出题号)
-	Note    string      `json:"note,omitempty"` // 该题的低置信/占位说明
-	StemImg *image.Gray `json:"-"`              // 题干截图(handler 转 base64;导入题库用)
+	Note    string      `json:"note,omitempty"`   // 该题的低置信/占位说明
+	StemImg *image.Gray `json:"-"`                // 题干截图(handler 转 base64;导入题库用)
 }
 
 // PaperSubjective 是检测出的主观题留白区草稿。
@@ -763,66 +763,6 @@ func longestRunF(f []float64, total int, th float64) (int, int, bool) {
 	return best0, best0 + bestLen - 1, true
 }
 
-// findGutter 双栏栏缝检测:页宽中段 25%~75% 内最宽的全高无墨竖带(≥3mm),且两侧都有
-// 文字行、行网格相互独立(任一侧 ≥70% 的行能在另一侧配对 = 单栏对齐内容,不算栏)。
-// skewDeg 为该位图自身的估计倾斜角:倾斜会让同一文字行在缝两侧的行起点错开
-// tan(θ)×半页宽,配对容差随之放宽,否则倾斜单栏卷会因涂抹被误判成双栏。
-// 返回 [缝首 x, 缝尾 x]。
-func findGutter(b *bitmap, skewDeg float64) ([2]int, bool) {
-	var none [2]int
-	mm := float64(b.W) / 210.0
-	colInk := make([]int, b.W)
-	for i, v := range b.D {
-		if v == 1 {
-			colInk[i%b.W]++
-		}
-	}
-	best, run, bestX := 0, 0, b.W/2
-	for x := b.W / 4; x <= b.W*3/4; x++ {
-		if x < 0 || x >= b.W {
-			continue
-		}
-		if colInk[x] == 0 {
-			run++
-			if run > best {
-				best, bestX = run, x-run+1
-			}
-		} else {
-			run = 0
-		}
-	}
-	if best < int(3*mm) {
-		return none, false
-	}
-	leftRows := rowRunStarts(b, 0, bestX)
-	rightRows := rowRunStarts(b, bestX+best, b.W)
-	if len(leftRows) < 3 || len(rightRows) < 3 {
-		return none, false
-	}
-	// 行网格配对:起点错位 ≤2mm(+倾斜涂抹量)视为同一行。任一侧 ≥70% 的行能在
-	// 另一侧配对成功 = 单栏试卷(短行/标题/题干只出现在间隙一侧很正常);
-	// 两侧行网格都大量对不上 = 真分栏(两栏内容流彼此独立)。
-	matchedL, matchedR := 0, 0
-	tol := int(2*mm + 0.5*float64(b.W)*math.Abs(math.Tan(skewDeg*math.Pi/180)))
-	for i, j := 0, 0; i < len(leftRows) && j < len(rightRows); {
-		switch d := leftRows[i] - rightRows[j]; {
-		case d <= tol && d >= -tol:
-			matchedL++
-			matchedR++
-			i++
-			j++
-		case d < 0:
-			i++
-		default:
-			j++
-		}
-	}
-	if matchedL*4 >= 3*len(leftRows) || matchedR*4 >= 3*len(rightRows) {
-		return none, false
-	}
-	return [2]int{bestX, bestX + best - 1}, true
-}
-
 // cropCols 裁出 [x0,x1] 列范围(含端点)的子位图(逐行拷贝)。
 func cropCols(b *bitmap, x0, x1 int) *bitmap {
 	w := x1 - x0 + 1
@@ -923,7 +863,7 @@ func segmentLines(b *bitmap, pxMM float64) []paperLine {
 		if r.y1-r.y0+1 < minH {
 			continue
 		}
-		out = append(out, paperLine{y0: r.y0, y1: r.y1})
+		out = append(out, paperLine(r))
 	}
 	return out
 }

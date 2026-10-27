@@ -147,9 +147,9 @@ func buildTestFont() []byte {
 	var out bytes.Buffer
 	w32(&out, 0x00010000)
 	w16(&out, uint16(len(names)))
-	w16(&out, 16*4)
-	w16(&out, 2)
-	w16(&out, 16*(4-4))
+	w16(&out, 16*4) // searchRange = 16 × 不超过 numTables 的最大 2 次幂(7 → 4)
+	w16(&out, 2)    // entrySelector = log2(4)
+	w16(&out, 16*3) // rangeShift = numTables*16 - searchRange
 	off := uint32(12 + 16*len(names))
 	// 记录区(表按 tag 排序,实际数据区紧随其后)
 	type rec struct {

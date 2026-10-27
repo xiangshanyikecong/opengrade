@@ -1,0 +1,13 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "opengrade-harmony",
+  "version": "1.0.0",
+  "description": "OpenGrade 开元智阅 HarmonyOS 客户端(零第三方依赖)",
+  "main": "",
+  "author": "opengrade",
+  "license": "AGPL-3.0",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hypium": "1.0.19"
+  }
+}

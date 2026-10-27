@@ -196,34 +196,6 @@ func (s *Store) openExamFor(r *http.Request, u *auth.User, grading bool) (*Exam,
 	return ex, true
 }
 
-// classAssigned 判定教师是否处于"按班分配"任务模式且被分到了班级
-// (走班:教师任一任教班级命中分配表即可)。
-// 此时即便在阅卷流(grading=1),也只应看到所分班级学生的卷。
-func classAssigned(ex *Exam, u *auth.User) bool {
-	if u == nil || u.Role != auth.RoleTeacher {
-		return false
-	}
-	if ex.TaskMode != "class" {
-		return false
-	}
-	for _, c := range u.AllClasses() {
-		if ex.ClassTasks[c] == u.Username {
-			return true
-		}
-	}
-	return false
-}
-
-// assignedClassFor 返回按班分配模式下教师被分的第一个班级(提示口径用)。
-// 未被分班返回空串。
-func assignedClassFor(ex *Exam, u *auth.User) string {
-	cs := assignedClassesFor(ex, u)
-	if len(cs) == 0 {
-		return ""
-	}
-	return cs[0]
-}
-
 // assignedClassesFor 返回按班分配模式下教师被分到的全部班级(走班可多班;
 // 阅卷切片过滤合并全部所分班 —— 只取第一个会让第二个班的任务永远完不成)。
 func assignedClassesFor(ex *Exam, u *auth.User) []string {

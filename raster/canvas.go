@@ -108,7 +108,7 @@ func (c *Canvas) Line(x0, y0, x1, y1, thickness int, v uint8) {
 // 不在字体表中的字符按空格宽度跳过。
 func (c *Canvas) Text(x, y int, s string, scale int, v uint8) {
 	cx := x
-	for _, r := range []rune(s) {
+	for _, r := range s {
 		if g, ok := glyphBits[r]; ok {
 			for row := 0; row < 7; row++ {
 				for col := 0; col < 5; col++ {

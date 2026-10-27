@@ -1,6 +1,6 @@
-// Package auth 提供零依赖的账号与角色权限体系:
-// 用户(管理员/年级组长/教师/学生)、PBKDF2-HMAC-SHA256 口令散列、
-// 随机令牌会话(Cookie),数据持久化在 data/org.json。
+// Package auth 提供账号与角色权限体系:
+// 用户(管理员/年级组长/教师/学生)、Argon2id 口令散列(存量 PBKDF2 散列
+// 登录时自动升级)、随机令牌会话(Cookie),数据持久化在 data/org.json。
 // 权限模型对应方案稿的组织形态:
 //
 //	admin   学校管理员:用户管理、全部考试与报告
@@ -13,6 +13,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -20,8 +21,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/argon2"
 )
 
 // Role 是用户角色。
@@ -40,8 +45,8 @@ type User struct {
 	Username           string   `json:"username"`
 	DisplayName        string   `json:"displayName"`
 	Role               Role     `json:"role"`
-	Salt               string   `json:"salt"` // hex
-	Hash               string   `json:"hash"` // hex, PBKDF2-HMAC-SHA256
+	Salt               string   `json:"salt"` // hex;仅 PBKDF2 遗留散列使用(Argon2id 的盐在 PHC 串内,置空)
+	Hash               string   `json:"hash"` // PBKDF2 为 hex;Argon2id 为自描述 PHC 串($argon2id$v=19$m=...,t=...,p=...$盐$散列)
 	Reg                string   `json:"reg,omitempty"`
 	Class              string   `json:"class,omitempty"`              // 学生所属班级(教师为任教班级);走班场景为行政班/主班
 	Classes            []string `json:"classes,omitempty"`            // 全部班级(走班:学生双归属/教师多班任教);Classes[0]=Class
@@ -51,7 +56,7 @@ type User struct {
 	Grades             []string `json:"grades,omitempty"`             // 年级组长管辖年级(配合组织架构 data/school.json 收敛可见考试)
 	Children           []string `json:"children,omitempty"`           // 家长绑定的子女考号(家长角色)
 	MustChangePassword bool     `json:"mustChangePassword,omitempty"` // 首登强制改密(默认管理员账号/批量导入初始密码置位)
-	Iter               int      `json:"iter,omitempty"`               // PBKDF2 迭代次数;0=历史散列(60000)
+	Iter               int      `json:"iter,omitempty"`               // PBKDF2 迭代次数(仅遗留散列);0=历史散列(60000)
 }
 
 // AllClasses 返回该账号的全部班级;只有 class 的老数据归一为单班。
@@ -111,10 +116,94 @@ func pbkdf2Key(password, salt []byte, iter, keyLen int) []byte {
 
 const (
 	pbkdf2IterLegacy = 60000  // 历史强度:存量散列按此校验,登录成功后自动升级
-	pbkdf2Iter       = 210000 // 新散列口径(约 3.5 倍成本):暴力猜解同步变难,登录约 200ms 可接受
+	pbkdf2Iter       = 210000 // PBKDF2 时代的新散列口径(仅存量校验用)
 )
 
-// SetPassword 生成新盐值并写入散列(记录迭代次数,与旧散列兼容)。
+// ---- Argon2id(现行散列)----
+//
+// 散列存为自描述 PHC 串:$argon2id$v=19$m=<KiB>,t=<轮数>,p=<并行>$<盐>$<散列>,
+// 盐/散列为 PHC 规定的无填充标准 base64。参数随串一起存储:日后调强默认值,
+// 存量散列仍按各自参数校验,登录不受影响;PHC 前缀同时充当算法判别符,
+// 避免"算法字段与散列内容不一致"这类双状态源 bug。
+
+// 默认参数对齐 OWASP 口令存储建议之上:32 MiB / 3 轮 / 2 并行。
+// 开发机实测约 77ms —— 内存困难型,比原 PBKDF2-210000(约 200ms)更快,
+// 对 GPU/ASIC 撞库的抵抗力也高一个量级;低配服务器预计 150~250ms,与原口径相当。
+const (
+	argon2MemKiB = 32768
+	argon2Time   = 3
+	argon2Par    = 2
+)
+
+// isArgon2ID 报告散列串是否为 Argon2id PHC 口径(遗留 PBKDF2 为纯 hex,不会有 $ 前缀)。
+func isArgon2ID(hash string) bool {
+	return strings.HasPrefix(hash, "$argon2id$")
+}
+
+// argon2idHash 生成 PHC 编码的 Argon2id 散列。
+func argon2idHash(password string, salt []byte) string {
+	key := argon2.IDKey([]byte(password), salt, argon2Time, argon2MemKiB, argon2Par, 32)
+	b64 := base64.RawStdEncoding.EncodeToString
+	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
+		argon2.Version, argon2MemKiB, argon2Time, argon2Par, b64(salt), b64(key))
+}
+
+// argon2idVerify 按 PHC 串内记录的参数重导并常数时间比对。
+// 对损坏/被篡改的串一律返回 false 而非报错:org.json 归运维所有,但不能让一行坏数据
+// 打挂登录路径 —— t=0/p=0 会触发 x/crypto/argon2 的 panic,m 无上限会被 OOM。
+func argon2idVerify(password, phc string) bool {
+	parts := strings.Split(strings.TrimPrefix(phc, "$"), "$")
+	if len(parts) != 5 || parts[0] != "argon2id" {
+		return false
+	}
+	if !strings.HasPrefix(parts[1], "v=") {
+		return false
+	}
+	v, err := strconv.Atoi(parts[1][2:])
+	if err != nil || v != argon2.Version {
+		return false
+	}
+	var m, t, p int
+	for _, kv := range strings.Split(parts[2], ",") {
+		k, val, ok := strings.Cut(kv, "=")
+		if !ok {
+			return false
+		}
+		n, err := strconv.Atoi(val)
+		if err != nil {
+			return false
+		}
+		switch k {
+		case "m":
+			m = n
+		case "t":
+			t = n
+		case "p":
+			p = n
+		default:
+			return false
+		}
+	}
+	// t/p 不足会 panic;m 设 1 GiB 上限防被篡改串把登录 OOM。
+	if t < 1 || p < 1 || m < 8*p || m > 1<<20 || t > 64 || p > 16 {
+		return false
+	}
+	b64 := base64.RawStdEncoding
+	salt, err := b64.DecodeString(parts[3])
+	if err != nil || len(salt) < 8 {
+		return false
+	}
+	want, err := b64.DecodeString(parts[4])
+	if err != nil || len(want) < 16 {
+		return false
+	}
+	got := argon2.IDKey([]byte(password), salt, uint32(t), uint32(m), uint8(p), uint32(len(want)))
+	return hmac.Equal(got, want)
+}
+
+// SetPassword 生成新盐值并写入 Argon2id 散列(PHC 串,自含盐与参数)。
+// Salt/Iter 是 PBKDF2 遗留字段,置空退役 —— 不保留旧散列,避免同一口令
+// 在 org.json 里留下弱一档的可撞库副本。
 func (u *User) SetPassword(password string) error {
 	if len(password) < 5 {
 		return fmt.Errorf("密码长度至少 5 位")
@@ -123,14 +212,18 @@ func (u *User) SetPassword(password string) error {
 	if _, err := rand.Read(salt); err != nil {
 		return err
 	}
-	u.Salt = hex.EncodeToString(salt)
-	u.Iter = pbkdf2Iter
-	u.Hash = hex.EncodeToString(pbkdf2Key([]byte(password), salt, pbkdf2Iter, 32))
+	u.Hash = argon2idHash(password, salt)
+	u.Salt = ""
+	u.Iter = 0
 	return nil
 }
 
-// CheckPassword 校验口令(按散列记录的迭代次数;旧散列无记录按历史 60000 次)。
+// CheckPassword 校验口令:Argon2id 散列按 PHC 串内参数重导;
+// 遗留 PBKDF2 散列按散列记录的迭代次数(旧数据无记录按历史 60000 次)。
 func (u *User) CheckPassword(password string) bool {
+	if isArgon2ID(u.Hash) {
+		return argon2idVerify(password, u.Hash)
+	}
 	salt, err := hex.DecodeString(u.Salt)
 	if err != nil {
 		return false
@@ -155,11 +248,11 @@ type session struct {
 // Store 是账号与会话存储(org.json 账号 + sessions.json 会话)。
 // 会话此前只活在内存里(重启全员掉线),现随变更落盘、启动恢复。
 type Store struct {
-	mu        sync.Mutex
-	path      string
-	sessPath  string
-	Users     map[string]*User   `json:"users"`
-	Sessions  map[string]session `json:"-"`
+	mu       sync.Mutex
+	path     string
+	sessPath string
+	Users    map[string]*User   `json:"users"`
+	Sessions map[string]session `json:"-"`
 }
 
 // UserPatch 是 UpdateUser 的增量语义:指针/非 nil 字段才生效,nil = 不变更
@@ -250,7 +343,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }() // rename 成功后 Remove 报错,无碍(纯清理)
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return err
@@ -286,7 +379,7 @@ func (s *Store) Bootstrap() (first bool, err error) {
 }
 
 // Login 校验口令并创建会话(有效期 7 天)。
-// 旧强度散列(无 Iter 记录)登录成功后顺手升级到新口径 —— 存量账号无感迁移。
+// PBKDF2 存量散列(两种强度)登录成功后顺手升级为 Argon2id —— 存量账号无感迁移。
 func (s *Store) Login(username, password string) (token string, u *User, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -294,7 +387,7 @@ func (s *Store) Login(username, password string) (token string, u *User, err err
 	if !ok || !u.CheckPassword(password) {
 		return "", nil, fmt.Errorf("用户名或密码错误")
 	}
-	if u.Iter != pbkdf2Iter {
+	if !isArgon2ID(u.Hash) {
 		if err := u.SetPassword(password); err == nil {
 			_ = s.saveLocked()
 		}

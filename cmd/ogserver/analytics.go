@@ -292,10 +292,9 @@ func perClassQuestionRates(ex *Exam) map[string][]float64 {
 	for c, accs := range agg {
 		rs := make([]float64, nQ)
 		for qi := 0; qi < nQ; qi++ {
+			// 主观题才查版式分值;客观题满分恒为 1(qi-nObj 为负时不可下标)
 			max := 1.0
-			if qi < nObj {
-				max = 1
-			} else {
+			if qi >= nObj {
 				max = ex.Layout.Subjectives[qi-nObj].Score
 			}
 			rs[qi] = rate(accs[qi], max)

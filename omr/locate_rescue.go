@@ -389,7 +389,7 @@ func synthesizeMissing(sheet *card.Sheet, b *bitmap, ds int, have *[4]bool, best
 		return [2]float64{float64(best[q].pt.X) / float64(ds), float64(best[q].pt.Y) / float64(ds)}
 	}
 
-	mapFn := func([2]float64) [2]float64 { return [2]float64{} }
+	var mapFn func([2]float64) [2]float64
 	if len(found) >= 3 {
 		s := [3][2]float64{sheetPt(found[0]), sheetPt(found[1]), sheetPt(found[2])}
 		t := [3][2]float64{smallPt(found[0]), smallPt(found[1]), smallPt(found[2])}

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -239,7 +240,13 @@ func handleExportFullZip(w http.ResponseWriter, r *http.Request, store *Store, u
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=opengrade-%s-full.zip", ex.ID))
 	zw := zip.NewWriter(w)
-	defer zw.Close()
+	// zip 的中央目录在 Close 时才写出:失败意味着客户端拿到截断的包,
+	// 此时响应头已发无法改状态码,至少要把事故留在日志里。
+	defer func() {
+		if err := zw.Close(); err != nil {
+			log.Printf("全量数据包 zip 收尾失败 exam=%s: %v", ex.ID, err)
+		}
+	}()
 
 	addFile := func(rel string) error {
 		p := filepath.Join(dir, rel)
