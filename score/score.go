@@ -78,9 +78,11 @@ type QuestionStat struct {
 	Graded         int            `json:"graded,omitempty"`    // 主观:已阅人数
 	Count          int            `json:"count"`
 	Rate           float64        `json:"rate"`                     // 客观=对率;主观=均分/满分
+	ScoreRate      float64        `json:"scoreRate,omitempty"`      // 客观=平均得分率(部分分/倒扣下与对率分离;全对全错时=对率)
 	Difficulty     float64        `json:"difficulty"`               // 难度系数(=得分率)
 	Discrimination float64        `json:"discrimination,omitempty"` // 区分度(高分组率−低分组率)
 	Options        map[string]int `json:"options,omitempty"`        // 客观题选项人数分布(含"未答")
+	Partial        int            `json:"partial,omitempty"`        // 客观:部分分人数(多选漏选等)
 	Parts          []PartStat     `json:"parts,omitempty"`          // 拆分小问的逐问统计(版式 v3)
 	Elective       string         `json:"elective,omitempty"`       // 选做组标签(版式 v3);非空即选做题
 	Chosen         int            `json:"chosen,omitempty"`         // 选做:实际选做该题的人数(统计分母)
@@ -157,21 +159,30 @@ func GradeObjective(key []string, results []*omr.Result) *Report {
 	for i := range specs {
 		specs[i] = card.QuestionSpec{Kind: card.KindChoice, Score: 1}
 	}
-	return Merge(specs, key, results, nil, nil)
+	return Merge(specs, key, results, nil, nil, nil)
 }
 
 // Merge 生成客观 + 主观合并报告。
 // questions/objectives 与客观题一一对应(取自 sheet.Layout,已规范化),
 // subjectives 与主观题一一对应;grades 的键为 GradeKey(student, question)。
+// scheme 为全卷评分方案(取自 Layout.Scoring;nil = 传统精确匹配语义),
+// 客观题判分、卷面满分与逐题统计都经它解析,保证口径同源。
 func Merge(questions []card.QuestionSpec, objectiveKey []string, results []*omr.Result,
-	subjectives []card.SubjectiveSpec, grades map[string]Grade) *Report {
+	subjectives []card.SubjectiveSpec, grades map[string]Grade, scheme *card.ScoringScheme) *Report {
 
 	if grades == nil {
 		grades = map[string]Grade{}
 	}
+	ruleFor := func(qi int) card.ScoringRule { return scheme.RuleFor(qi + 1) }
+	specFor := func(qi int) card.QuestionSpec {
+		if qi < len(questions) {
+			return questions[qi]
+		}
+		return card.QuestionSpec{Kind: card.KindChoice}
+	}
 	weight := func(qi int) float64 {
-		if qi < len(questions) && questions[qi].Score > 0 {
-			return questions[qi].Score
+		if qi < len(questions) {
+			return FullScore(questions[qi], ruleFor(qi))
 		}
 		return 1
 	}
@@ -252,10 +263,9 @@ func Merge(questions []card.QuestionSpec, objectiveKey []string, results []*omr.
 				continue // 空键题不判分:作答与未答都不给分,也不计入有效作答
 			}
 			ok[qi] = true
-			if res.Answers[qi] == objectiveKey[qi] {
-				line.Objective += weight(qi)
-				row[qi] = weight(qi)
-			}
+			earned, _ := Evaluate(specFor(qi), ruleFor(qi), res.Answers[qi], objectiveKey[qi])
+			line.Objective += earned
+			row[qi] = earned
 		}
 		for qi := range subjectives {
 			if excluded[qi+1] {
@@ -282,18 +292,22 @@ func Merge(questions []card.QuestionSpec, objectiveKey []string, results []*omr.
 		r.Mean /= float64(r.Count)
 	}
 
-	// 客观题统计(含选项人数分布);空键题(答案未录)不进入逐题统计
+	// 客观题统计(含选项人数分布);空键题(答案未录)不进入逐题统计。
+	// 判定走 Evaluate(与统分同口径):Correct=得满分人数,Partial=部分分人数,
+	// ScoreRate=平均得分率(全对全错语义下与对率相等)。
 	for qi := range objectiveKey {
 		if objectiveKey[qi] == "" {
 			continue
 		}
-		st := QuestionStat{Index: qi + 1, Kind: kindOf(qi), Max: weight(qi), Count: r.Count, Options: map[string]int{}}
+		spec, rule := specFor(qi), ruleFor(qi)
+		st := QuestionStat{Index: qi + 1, Kind: kindOf(qi), Max: FullScore(spec, rule), Count: r.Count, Options: map[string]int{}}
 		if qi < len(questions) {
 			for _, l := range card.OptionLetters(kindOf(qi), questions[qi].Options) {
 				st.Options[l] = 0
 			}
 		}
 		dist := map[string]int{}
+		var sumEarned float64
 		for _, res := range results {
 			if res == nil || res.Absent || res.Voided || res.PendingVariant || qi >= len(res.Answers) {
 				continue
@@ -305,8 +319,13 @@ func Merge(questions []card.QuestionSpec, objectiveKey []string, results []*omr.
 			} else {
 				dist["未答"]++
 			}
-			if ans == objectiveKey[qi] {
+			earned, verdict := Evaluate(spec, rule, ans, objectiveKey[qi])
+			sumEarned += earned
+			switch verdict {
+			case VerdictCorrect:
 				st.Correct++
+			case VerdictPartial:
+				st.Partial++
 			}
 		}
 		for k, v := range dist {
@@ -314,8 +333,9 @@ func Merge(questions []card.QuestionSpec, objectiveKey []string, results []*omr.
 		}
 		if st.Count > 0 {
 			st.Rate = float64(st.Correct) / float64(st.Count)
+			st.ScoreRate = sumEarned / (st.Max * float64(st.Count))
 		}
-		st.Difficulty = st.Rate
+		st.Difficulty = st.ScoreRate
 		r.PerQuestion = append(r.PerQuestion, st)
 	}
 	// 主观题统计(拆分小问时附逐问统计,完成度按"全部小问已阅"口径;

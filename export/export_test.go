@@ -33,6 +33,7 @@ func testReport() *score.Report {
 			"s1-q1": {Score: 5, Graded: true, Mark: "check"},
 			"s2-q1": {Score: 2, Graded: true},
 		},
+		nil,
 	)
 }
 

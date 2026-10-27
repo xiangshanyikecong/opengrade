@@ -52,7 +52,7 @@ func TestMergeObjectiveAndSubjective(t *testing.T) {
 		GradeKey(2, 1): {Score: 0, Mark: "cross", Graded: true},
 		// 学生 2 的主观题未在列表中出现过 → 未阅
 	}
-	rep := Merge(questions, []string{"A", "T", "AC"}, results, subjectives, grades)
+	rep := Merge(questions, []string{"A", "T", "AC"}, results, subjectives, grades, nil)
 	if rep.Total != 17 { // 2+2+3 + 10
 		t.Fatalf("卷面满分 = %f, 期望 17", rep.Total)
 	}

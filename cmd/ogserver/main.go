@@ -169,6 +169,9 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	// 参考答案修正与成绩发布:管理员/组长/建卷教师(处理器内再校验建卷人)
 	mux.HandleFunc("POST /api/v1/exams/{id}/key", staff(withStore(handleSetKey)))
 	mux.HandleFunc("POST /api/v1/exams/{id}/publish", staff(withStore(handlePublish)))
+	// 评分方案(漏选部分分/倒扣/分节):同"建卷人可改"口径
+	mux.HandleFunc("GET /api/v1/exams/{id}/scoring", staff(withStore(handleScoringGet)))
+	mux.HandleFunc("POST /api/v1/exams/{id}/scoring", staff(withStore(handleScoringSet)))
 
 	// —— 管理员 ——
 	adminOnly := guard(authStore, auth.RoleAdmin)
@@ -1242,7 +1245,7 @@ func handleExamReport(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
-	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades)
+	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades, ex.Layout.Scoring)
 	writeJSON(w, http.StatusOK, struct {
 		*score.Report
 		ByClass []ClassStat `json:"byClass"`

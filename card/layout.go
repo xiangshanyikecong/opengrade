@@ -94,11 +94,15 @@ func SplitKnowledge(s string) []string {
 
 // QuestionSpec 描述一道客观题(涂卡判读)。
 type QuestionSpec struct {
-	Kind      string  `json:"kind"`                // choice | judge | multiple
-	Options   int     `json:"options,omitempty"`   // choice/multiple: 2~6;judge 恒为 2
-	Score     float64 `json:"score,omitempty"`     // 分值,缺省 1
-	Knowledge string  `json:"knowledge,omitempty"` // 知识点标签(建考可录入,多个用 , / 、 分隔)
-	BankID    string  `json:"bankId,omitempty"`    // 来源题库题号(设计器选题带入,建考后回记使用史)
+	Kind      string   `json:"kind"`                // choice | judge | multiple
+	Options   int      `json:"options,omitempty"`   // choice/multiple: 2~6;judge 恒为 2
+	Score     float64  `json:"score,omitempty"`     // 分值,缺省 1
+	Knowledge string   `json:"knowledge,omitempty"` // 知识点标签(建考可录入,多个用 , / 、 分隔)
+	BankID    string   `json:"bankId,omitempty"`    // 来源题库题号(设计器选题带入,建考后回记使用史)
+	// OptionScores 是多选题逐选项分值(下标 0 = 选项 A):仅在评分方案
+	// MultiPartial="weighted" 时用于按所选选项分值占比给部分分;长度不足的
+	// 选项按 0 计。缺省时 weighted 退化为 ratio。
+	OptionScores []float64 `json:"optionScores,omitempty"`
 }
 
 // SubjectivePart 是主观题下的小问(版式 v3):独立给分,阅卷端逐问评分后自动汇总到大题总分。
@@ -149,6 +153,8 @@ type Layout struct {
 	// v2 字段
 	Questions   []QuestionSpec   `json:"questions,omitempty"`
 	Subjectives []SubjectiveSpec `json:"subjectives,omitempty"`
+	// Scoring 是全卷评分方案(漏选部分分/倒扣/分节等);nil = 传统精确匹配语义。
+	Scoring *ScoringScheme `json:"scoring,omitempty"`
 }
 
 // RegCodeKind 返回码制("barcode"/"qr"),纯填涂返回 ""。

@@ -1229,6 +1229,32 @@ func (s *Store) SetKnowledge(id string, tags map[int]string, by string) (int, er
 	return changed, s.save(ex)
 }
 
+// SetScoring 写入全卷评分方案(漏选部分分/倒扣/不答计分/分节)。
+// 与 SetKnowledge 同范式:布局走写时复制(整片重建后整体赋值),AB 卷同步同一
+// 方案保持两版同源;审计落盘。判分在读取时经 score.Merge 现场重算,报告/导出/
+// 班级逐题率自动跟随,无需缓存失效。scheme 为 nil 即恢复传统精确匹配语义。
+func (s *Store) SetScoring(id string, scheme *card.ScoringScheme, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ex, ok := s.exams[id]
+	if !ok {
+		return fmt.Errorf("考试 %s 不存在", id)
+	}
+	if err := scheme.Validate(len(ex.Layout.Questions)); err != nil {
+		return err
+	}
+	layout := ex.Layout
+	layout.Scoring = scheme
+	ex.Layout = layout
+	if ex.LayoutB != nil {
+		lb := *ex.LayoutB
+		lb.Scoring = scheme
+		ex.LayoutB = &lb
+	}
+	ex.log(by, "setScoring", "更新评分方案")
+	return s.save(ex)
+}
+
 // AddAppeal 学生/家长发起成绩复核申请(仅已发布考试)。返回申请序号(1-based)。
 // 拒绝口径:本场被拉黑/全校黑名单、已有待处理申请(防重复刷)、理由为空或超 200 字。
 func (s *Store) AddAppeal(id, reg, reason string) (int, error) {

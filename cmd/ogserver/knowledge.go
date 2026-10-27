@@ -91,11 +91,10 @@ func studentKnowledgeOf(ex *Exam, idx int, res *omr.Result) []score.KnowledgeSta
 		if ans == "" {
 			continue
 		}
-		if ans == ex.ObjectiveKey[qi] {
-			rates[qi+1] = 1
-		} else {
-			rates[qi+1] = 0
-		}
+		// 掌握度按得分率口径(部分分按比例计入),判定走统一口径 score.Evaluate
+		spec, rule := ex.Layout.Questions[qi], ex.Layout.Scoring.RuleFor(qi+1)
+		earned, _ := score.Evaluate(spec, rule, ans, ex.ObjectiveKey[qi])
+		rates[qi+1] = earned / score.FullScore(spec, rule)
 	}
 	base := len(ex.ObjectiveKey)
 	eGroups := score.ElectiveGroups(ex.Layout.Subjectives)

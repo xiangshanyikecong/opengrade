@@ -34,7 +34,7 @@ func buildReport(t *testing.T) *Report {
 		mkResult("00000005", "CD"), // 0
 	}
 	_ = results
-	r := Merge(questions, key, results, nil, nil)
+	r := Merge(questions, key, results, nil, nil, nil)
 	if r.Count != 5 {
 		t.Fatalf("count = %d", r.Count)
 	}
@@ -139,7 +139,7 @@ func TestDiscrimination(t *testing.T) {
 		mkResult("03", "ABB"), // 总分 1,Q1 对
 		mkResult("04", "ABB"), // 总分 1,Q1 对
 	}
-	r2 := Merge(questions, key, results, nil, nil)
+	r2 := Merge(questions, key, results, nil, nil, nil)
 	if d := r2.PerQuestion[0].Discrimination; d != -1 {
 		t.Fatalf("高分组错、低分组对的题区分度应为 -1:%v", d)
 	}
@@ -148,7 +148,7 @@ func TestDiscrimination(t *testing.T) {
 func TestEmptyAndFiltered(t *testing.T) {
 	// 全部学生被过滤(nil)→ 不 panic,统计为空
 	questions := []card.QuestionSpec{{Kind: card.KindChoice, Options: 4, Score: 1}}
-	r := Merge(questions, []string{"A"}, []*omr.Result{nil, nil}, nil, nil)
+	r := Merge(questions, []string{"A"}, []*omr.Result{nil, nil}, nil, nil, nil)
 	if r.Count != 0 || r.Stats.Count != 0 {
 		t.Fatalf("空报告异常: %+v", r.Stats)
 	}
@@ -159,7 +159,7 @@ func TestEmptyAndFiltered(t *testing.T) {
 	questions2 := []card.QuestionSpec{{Kind: card.KindChoice, Options: 4, Score: 10}}
 	r3 := Merge(questions2, []string{"A"}, []*omr.Result{
 		mkResult("01", "A"), mkResult("02", "B"), mkResult("03", "A"), mkResult("04", "A"),
-	}, nil, nil)
+	}, nil, nil, nil)
 	if r3.Stats.Median != 10 { // 排序后 0,10,10,10 → (10+10)/2 = 10
 		t.Fatalf("偶数中位数 = %v", r3.Stats.Median)
 	}
@@ -174,7 +174,7 @@ func TestAbsentStudents(t *testing.T) {
 		mkResult("00000002", "B"),                             // 0
 		{RegNumber: "00000003", RegValid: true, Absent: true}, // 缺考
 	}
-	r := Merge(questions, key, results, nil, nil)
+	r := Merge(questions, key, results, nil, nil, nil)
 	if r.Count != 2 || r.AbsentCount != 1 {
 		t.Fatalf("count/absentCount = %d/%d,期望 2/1", r.Count, r.AbsentCount)
 	}
@@ -213,7 +213,7 @@ func TestSubjectivePartsMerge(t *testing.T) {
 		// 学生2:整题 10 分题得 7
 		GradeKey(2, 2): {Score: 7, Graded: true},
 	}
-	r := Merge(nil, []string{}, results, subjectives, grades)
+	r := Merge(nil, []string{}, results, subjectives, grades, nil)
 	if r.Total != 27 {
 		t.Fatalf("满分 = %v,期望 27", r.Total)
 	}

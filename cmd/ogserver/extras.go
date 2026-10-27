@@ -170,12 +170,12 @@ func (s *Store) exportReport(r *http.Request, u *auth.User) (*Exam, *score.Repor
 	if !ok2 {
 		full = ex
 	}
-	repFull := score.Merge(full.Layout.Questions, full.ObjectiveKey, assignedResults(full), full.Layout.Subjectives, full.Grades)
+	repFull := score.Merge(full.Layout.Questions, full.ObjectiveKey, assignedResults(full), full.Layout.Subjectives, full.Grades, full.Layout.Scoring)
 	rankByReg := map[string]int{}
 	for _, l := range repFull.Students {
 		rankByReg[l.RegNumber] = l.Rank
 	}
-	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades)
+	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades, ex.Layout.Scoring)
 	for i := range rep.Students {
 		if rk, ok := rankByReg[rep.Students[i].RegNumber]; ok {
 			rep.Students[i].Rank = rk
@@ -267,7 +267,7 @@ func handleExportFullZip(w http.ResponseWriter, r *http.Request, store *Store, u
 	// 版式与答案独立成文件,便于第三方工具直接消费
 	layoutJSON, _ := json.MarshalIndent(ex.Layout, "", "  ")
 	keyJSON, _ := json.MarshalIndent(map[string]any{"version": 1, "answers": ex.ObjectiveKey}, "", "  ")
-	report := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades)
+	report := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades, ex.Layout.Scoring)
 	if !anon {
 		injectRosterInfo(ex, report)
 	} else {
@@ -334,7 +334,7 @@ func handleReviewPPTX(w http.ResponseWriter, r *http.Request, store *Store, u *a
 	if err != nil || low <= 0 || low >= 1 {
 		low = 0.6
 	}
-	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades)
+	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades, ex.Layout.Scoring)
 
 	overview := []string{
 		fmt.Sprintf("卷数 %d · 卷面满分 %.0f · 均分 %.1f(%.0f%%)", rep.Count, rep.Total, rep.Mean, 100*rep.Mean/max(1, rep.Total)),

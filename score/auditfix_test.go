@@ -26,7 +26,7 @@ func TestAuditDiscriminationAlignedWithEmptyKeys(t *testing.T) {
 	for i, ans := range answers {
 		results[i] = &omr.Result{Answers: append([]string(nil), ans...), RegValid: true}
 	}
-	rep := Merge(questions, key, results, nil, nil)
+	rep := Merge(questions, key, results, nil, nil, nil)
 	if len(rep.PerQuestion) != 3 {
 		t.Fatalf("PerQuestion 应只含 3 道有键题,得到 %d", len(rep.PerQuestion))
 	}
@@ -63,7 +63,7 @@ func TestAuditPartsStatsExcludeInvalidResults(t *testing.T) {
 			grades[GradePartKey(si, 1, pi)] = Grade{Score: 3, Graded: true}
 		}
 	}
-	rep := Merge(questions, key, results, subs, grades)
+	rep := Merge(questions, key, results, subs, grades, nil)
 	st := rep.PerQuestion[len(rep.PerQuestion)-1] // 主观题(第 2 题)
 	if st.Index != 2 {
 		t.Fatalf("主观题统计应在第 2 位,得到 %d", st.Index)

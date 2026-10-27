@@ -51,7 +51,7 @@ type TrendStudent struct {
 
 // mergeReport 统分一场考试(应用人工指派后的全量视图)。
 func mergeReport(ex *Exam) *score.Report {
-	return score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades)
+	return score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades, ex.Layout.Scoring)
 }
 
 // lineByReg 在报告中按考号定位成绩行(缺考行也在其中)。

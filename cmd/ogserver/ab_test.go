@@ -36,7 +36,7 @@ func TestDeriveAB(t *testing.T) {
 			t.Fatalf("orderB 应为 1..6 的排列:%v", orderB)
 		}
 		seen[v] = true
-		if lb.Questions[i] != la.Questions[v-1] {
+		if fmt.Sprint(lb.Questions[i]) != fmt.Sprint(la.Questions[v-1]) { // 与下方 Subjectives 同款字符串比对(含切片字段)
 			t.Fatalf("B 卡面第 %d 题应为规范第 %d 题", i+1, v)
 		}
 	}

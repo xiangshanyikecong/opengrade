@@ -160,7 +160,7 @@ func cmdDemo(args []string) error {
 		}
 	}
 
-	rep := score.Merge(gr.sheet.Layout.Questions, gr.key, assigned, subjectives, grades)
+	rep := score.Merge(gr.sheet.Layout.Questions, gr.key, assigned, subjectives, grades, gr.sheet.Layout.Scoring)
 	if err := writeJSON(filepath.Join(gr.outDir, "report.json"), rep); err != nil {
 		return err
 	}

@@ -241,10 +241,8 @@ func buildStudentQuestions(ex *Exam, res *omr.Result, idx int) ([]studentQuestio
 	var wrongs []int
 	for qi := range ex.ObjectiveKey {
 		spec := ex.Layout.Questions[qi]
-		max := spec.Score
-		if max == 0 {
-			max = 1
-		}
+		rule := ex.Layout.Scoring.RuleFor(qi + 1)
+		max := score.FullScore(spec, rule)
 		my := ""
 		if qi < len(res.Answers) {
 			my = res.Answers[qi]
@@ -253,7 +251,9 @@ func buildStudentQuestions(ex *Exam, res *omr.Result, idx int) ([]studentQuestio
 			questions = append(questions, studentQuestion{Index: qi + 1, Kind: spec.Kind, Max: max, MyAnswer: my})
 			continue
 		}
-		right := my == ex.ObjectiveKey[qi]
+		// 判定走统一口径(score.Evaluate):未得满分的作答(含漏选部分分)都进错题本
+		_, verdict := score.Evaluate(spec, rule, my, ex.ObjectiveKey[qi])
+		right := verdict == score.VerdictCorrect
 		if !right {
 			wrongs = append(wrongs, qi+1)
 		}
@@ -505,10 +505,8 @@ func handleStudentReportPDF(w http.ResponseWriter, r *http.Request, store *Store
 	var rows []export.QRow
 	for qi := range ex.ObjectiveKey {
 		spec := ex.Layout.Questions[qi]
-		max := spec.Score
-		if max == 0 {
-			max = 1
-		}
+		rule := ex.Layout.Scoring.RuleFor(qi + 1)
+		max := score.FullScore(spec, rule)
 		my := ""
 		if qi < len(res.Answers) {
 			my = res.Answers[qi]
@@ -520,7 +518,8 @@ func handleStudentReportPDF(w http.ResponseWriter, r *http.Request, store *Store
 			rows = append(rows, export.QRow{Index: qi + 1, Kind: kindName(spec.Kind), Max: trimMaxF(max), Mine: my, Wrong: false})
 			continue
 		}
-		right := my == ex.ObjectiveKey[qi]
+		_, verdict := score.Evaluate(spec, rule, my, ex.ObjectiveKey[qi])
+		right := verdict == score.VerdictCorrect
 		if my == "" {
 			my = "(未答)"
 		} else if !right {

@@ -43,7 +43,7 @@ func TestElectiveMarkedChoice(t *testing.T) {
 		GradeKey(2, 1): {Score: 2, Graded: true},
 		GradeKey(2, 3): {Score: 6, Graded: true},
 	}
-	rep := Merge(questions, key, results, subjectives, grades)
+	rep := Merge(questions, key, results, subjectives, grades, nil)
 
 	if rep.Total != 8+5+10 {
 		t.Fatalf("卷面满分 = %v,期望 23(选做组只计一题)", rep.Total)
@@ -82,7 +82,7 @@ func TestElectiveUnmarkedFallback(t *testing.T) {
 		GradeKey(3, 3): {Score: 10, Graded: true}, // 两题均批 → 整组不计
 		GradeKey(3, 1): {Score: 5, Graded: true},
 	}
-	rep := Merge(questions, key, results, subjectives, grades)
+	rep := Merge(questions, key, results, subjectives, grades, nil)
 	if got := rep.Students[0].Score; got != 8+9 {
 		t.Fatalf("漏涂回退:总分 = %v,期望 17(计入题 3 的 9 分)", got)
 	}
@@ -113,7 +113,7 @@ func TestElectiveAbsentAndManual(t *testing.T) {
 	grades := map[string]Grade{
 		GradeKey(3, 3): {Score: 8, Graded: true},
 	}
-	rep := Merge(questions, key, results, subjectives, grades)
+	rep := Merge(questions, key, results, subjectives, grades, nil)
 	if rep.Count != 1 || rep.Students[0].Absent != true {
 		t.Fatalf("缺考/过滤行处理异常: count=%d", rep.Count)
 	}

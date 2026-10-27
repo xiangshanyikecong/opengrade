@@ -241,6 +241,62 @@ func TestNewFeaturesE2E(t *testing.T) {
 			t.Fatalf("主观题 1 已阅 = %v,期望 >= 2", q31["graded"])
 		}
 	})
+
+	t.Run("G8_评分方案", func(t *testing.T) {
+		// 默认方案 = 传统精确匹配语义;设置分节规则后卷面满分与逐题满分随规则
+		// Correct 同源变化,恢复 null 后回到原状 —— 判分在读取时现场重算。
+		g0 := teacher.json("GET", "/api/v1/exams/"+examID+"/scoring", nil, http.StatusOK)
+		if g0["editable"] != true {
+			t.Fatal("建卷教师应可编辑评分方案")
+		}
+		rep0 := teacher.json("GET", "/api/v1/exams/"+examID+"/report", nil, http.StatusOK)
+		total0 := rep0["total"].(float64)
+
+		scheme := map[string]any{
+			"default": map[string]any{},
+			"sections": []any{
+				map[string]any{"from": 1, "to": 10, "rule": map[string]any{"correct": 2, "incorrect": -1, "multiPartial": "ratio"}},
+			},
+		}
+		if got := student.code("POST", "/api/v1/exams/"+examID+"/scoring", jsonBody(map[string]any{"scoring": scheme}), "application/json"); got != http.StatusForbidden {
+			t.Fatalf("学生写评分方案应 403,得到 %d", got)
+		}
+		teacher.json("POST", "/api/v1/exams/"+examID+"/scoring", map[string]any{"scoring": scheme}, http.StatusOK)
+
+		got := teacher.json("GET", "/api/v1/exams/"+examID+"/scoring", nil, http.StatusOK)["scoring"].(map[string]any)
+		if len(got["sections"].([]any)) != 1 {
+			t.Fatalf("方案未落库: %v", got)
+		}
+		rep1 := teacher.json("GET", "/api/v1/exams/"+examID+"/report", nil, http.StatusOK)
+		var wantDelta float64
+		for _, q := range rep0["perQuestion"].([]any) {
+			qm := q.(map[string]any)
+			if idx := int(qm["index"].(float64)); idx <= 10 {
+				wantDelta += 2 - qm["max"].(float64) // 分节内满分统一覆盖为 2
+			}
+		}
+		if d := rep1["total"].(float64) - total0; d != wantDelta {
+			t.Fatalf("卷面满分变化 = %v, 期望 %v(分节 Correct 覆盖应与逐题满分同源)", d, wantDelta)
+		}
+		q1 := rep1["perQuestion"].([]any)[0].(map[string]any)
+		if q1["max"].(float64) != 2 {
+			t.Fatalf("分节内逐题满分 = %v, 期望 2", q1["max"])
+		}
+		if q1["scoreRate"] == nil || q1["difficulty"].(float64) != q1["scoreRate"].(float64) {
+			t.Fatalf("难度系数应等于得分率: %v", q1)
+		}
+		// 非法方案拒绝
+		bad := map[string]any{"default": map[string]any{"multiPartial": "bogus"}}
+		if got := teacher.code("POST", "/api/v1/exams/"+examID+"/scoring", jsonBody(map[string]any{"scoring": bad}), "application/json"); got != http.StatusBadRequest {
+			t.Fatalf("非法 multiPartial 应 400,得到 %d", got)
+		}
+		// 恢复传统语义
+		teacher.json("POST", "/api/v1/exams/"+examID+"/scoring", map[string]any{"scoring": nil}, http.StatusOK)
+		rep2 := teacher.json("GET", "/api/v1/exams/"+examID+"/report", nil, http.StatusOK)
+		if rep2["total"].(float64) != total0 {
+			t.Fatalf("恢复后卷面满分应还原: %v != %v", rep2["total"], total0)
+		}
+	})
 }
 
 // jsonBody 把 map 序列化为请求体。

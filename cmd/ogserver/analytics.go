@@ -158,7 +158,7 @@ func handleGradeConvert(w http.ResponseWriter, r *http.Request, store *Store, u 
 	if req.Fine && len(scale.Bands) == 0 {
 		scale = score.FineGradeScale()
 	}
-	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades)
+	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades, ex.Layout.Scoring)
 	regs := make([]string, 0, len(rep.Students))
 	raw := make([]float64, 0, len(rep.Students))
 	for _, line := range rep.Students {
@@ -189,7 +189,7 @@ func handleAnalytics(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
-	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades)
+	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades, ex.Layout.Scoring)
 	labels := make([]string, len(rep.PerQuestion))
 	for i, q := range rep.PerQuestion {
 		labels[i] = questionLabel(ex, q)
@@ -262,7 +262,11 @@ func perClassQuestionRates(ex *Exam) map[string][]float64 {
 					continue // 空键题不判分:不进班级逐题口径(与全体统计一致)
 				}
 				accs[qi].count++
-				if res.Answers[qi] == ex.ObjectiveKey[qi] {
+				// 判定走 score.Evaluate(与统分同口径):只计得满分的"对",
+				// 部分分不计入对率 —— 对率口径与 score.Merge 的 Rate 一致
+				_, verdict := score.Evaluate(ex.Layout.Questions[qi], ex.Layout.Scoring.RuleFor(qi+1),
+					res.Answers[qi], ex.ObjectiveKey[qi])
+				if verdict == score.VerdictCorrect {
 					accs[qi].correct++
 				}
 			}
