@@ -258,7 +258,17 @@ B 卷作答入库即归一为规范题号(统计/导出/趋势与单卷完全同
 | `GET /api/v1/student/exams…` | 学生端:查分/排名/错题本/我的切片/整卷回溯(仅本人) |
 | `GET /api/v1/student/exams… ?child=` | 家长端:仅可查绑定子女的已发布成绩 |
 | `GET /api/v1/exams/{id}/page/{student}` | 教师查看学生整卷(讲评用) |
+| `POST /api/v1/auth/login`(native) | 鸿蒙等原生客户端登录:请求体 `"native": true` → 响应附 `token`,以 `Authorization: Bearer` 携带(与 Cookie 同一会话存储,生命周期/吊销语义一致;web 端零变化) |
 | `DELETE /api/v1/exams/{id}` | 删除考试及全部数据(管理员/组长) |
+
+### 鸿蒙客户端(HarmonyOS NEXT,`harmony/`)
+
+仓库内置**纯 ArkTS 原生客户端**(Stage 模型,零第三方 ohpm 依赖,手机/平板):
+学生/家长查分闭环、教师触屏阅卷(评分盘/画笔批注/小问/异常裁决/拍照上传扫描)、
+学情分析与导出、管理员账号管理;设计器与试卷识别仍走桌面 Web。
+服务端为此增加 **Bearer 双通道鉴权**(Cookie 优先、Bearer 回退,同一会话存储,
+web 行为零变化,e2e 见 `cmd/ogserver/bearer_e2e_test.go`)。
+架构、页面矩阵与真机构建步骤见 [docs/harmony-app.md](docs/harmony-app.md)。
 
 ### 中文字体(零依赖实现)
 
@@ -296,6 +306,7 @@ synth/   模拟扫描损伤(容错靶场)
 raster/  零依赖像素绘图库(内置 5x7 点阵字体 + 覆盖度混合)
 cmd/     ogctl 命令行工具、ogserver HTTP 服务(考试会话存储)
 web/     登录页 + 设计器 + Grader Studio + 教师工作台 + 学生查分页 + 用户管理(零构建原生 JS)
+harmony/ 鸿蒙(HarmonyOS NEXT)原生客户端:ArkTS Stage 模型,零第三方依赖(docs/harmony-app.md)
 docs/    产品方案存档、架构说明、路线图
 ```
 
@@ -304,6 +315,7 @@ docs/    产品方案存档、架构说明、路线图
 - [产品方案稿(双轨制全景)](docs/product-plan.md)
 - [与智学网功能差距分析(缺口清单)](docs/feature-gap-vs-zhixuewang.md)
 - [与现实不匹配的差距清单(现实对齐批次)](docs/reality-gap.md)
+- [鸿蒙客户端](docs/harmony-app.md)
 - [技术架构](docs/architecture.md)
 - [路线图](docs/roadmap.md)
 
