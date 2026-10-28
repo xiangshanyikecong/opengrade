@@ -14,9 +14,11 @@ export class OgSession {
   private static baseUrlValue: string = '';
   private static tokenValue: string = '';
   private static meValue: Me | null = null;
+  private static ctx: Context | null = null;
 
   // 由首页/登录页在 aboutToAppear 时初始化(context 取 UIAbility 上下文)。
   static async init(context: Context): Promise<void> {
+    OgSession.ctx = context;
     if (OgSession.prefs !== null) {
       return;
     }
@@ -35,6 +37,10 @@ export class OgSession {
 
   static baseUrl(): string {
     return OgSession.baseUrlValue;
+  }
+
+  static context(): Context {
+    return OgSession.ctx as Context;
   }
 
   static token(): string {
