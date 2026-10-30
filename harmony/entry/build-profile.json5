@@ -15,7 +15,6 @@
     }
   ],
   "targets": [
-    { "name": "default" },
-    { "name": "ohosTest" }
+    { "name": "default" }
   ]
 }

@@ -6,8 +6,5 @@
   "main": "",
   "author": "opengrade",
   "license": "AGPL-3.0",
-  "dependencies": {},
-  "devDependencies": {
-    "@ohos/hypium": "1.0.19"
-  }
+  "dependencies": {}
 }
