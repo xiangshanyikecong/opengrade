@@ -104,6 +104,6 @@ export class OgFormat {
     if (stage === 'ready' || dirty) {
       return dirty ? '重新发布' : '发布成绩';
     }
-    return '成绩册';
+    return '详情';
   }
 }

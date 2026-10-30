@@ -187,6 +187,7 @@ struct ManualScoresPage {
 
         Row({ space: 10 }) {
           PrimaryButton({
+            fill: true,
             label: this.busy ? '保存中…' : '保存全部(' + this.regCount() + ')',
             usable: !this.busy,
             onTap: () => this.saveAll()

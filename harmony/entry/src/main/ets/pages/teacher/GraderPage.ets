@@ -6,6 +6,7 @@
 import { router } from '@kit.ArkUI';
 import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError, ImageCache } from '../../common/OgNet';
+import { OgSession } from '../../common/OgSession';
 import { OgC, OgDim } from '../../common/OgTheme';
 import { OgFormat } from '../../common/OgFormat';
 import { ExamDetail, SliceItem, Stroke } from '../../model/Api';
@@ -136,10 +137,13 @@ struct GraderPage {
   }
 
   private preload(): void {
+    if (OgSession.lowData()) {
+      return; // 省流模式:关闭预加载
+    }
     for (let i = 1; i <= 8; i++) {
       const idx = this.cur + i;
       if (idx < this.slices.length && this.slices[idx].missing !== true) {
-        ImageCache.prefetch(this.slices[idx].url, 1600);
+        ImageCache.prefetch(this.slices[idx].url, OgSession.imageCap(1600));
       }
     }
   }

@@ -35,7 +35,15 @@ struct TaskListPage {
     this.loading = false;
   }
 
+  private isDone(it: TaskItem): boolean {
+    return it.total > 0 && it.graded >= it.total;
+  }
+
   private openTask(it: TaskItem): void {
+    if (it.kind === 'question' && this.isDone(it)) {
+      promptAction.showToast({ message: '该任务已全部阅完(' + it.graded + '/' + it.total + ')' });
+      return;
+    }
     if (it.kind === 'question' && it.question !== undefined) {
       router.pushUrl({
         url: 'pages/teacher/GraderPage',
@@ -56,6 +64,9 @@ struct TaskListPage {
         Text(it.label)
           .fontSize(15).fontWeight(FontWeight.Bold).fontColor(OgC.INK).layoutWeight(1)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (this.isDone(it)) {
+          Pill({ text: '已完成', color: OgC.INK_SUB })
+        }
         Pill({ text: it.stageLabel, color: it.stage === 'grading' || it.stage === 'ready' ? OgC.BRAND : OgC.WARN })
       }
       .width('100%')

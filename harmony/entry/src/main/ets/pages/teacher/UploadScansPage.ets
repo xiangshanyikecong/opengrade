@@ -163,8 +163,8 @@ struct UploadScansPage {
             Column({ space: 8 }) {
               SectionHeader({ text: '1. 选择或拍摄答题卡' })
               Row({ space: 10 }) {
-                PrimaryButton({ label: '📷 拍照', onTap: () => this.pickCamera() })
-                PrimaryButton({ label: '🖼 相册多选', onTap: () => this.pickAlbum() })
+                PrimaryButton({ label: '📷 拍照', fill: true, onTap: () => this.pickCamera() })
+                PrimaryButton({ label: '🖼 相册多选', fill: true, onTap: () => this.pickAlbum() })
               }
               .width('100%')
               Text('整卷平放、光线均匀、四角完整;支持手机直拍(服务端自动透视矫正)。多页 PDF 请在电脑端导入。')
@@ -185,6 +185,7 @@ struct UploadScansPage {
                   .fontSize(12).fontColor(OgC.INK_SUB)
               }
               PrimaryButton({
+                full: true,
                 label: this.busy ? '上传中…' : (this.picked.length > 0 ? '开始上传(' + this.picked.length + ' 张)' : '开始上传'),
                 usable: !this.busy && this.picked.length > 0,
                 onTap: () => this.doUpload()

@@ -24,6 +24,31 @@ export function parseJson(text: string): Object {
   return raw;
 }
 
+// 客户端报错统计(账号设置「诊断」页展示):网络异常 / HTTP 错误两类计数 + 最近一条。
+export class OgStats {
+  static netErr: number = 0;
+  static httpErr: number = 0;
+  static lastMsg: string = '';
+  static lastAt: string = '';
+
+  static record(kind: string, msg: string): void {
+    if (kind === 'net') {
+      OgStats.netErr++;
+    } else {
+      OgStats.httpErr++;
+    }
+    const now = new Date();
+    const pad = (n: number): string => (n < 10 ? '0' + String(n) : String(n));
+    OgStats.lastAt = pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + ' '
+      + pad(now.getHours()) + ':' + pad(now.getMinutes());
+    OgStats.lastMsg = msg;
+  }
+
+  static total(): number {
+    return OgStats.netErr + OgStats.httpErr;
+  }
+}
+
 // 从响应文本提取 {error} 文案(非 JSON 响应回落到空串)。
 export function errorOfText(text: string): string {
   try {
@@ -129,15 +154,19 @@ export class OgNet {
         return resp.result as string;
       }
       const bodyText = typeof resp.result === 'string' ? resp.result : '';
+      const msg = OgNet.errText(resp.responseCode, bodyText);
+      OgStats.record('http', 'HTTP ' + resp.responseCode + ' ' + msg);
       if (resp.responseCode === 401) {
         OgNet.onUnauthorized();
       }
-      throw new OgError(resp.responseCode, OgNet.errText(resp.responseCode, bodyText));
+      throw new OgError(resp.responseCode, msg);
     } catch (e) {
       if (e instanceof OgError) {
         throw e;
       }
-      throw new OgError(0, '无法连接服务器:请检查地址与网络(模拟器/手机请填宿主机局域网 IP,不能用 127.0.0.1)');
+      const netMsg = '无法连接服务器:请检查地址与网络(模拟器/手机请填宿主机局域网 IP,不能用 127.0.0.1)';
+      OgStats.record('net', netMsg);
+      throw new OgError(0, netMsg);
     } finally {
       hr.destroy();
     }
@@ -283,14 +312,17 @@ export class OgNet {
         return resp.result as string;
       }
       const bodyText = typeof resp.result === 'string' ? resp.result : '';
+      const upMsg = OgNet.errText(resp.responseCode, bodyText);
+      OgStats.record('http', 'HTTP ' + resp.responseCode + ' ' + upMsg);
       if (resp.responseCode === 401) {
         OgNet.onUnauthorized();
       }
-      throw new OgError(resp.responseCode, OgNet.errText(resp.responseCode, bodyText));
+      throw new OgError(resp.responseCode, upMsg);
     } catch (e) {
       if (e instanceof OgError) {
         throw e;
       }
+      OgStats.record('net', '上传失败:网络异常或文件不可读');
       throw new OgError(0, '上传失败:网络异常或文件不可读');
     } finally {
       hr.destroy();
@@ -341,6 +373,35 @@ export class OgNet {
     return uris[0];
   }
 
+  // 清理应用沙箱缓存目录(扫描上传的临时拷贝等)+ 内存位图缓存。
+  static clearAppCache(): void {
+    try {
+      const ctx = OgSession.context();
+      const files: string[] = fs.listFile(ctx.cacheDir);
+      for (const f of files) {
+        try {
+          fs.unlinkSync(ctx.cacheDir + '/' + f);
+        } catch (e) {
+          // 单个文件删除失败不阻塞
+        }
+      }
+    } catch (e) {
+      // 目录不可列举时仅清内存缓存
+    }
+    ImageCache.clear();
+  }
+
+  // 测速:GET /healthz 往返毫秒;-1 = 不可达。
+  static async ping(base: string): Promise<number> {
+    const t0 = Date.now();
+    try {
+      await OgNet.checkServer(base);
+      return Date.now() - t0;
+    } catch (e) {
+      return -1;
+    }
+  }
+
   static bufToText(buf: ArrayBuffer): string {
     const decoder = util.TextDecoder.create('utf-8');
     return decoder.decodeToString(new Uint8Array(buf));
@@ -387,6 +448,11 @@ export class ImageCache {
 
   static has(key: string): boolean {
     return ImageCache.map.has(key);
+  }
+
+  static clear(): void {
+    ImageCache.map.clear();
+    ImageCache.order.splice(0, ImageCache.order.length);
   }
 
   // 预取:下载 + 解码入缓存(失败静默,交由正式加载重试)。

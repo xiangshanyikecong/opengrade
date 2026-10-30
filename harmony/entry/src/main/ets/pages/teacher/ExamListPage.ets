@@ -88,17 +88,10 @@ struct ExamListPage {
     } else if (it.stage === 'ready' || it.dirty) {
       this.togglePublish(it);
     } else {
-      this.downloadXlsx(it);
-    }
-  }
-
-  private async downloadXlsx(it: ExamSummary): Promise<void> {
-    try {
-      promptAction.showToast({ message: '正在生成成绩册…' });
-      await OgNet.downloadToPicker('/api/v1/exams/' + it.id + '/export.xlsx', 'opengrade-' + it.id + '.xlsx');
-      promptAction.showToast({ message: '已保存成绩册' });
-    } catch (e) {
-      promptAction.showToast({ message: e instanceof OgError ? e.message : '下载失败' });
+      // 已发布:进入考试详情(成绩/统计/导出都在详情页),不再直接生成文档
+      router.pushUrl({
+        url: 'pages/teacher/ExamHubPage', params: { 'exam': it.id } as Record<string, Object>
+      }).catch(() => {});
     }
   }
 
@@ -188,12 +181,13 @@ struct ExamListPage {
           Row({ space: 8 }) {
             ForEach(STAGE_FILTERS, (s: string) => {
               Text(STAGE_NAMES[s])
-                .fontSize(12)
-                .fontColor(this.stage === s ? Color.White : OgC.INK)
-                .backgroundColor(this.stage === s ? OgC.BRAND : OgC.CARD)
-                .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-                .borderRadius(14)
-                .border({ width: 1, color: this.stage === s ? OgC.BRAND : OgC.LINE })
+                .fontSize(12.5)
+                .fontColor(this.stage === s ? Color.White : OgC.INK_SUB)
+                .fontWeight(this.stage === s ? FontWeight.Medium : FontWeight.Normal)
+                .backgroundColor(this.stage === s ? OgC.BRAND : Color.Transparent)
+                .padding({ left: 14, right: 14, top: 7, bottom: 7 })
+                .borderRadius(16)
+                .margin({ right: 8 })
                 .onClick(() => {
                   this.stage = s;
                 })

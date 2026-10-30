@@ -39,10 +39,8 @@ struct Index {
         }
         if (OgSession.isStudentish()) {
           router.replaceUrl({ url: 'pages/student/StudentHomePage' }).catch(() => {});
-        } else if (me !== null && me.role === 'teacher') {
-          router.replaceUrl({ url: 'pages/teacher/TaskListPage' }).catch(() => {});
         } else {
-          router.replaceUrl({ url: 'pages/teacher/ExamListPage' }).catch(() => {});
+          router.replaceUrl({ url: 'pages/teacher/HomePage' }).catch(() => {});
         }
       })
       .catch(() => {

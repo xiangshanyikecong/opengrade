@@ -14,6 +14,7 @@ import { LineChart, LineSeries } from '../../components/Charts';
 struct StaffTrendsPage {
   @State resp: StaffTrendsResp | null = null;
   @State selClass: string = '';
+  @State selSubject: string = '';
   @State loading: boolean = true;
   @State failed: boolean = false;
   @State failMsg: string = '';
@@ -29,7 +30,7 @@ struct StaffTrendsPage {
     try {
       this.resp = await OgNet.jget<StaffTrendsResp>('/api/v1/trends' + OgNet.qs({
         'class': this.selClass,
-        'subject': ''
+        'subject': this.selSubject
       }));
     } catch (e) {
       this.failed = true;
@@ -84,13 +85,29 @@ struct StaffTrendsPage {
     return prev.rank - cur.rank;
   }
 
+  private subjects(): string[] {
+    if (this.resp === null) {
+      return [];
+    }
+    const out: string[] = [];
+    for (const e of this.resp.exams) {
+      const sub = e.subject !== undefined && e.subject !== '' ? e.subject : '未标学科';
+      if (out.indexOf(sub) < 0) {
+        out.push(sub);
+      }
+    }
+    return out;
+  }
+
   private classLabels(): string[] {
     if (this.resp === null) {
       return [];
     }
     const out: string[] = [];
     for (const e of this.resp.exams) {
-      out.push(e.date);
+      // 全科视图下同一天可能有多科考试:标签带学科短名,避免曲线错位误读
+      const sub = this.selSubject === '' && e.subject !== undefined && e.subject !== '' ? e.subject + ' ' : '';
+      out.push(sub + e.date);
     }
     return out;
   }
@@ -175,6 +192,30 @@ struct StaffTrendsPage {
       TitleBar({ title: '纵向趋势', showBack: false })
       Scroll() {
         Row({ space: 8 }) {
+          Text('全科')
+            .fontSize(12)
+            .fontColor(this.selSubject === '' ? Color.White : OgC.INK)
+            .backgroundColor(this.selSubject === '' ? OgC.BLUE : OgC.CARD)
+            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+            .borderRadius(14)
+            .margin({ right: 8 })
+            .onClick(() => {
+              this.selSubject = '';
+              this.load();
+            })
+          ForEach(this.subjects(), (sub: string) => {
+            Text(sub)
+              .fontSize(12)
+              .fontColor(this.selSubject === sub ? Color.White : OgC.INK)
+              .backgroundColor(this.selSubject === sub ? OgC.BLUE : OgC.CARD)
+              .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+              .borderRadius(14)
+              .margin({ right: 8 })
+              .onClick(() => {
+                this.selSubject = this.selSubject === sub ? '' : sub;
+                this.load();
+              })
+          }, (sub: string) => sub + String(this.selSubject === sub))
           ForEach(this.resp !== null ? this.resp!.classes : [], (c: string) => {
             Text(c)
               .fontSize(12)
@@ -205,7 +246,10 @@ struct StaffTrendsPage {
               EmptyView({ text: '暂无可比考试' })
             } else {
               Column({ space: 6 }) {
-                SectionHeader({ text: this.selClass === '' ? '全体均分走势' : this.selClass + ' 均分走势' })
+                SectionHeader({
+                  text: (this.selSubject === '' ? '全体' : this.selSubject)
+                    + (this.selClass === '' ? '均分走势' : ' · ' + this.selClass + ' 均分走势')
+                })
                 LineChart({
                   labels: this.classLabels(),
                   series: [

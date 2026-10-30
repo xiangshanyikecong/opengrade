@@ -13,6 +13,7 @@ export interface NavItem {
 }
 
 export const STAFF_NAV: NavItem[] = [
+  { key: 'home', label: '总览', url: 'pages/teacher/HomePage', adminOnly: false },
   { key: 'tasks', label: '我的任务', url: 'pages/teacher/TaskListPage', adminOnly: false },
   { key: 'exams', label: '考试列表', url: 'pages/teacher/ExamListPage', adminOnly: false },
   { key: 'create', label: '新建考试', url: 'pages/teacher/CreateExamPage', adminOnly: false },

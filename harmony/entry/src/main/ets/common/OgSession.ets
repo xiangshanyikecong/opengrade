@@ -8,6 +8,7 @@ const STORE_NAME: string = 'og_session';
 const KEY_BASE: string = 'baseUrl';
 const KEY_TOKEN: string = 'token';
 const KEY_ME: string = 'me';
+const KEY_LOW_DATA: string = 'lowData';
 
 export class OgSession {
   private static prefs: preferences.Preferences | null = null;
@@ -15,6 +16,7 @@ export class OgSession {
   private static tokenValue: string = '';
   private static meValue: Me | null = null;
   private static ctx: Context | null = null;
+  private static lowDataValue: boolean = false;
 
   // 由首页/登录页在 aboutToAppear 时初始化(context 取 UIAbility 上下文)。
   static async init(context: Context): Promise<void> {
@@ -33,6 +35,28 @@ export class OgSession {
         OgSession.meValue = null;
       }
     }
+    OgSession.lowDataValue = (await OgSession.prefs.get(KEY_LOW_DATA, false)) as boolean;
+  }
+
+  // 省流模式:图片解码上限降到 1200px 且关闭阅卷预加载(弱网/流量敏感场景)。
+  static lowData(): boolean {
+    return OgSession.lowDataValue;
+  }
+
+  static setLowData(v: boolean): void {
+    OgSession.lowDataValue = v;
+    if (OgSession.prefs !== null) {
+      OgSession.prefs.putSync(KEY_LOW_DATA, v);
+      OgSession.prefs.flush();
+    }
+  }
+
+  // 图片解码尺寸上限:省流时压到 1200,否则用调用方建议值。
+  static imageCap(preferred: number): number {
+    if (OgSession.lowDataValue) {
+      return Math.min(1200, preferred);
+    }
+    return preferred;
   }
 
   static baseUrl(): string {

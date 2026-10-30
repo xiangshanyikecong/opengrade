@@ -140,6 +140,28 @@ struct UserListPage {
     this.busy = false;
   }
 
+  private confirmDelete(u: PublicUser): void {
+    AlertDialog.show({
+      message: '确认删除账号 ' + u.username + '(' + (u.displayName !== '' ? u.displayName : u.username) + ')?
+删除后该账号无法登录,考试与成绩数据不受影响。',
+      title: '删除账号',
+      autoCancel: true,
+      alignment: DialogAlignment.Center,
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '确认删除',
+        fontColor: OgC.BAD,
+        action: () => {
+          this.deleteUser(u);
+        }
+      }
+    });
+  }
+
   private async deleteUser(u: PublicUser): Promise<void> {
     this.busy = true;
     try {
@@ -183,7 +205,7 @@ struct UserListPage {
         }
         Text('删除').fontSize(12).fontColor(OgC.BAD)
           .enabled(!this.busy)
-          .onClick(() => this.deleteUser(u))
+          .onClick(() => this.confirmDelete(u))
       }
       .width('100%')
     }
@@ -326,6 +348,7 @@ struct UserListPage {
             this.newPassword = v;
           })
         PrimaryButton({
+          full: true,
           label: this.busy ? '创建中…' : '创建账号',
           usable: !this.busy,
           onTap: () => this.createUser()
@@ -348,6 +371,7 @@ struct UserListPage {
           this.resetPwd = v;
         })
       PrimaryButton({
+        full: true,
         label: this.busy ? '重置中…' : '确认重置',
         usable: !this.busy,
         onTap: () => this.resetPassword()

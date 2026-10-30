@@ -136,20 +136,37 @@ export struct KVRow {
 export struct PrimaryButton {
   label: string = '';
   usable: boolean = true; // 避免与 CustomComponent.enabled 通用属性重名
+  fill: boolean = false; // true=Row 内 layoutWeight 均分
+  full: boolean = false; // true=占满父容器宽度(Column 场景);都 false=按内容宽(Row 紧凑)
   onTap: () => void = () => {};
 
-  build() {
+  @Builder
+  btn() {
     Button(this.label)
       .fontSize(14)
       .backgroundColor(this.usable ? OgC.BRAND : OgC.LINE)
       .fontColor(this.usable ? Color.White : OgC.INK_SUB)
       .enabled(this.usable)
       .height(40)
-      .layoutWeight(1)
       .onClick(() => this.onTap())
   }
-}
 
+  build() {
+    if (this.fill) {
+      Column() {
+        this.btn()
+      }
+      .layoutWeight(1)
+    } else if (this.full) {
+      Column() {
+        this.btn()
+      }
+      .width('100%')
+    } else {
+      this.btn()
+    }
+  }
+}
 @Component
 export struct GhostButton {
   label: string = '';

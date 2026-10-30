@@ -1,8 +1,9 @@
-// 账号设置(可复用视图 + 可路由页面):资料、改密、服务器管理、退出。
+// 账号设置(可复用视图 + 可路由页面):
+//   资料、学校服务器(含延迟测速)、诊断(报错统计/省流模式/清理缓存)、改密、退出。
 
 import { router } from '@kit.ArkUI';
 import { promptAction } from '@kit.ArkUI';
-import { OgNet, OgError } from '../common/OgNet';
+import { OgNet, OgError, OgStats } from '../common/OgNet';
 import { OgSession } from '../common/OgSession';
 import { OgC, OgDim } from '../common/OgTheme';
 import { OgFormat } from '../common/OgFormat';
@@ -19,9 +20,14 @@ export struct MeView {
   @State servers: string[] = [];
   @State newServer: string = '';
   @State me: Me | null = null;
+  @State lat: Record<string, number> = {}; // url → ms(-1 不可达)
+  @State pinging: boolean = false;
+  @State statsTick: number = 0;
+  @State lowData: boolean = false;
 
   aboutToAppear(): void {
     this.me = OgSession.me();
+    this.lowData = OgSession.lowData();
     OgSession.servers().then((list) => {
       this.servers = list;
     });
@@ -88,6 +94,78 @@ export struct MeView {
     }
   }
 
+  // 对当前 + 已存服务器逐个测速(GET /healthz 往返毫秒)。
+  private async measureLatency(): Promise<void> {
+    this.pinging = true;
+    const targets: string[] = [];
+    const cur = OgSession.baseUrl();
+    if (cur !== '') {
+      targets.push(cur);
+    }
+    for (const s of this.servers) {
+      if (s !== cur && targets.indexOf(s) < 0) {
+        targets.push(s);
+      }
+    }
+    const result: Record<string, number> = {};
+    for (const t of targets) {
+      const ms = await OgNet.ping(t);
+      result[t] = ms;
+      this.lat = result; // 逐个回填,界面即时刷新
+    }
+    this.pinging = false;
+    this.statsTick++;
+  }
+
+  private latText(url: string): string {
+    const v = this.lat[url];
+    if (v === undefined) {
+      return '未测';
+    }
+    if (v < 0) {
+      return '不可达';
+    }
+    return String(v) + 'ms';
+  }
+
+  private latColor(url: string): string {
+    const v = this.lat[url];
+    if (v === undefined) {
+      return OgC.INK_SUB;
+    }
+    if (v < 0) {
+      return OgC.BAD;
+    }
+    if (v < 100) {
+      return OgC.GOOD;
+    }
+    if (v < 500) {
+      return OgC.WARN;
+    }
+    return OgC.BAD;
+  }
+
+  private async doClearCache(): Promise<void> {
+    OgNet.clearAppCache();
+    promptAction.showToast({ message: '缓存已清理(图片内存缓存 + 沙箱临时文件)' });
+  }
+
+  private toggleLowData(on: boolean): void {
+    OgSession.setLowData(on);
+    this.lowData = on;
+    if (on) {
+      OgNet.clearAppCache(); // 切入省流:顺手清掉高分辨率位图缓存
+    }
+    promptAction.showToast({ message: on ? '省流模式已开启:图片降采样、关闭阅卷预加载' : '省流模式已关闭' });
+  }
+
+  @Builder
+  latencyCell(url: string) {
+    Text(this.latText(url))
+      .fontSize(11)
+      .fontColor(this.latColor(url))
+  }
+
   build() {
     Scroll() {
       Column({ space: OgDim.GAP }) {
@@ -122,6 +200,91 @@ export struct MeView {
         .backgroundColor(OgC.CARD)
         .borderRadius(OgDim.RADIUS)
 
+        // 学校服务器(含延迟)
+        Column({ space: 8 }) {
+          Row({ space: 8 }) {
+            SectionHeader({ text: '学校服务器' })
+            Blank()
+            Text(this.pinging ? '测速中…' : '测速')
+              .fontSize(12)
+              .fontColor(OgC.BRAND)
+              .enabled(!this.pinging)
+              .opacity(this.pinging ? 0.5 : 1)
+              .onClick(() => this.measureLatency())
+          }
+          .width('100%')
+          KVRow({ k: '当前', v: OgSession.baseUrl() })
+          ForEach(this.servers, (s: string) => {
+            Row({ space: 8 }) {
+              Column({ space: 2 }) {
+                Text(s).fontSize(13).fontColor(s === OgSession.baseUrl() ? OgC.BRAND : OgC.INK)
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                this.latencyCell(s)
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+              if (s === OgSession.baseUrl()) {
+                Text('当前').fontSize(11).fontColor(OgC.BRAND)
+              } else {
+                Text('切换').fontSize(12).fontColor(OgC.BRAND).onClick(() => this.switchServer(s))
+              }
+            }
+            .width('100%')
+            .padding({ top: 6, bottom: 6 })
+            .border({ width: { bottom: 1 }, color: OgC.LINE })
+          }, (s: string) => s + this.latText(s))
+          Row({ space: 8 }) {
+            TextInput({ text: this.newServer, placeholder: '添加新地址 http://…' })
+              .fontSize(13).height(38).layoutWeight(1)
+              .onChange((v: string) => {
+                this.newServer = v;
+              })
+            Button('添加').fontSize(13).height(38).backgroundColor(OgC.BRAND_DEEP)
+              .onClick(() => this.addServer())
+          }
+          .width('100%')
+          Text('延迟为 GET /healthz 往返耗时;切换服务器会退出当前登录(账号按学校隔离)。')
+            .fontSize(11).fontColor(OgC.INK_SUB)
+        }
+        .width('100%')
+        .padding(14)
+        .backgroundColor(OgC.CARD)
+        .borderRadius(OgDim.RADIUS)
+        .alignItems(HorizontalAlign.Start)
+
+        // 诊断:报错统计 / 省流模式 / 清理缓存
+        Column({ space: 8 }) {
+          SectionHeader({ text: '诊断', extra: '本机自上次启动以来' })
+          KVRow({ k: '网络异常(连不上/超时)', v: String(OgStats.netErr) + ' 次', vColor: OgStats.netErr > 0 ? OgC.WARN : OgC.INK_SUB })
+          KVRow({ k: '请求错误(4xx/5xx)', v: String(OgStats.httpErr) + ' 次', vColor: OgStats.httpErr > 0 ? OgC.WARN : OgC.INK_SUB })
+          if (OgStats.lastMsg !== '') {
+            Text('最近一次:' + OgStats.lastMsg + '(' + OgStats.lastAt + ')')
+              .fontSize(11).fontColor(OgC.INK_SUB)
+          }
+          Row({ space: 8 }) {
+            Text('省流模式')
+              .fontSize(13).fontColor(OgC.INK).layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.lowData })
+              .selectedColor(OgC.BRAND)
+              .onChange((on: boolean) => this.toggleLowData(on))
+          }
+          .width('100%')
+          Text('开启后图片降采样至 1200px、关闭阅卷切片预加载,弱网更流畅。')
+            .fontSize(11).fontColor(OgC.INK_SUB)
+          Button('清理缓存')
+            .width('100%')
+            .height(38)
+            .fontSize(13)
+            .backgroundColor(OgC.BG)
+            .fontColor(OgC.INK)
+            .onClick(() => this.doClearCache())
+        }
+        .width('100%')
+        .padding(14)
+        .backgroundColor(OgC.CARD)
+        .borderRadius(OgDim.RADIUS)
+        .alignItems(HorizontalAlign.Start)
+
         // 改密
         Column({ space: 8 }) {
           SectionHeader({ text: '修改密码' })
@@ -148,43 +311,6 @@ export struct MeView {
             .backgroundColor(OgC.BRAND)
             .enabled(!this.busy)
             .onClick(() => this.doChangePwd())
-        }
-        .width('100%')
-        .padding(14)
-        .backgroundColor(OgC.CARD)
-        .borderRadius(OgDim.RADIUS)
-        .alignItems(HorizontalAlign.Start)
-
-        // 服务器管理
-        Column({ space: 8 }) {
-          SectionHeader({ text: '学校服务器' })
-          KVRow({ k: '当前', v: OgSession.baseUrl() })
-          ForEach(this.servers, (s: string) => {
-            Row({ space: 8 }) {
-              Text(s).fontSize(13).fontColor(s === OgSession.baseUrl() ? OgC.BRAND : OgC.INK)
-                .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-              if (s === OgSession.baseUrl()) {
-                Text('当前').fontSize(11).fontColor(OgC.BRAND)
-              } else {
-                Text('切换').fontSize(12).fontColor(OgC.BRAND).onClick(() => this.switchServer(s))
-              }
-            }
-            .width('100%')
-            .padding({ top: 6, bottom: 6 })
-            .border({ width: { bottom: 1 }, color: OgC.LINE })
-          }, (s: string) => s)
-          Row({ space: 8 }) {
-            TextInput({ text: this.newServer, placeholder: '添加新地址 http://…' })
-              .fontSize(13).height(38).layoutWeight(1)
-              .onChange((v: string) => {
-                this.newServer = v;
-              })
-            Button('添加').fontSize(13).height(38).backgroundColor(OgC.BRAND_DEEP)
-              .onClick(() => this.addServer())
-          }
-          .width('100%')
-          Text('切换服务器会退出当前登录(账号按学校隔离)。')
-            .fontSize(11).fontColor(OgC.INK_SUB)
         }
         .width('100%')
         .padding(14)
@@ -223,27 +349,20 @@ export struct MeView {
 struct MePage {
   build() {
     Column() {
-      TitleBarWrap()
+      Row() {
+        Text('‹')
+          .fontSize(26).fontColor(OgC.BRAND).width(36).height(36).textAlign(TextAlign.Center)
+          .onClick(() => router.back())
+        Text('账号设置').fontSize(17).fontWeight(FontWeight.Bold).fontColor(OgC.INK)
+        Blank()
+      }
+      .width('100%')
+      .padding(12)
+      .backgroundColor(OgC.CARD)
       MeView()
     }
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
-  }
-}
-
-@Component
-struct TitleBarWrap {
-  build() {
-    Row() {
-      Text('‹')
-        .fontSize(26).fontColor(OgC.BRAND).width(36).height(36).textAlign(TextAlign.Center)
-        .onClick(() => router.back())
-      Text('账号设置').fontSize(17).fontWeight(FontWeight.Bold).fontColor(OgC.INK)
-      Blank()
-    }
-    .width('100%')
-    .padding(12)
-    .backgroundColor(OgC.CARD)
   }
 }

@@ -80,10 +80,8 @@ struct LoginPage {
         router.replaceUrl({ url: 'pages/ForcePwdPage' }).catch(() => {});
       } else if (OgSession.isStudentish()) {
         router.replaceUrl({ url: 'pages/student/StudentHomePage' }).catch(() => {});
-      } else if (me.role === 'teacher') {
-        router.replaceUrl({ url: 'pages/teacher/TaskListPage' }).catch(() => {});
       } else {
-        router.replaceUrl({ url: 'pages/teacher/ExamListPage' }).catch(() => {});
+        router.replaceUrl({ url: 'pages/teacher/HomePage' }).catch(() => {});
       }
     } catch (e) {
       this.msg = e instanceof OgError ? e.message : '登录失败';

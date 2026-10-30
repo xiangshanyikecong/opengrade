@@ -3,6 +3,7 @@
 
 import { image } from '@kit.ImageKit';
 import { ImageCache, OgImageCodec, OgError } from '../common/OgNet';
+import { OgSession } from '../common/OgSession';
 import { OgC } from '../common/OgTheme';
 
 @Component
@@ -40,7 +41,7 @@ export struct OgImage {
     const target = this.url;
     this.loading = true;
     this.failed = false;
-    OgImageCodec.decodeUrl(target, this.maxDim)
+    OgImageCodec.decodeUrl(target, OgSession.imageCap(this.maxDim))
       .then((pm: image.PixelMap) => {
         ImageCache.put(target, pm);
         if (this.url === target) {

@@ -171,11 +171,11 @@ struct CreateExamPage {
   }
 
   @Builder
-  fieldRow(label: string, ph: string, bindTo: string, width: number) {
+  fieldRow(label: string, ph: string, bindTo: string) {
     Column({ space: 3 }) {
       Text(label).fontSize(11).fontColor(OgC.INK_SUB).width('100%')
       TextInput({ placeholder: ph })
-        .fontSize(14).height(40).width(width)
+        .fontSize(14).height(40).width('100%')
         .onChange((v: string) => {
           if (bindTo === 'subject') {
             this.subject = v;
@@ -193,6 +193,7 @@ struct CreateExamPage {
         })
     }
     .alignItems(HorizontalAlign.Start)
+    .layoutWeight(1)
   }
 
   build() {
@@ -224,18 +225,18 @@ struct CreateExamPage {
             Column({ space: 10 }) {
               SectionHeader({ text: '基本信息' })
               Row({ space: 10 }) {
-                this.fieldRow('学科 *', '如 数学', 'subject', 150)
+                this.fieldRow('学科 *', '如 数学', 'subject')
                 if (this.manualMode) {
-                  this.fieldRow('满分 *', '如 100', 'full', 120)
+                  this.fieldRow('满分 *', '如 100', 'full')
                 }
               }
               Row({ space: 10 }) {
-                this.fieldRow('考试日期', '2026-10-24', 'date', 150)
-                this.fieldRow('学期', '2026秋季', 'term', 120)
+                this.fieldRow('考试日期', '2026-10-24', 'date')
+                this.fieldRow('学期', '2026秋季', 'term')
               }
               Row({ space: 10 }) {
-                this.fieldRow('类型', '期中', 'type', 150)
-                this.fieldRow('同场分组', '2026期中', 'group', 120)
+                this.fieldRow('类型', '期中', 'type')
+                this.fieldRow('同场分组', '2026期中', 'group')
               }
             }
             .width('100%')
@@ -322,6 +323,7 @@ struct CreateExamPage {
             }
 
             PrimaryButton({
+              full: true,
               label: this.busy ? '建考中…' : '建考(建档)',
               usable: !this.busy,
               onTap: () => this.submit()

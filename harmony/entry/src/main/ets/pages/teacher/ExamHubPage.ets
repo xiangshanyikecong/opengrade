@@ -13,7 +13,7 @@ import {
   AppealView, ExamDetail, RosterCandidate, RosterRow, SheetWarning, SuggestResp
 } from '../../model/Api';
 import {
-  EmptyView, ErrorView, LoadingView, Pill, PrimaryButton, GhostButton, SectionCard, SectionHeader, TitleBar
+  EmptyView, ErrorView, LoadingView, Pill, PrimaryButton, GhostButton, SectionHeader, TitleBar
 } from '../../components/Ui';
 import { StaffNavGrid } from '../../components/StaffNav';
 
@@ -256,6 +256,7 @@ struct ExamHubPage {
       Row({ space: 8 }) {
         PrimaryButton({
           label: '补传扫描',
+          fill: true,
           onTap: () => {
             router.pushUrl({
               url: 'pages/teacher/UploadScansPage', params: { 'exam': this.examId } as Record<string, Object>
@@ -265,6 +266,7 @@ struct ExamHubPage {
         if (this.d !== null && this.d.manualMode === true) {
           PrimaryButton({
             label: '录成绩',
+            fill: true,
             onTap: () => {
               router.pushUrl({
                 url: 'pages/teacher/ManualScoresPage', params: { 'exam': this.examId } as Record<string, Object>
@@ -294,6 +296,124 @@ struct ExamHubPage {
     .alignItems(HorizontalAlign.Start)
   }
 
+
+  // 卡片壳:统一在页面内调用自身 @Builder 方法(不跨组件传 Builder 引用,避免 this 丢失闪退)
+  @Builder
+  progressCard() {
+    Column({ space: 6 }) {
+      SectionHeader({ text: '阅卷进度(逐题)', extra: this.d !== null ? this.d.progress.length + ' 道主观题' : '' })
+      this.progressList()
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(OgC.CARD)
+    .borderRadius(OgDim.RADIUS)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  warningCard() {
+    Column({ space: 6 }) {
+      SectionHeader({ text: '异常清单', extra: this.d !== null ? this.d.stage.warnings + ' 待裁决' : '' })
+      this.warningList()
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(OgC.CARD)
+    .borderRadius(OgDim.RADIUS)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  dupCard() {
+    Column({ space: 6 }) {
+      SectionHeader({ text: '重复卷(同考号多份)', extra: '保留一份' })
+      this.dupList()
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(OgC.CARD)
+    .borderRadius(OgDim.RADIUS)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  missingCard() {
+    Column({ space: 6 }) {
+      SectionHeader({ text: '缺扫名单', extra: this.missingRows().length + ' 人' })
+      this.missingList()
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(OgC.CARD)
+    .borderRadius(OgDim.RADIUS)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  voidedCard() {
+    Column({ space: 6 }) {
+      SectionHeader({ text: '已作废卷', extra: '可恢复' })
+      this.voidedList()
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(OgC.CARD)
+    .borderRadius(OgDim.RADIUS)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  flaggedCard() {
+    Column({ space: 6 }) {
+      SectionHeader({ text: '⚑ 待复核队列', extra: this.d !== null ? this.d.flagged.length + ' 份' : '' })
+      this.flaggedList()
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(OgC.CARD)
+    .borderRadius(OgDim.RADIUS)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  appealCard() {
+    Column({ space: 6 }) {
+      SectionHeader({ text: '成绩复核申请', extra: '' })
+      this.appealList()
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(OgC.CARD)
+    .borderRadius(OgDim.RADIUS)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  metaCard() {
+    Column({ space: 6 }) {
+      SectionHeader({ text: '考试信息', extra: '' })
+      this.metaList()
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(OgC.CARD)
+    .borderRadius(OgDim.RADIUS)
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  @Builder
+  exportCard() {
+    Column({ space: 6 }) {
+      SectionHeader({ text: '导出与打印', extra: '保存到「文件」' })
+      this.exportList()
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(OgC.CARD)
+    .borderRadius(OgDim.RADIUS)
+    .alignItems(HorizontalAlign.Start)
+  }
 
   @Builder
   progressList() {
@@ -624,27 +744,27 @@ struct ExamHubPage {
         Scroll() {
           Column({ space: OgDim.GAP }) {
             this.stageCard()
-            SectionCard({ title: '阅卷进度(逐题)', extra: this.d.progress.length + ' 道主观题', content: this.progressList })
+            this.progressCard()
             if (this.d.warnings.length > 0) {
-              SectionCard({ title: '异常清单', extra: this.d.stage.warnings + ' 待裁决', content: this.warningList })
+              this.warningCard()
             }
             if (this.d.duplicates !== undefined && this.d.duplicates.length > 0) {
-              SectionCard({ title: '重复卷(同考号多份)', extra: '保留一份', content: this.dupList })
+              this.dupCard()
             }
             if (this.missingRows().length > 0) {
-              SectionCard({ title: '缺扫名单', extra: this.missingRows().length + ' 人', content: this.missingList })
+              this.missingCard()
             }
             if (this.d.voidedRows !== undefined && this.d.voidedRows.length > 0) {
-              SectionCard({ title: '已作废卷', extra: '可恢复', content: this.voidedList })
+              this.voidedCard()
             }
             if (this.d.flagged.length > 0) {
-              SectionCard({ title: '⚑ 待复核队列', extra: this.d.flagged.length + ' 份', content: this.flaggedList })
+              this.flaggedCard()
             }
             if (this.d.appeals !== undefined && this.d.appeals.length > 0) {
-              SectionCard({ title: '成绩复核申请', extra: '', content: this.appealList })
+              this.appealCard()
             }
-            SectionCard({ title: '考试信息', extra: '', content: this.metaList })
-            SectionCard({ title: '导出与打印', extra: '保存到「文件」', content: this.exportList })
+            this.metaCard()
+            this.exportCard()
             Text('').height(24)
           }
           .padding(OgDim.PAD)
@@ -712,7 +832,7 @@ struct ExamHubPage {
         .onChange((v: string) => {
           this.customReg = v;
         })
-      PrimaryButton({ label: '确认指派', onTap: () => this.confirmAssign() })
+      PrimaryButton({ label: '确认指派', full: true, onTap: () => this.confirmAssign() })
     }
     .padding(OgDim.PAD)
     .width('100%')
@@ -764,6 +884,7 @@ struct ExamHubPage {
       }
       .width('100%')
       PrimaryButton({
+        full: true,
         label: '保存',
         onTap: () => {
           this.closeSheet();
@@ -795,6 +916,7 @@ struct ExamHubPage {
           this.keyBuf = v;
         })
       PrimaryButton({
+        full: true,
         label: '保存并重统',
         onTap: () => {
           const arr: string[] = this.keyBuf.trim().split(/\s+/).filter((s: string) => s !== '');
@@ -827,6 +949,7 @@ struct ExamHubPage {
           this.appealReply = v;
         })
       PrimaryButton({
+        full: true,
         label: '回复并裁决',
         onTap: () => {
           const reply = this.appealReply.trim();
