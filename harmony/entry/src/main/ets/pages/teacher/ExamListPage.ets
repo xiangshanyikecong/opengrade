@@ -76,6 +76,11 @@ struct ExamListPage {
     this.publishing = '';
   }
 
+  private canEditExam(it: ExamSummary): boolean {
+    const me = OgSession.me();
+    return me !== null && (me.role === 'admin' || me.role === 'leader' || it.mine);
+  }
+
   private primaryAction(it: ExamSummary): void {
     if (it.stage === 'awaiting_scan' || it.stage === 'scanning') {
       router.pushUrl({
@@ -85,7 +90,7 @@ struct ExamListPage {
       router.pushUrl({
         url: 'pages/teacher/ExamHubPage', params: { 'exam': it.id } as Record<string, string>
       }).catch(() => {});
-    } else if (it.stage === 'ready' || it.dirty) {
+    } else if ((it.stage === 'ready' || it.dirty) && this.canEditExam(it)) {
       this.togglePublish(it);
     } else {
       // 已发布:进入考试详情(成绩/统计/导出都在详情页),不再直接生成文档
@@ -140,7 +145,8 @@ struct ExamListPage {
       }
       Row({ space: 8 }) {
         PrimaryButton({
-          label: (it.dirty ? '重新发布' : OgFormat.stageAction(it.stage, it.dirty)),
+          label: ((it.stage === 'ready' || it.dirty) && !this.canEditExam(it)
+            ? '详情' : (it.dirty ? '重新发布' : OgFormat.stageAction(it.stage, it.dirty))),
           usable: this.publishing !== it.id,
           onTap: () => this.primaryAction(it)
         })

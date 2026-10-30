@@ -8,6 +8,7 @@ import { OgNet, OgError } from '../../common/OgNet';
 import { OgC, OgDim } from '../../common/OgTheme';
 import { OgFormat } from '../../common/OgFormat';
 import { ExamDetail, ExamSummary } from '../../model/Api';
+import { OgSession } from '../../common/OgSession';
 import { EmptyView, ErrorView, LoadingView, PrimaryButton, SectionHeader, TitleBar } from '../../components/Ui';
 
 interface AssignParams {
@@ -96,7 +97,15 @@ struct AssignPage {
     this.rows = rows;
   }
 
+  private canAssign(): boolean {
+    return OgSession.isManager(); // 服务端 POST /tasks = manage(仅管理员/组长,建卷人也不行)
+  }
+
   private async saveRow(row: AssignRow): Promise<void> {
+    if (!this.canAssign()) {
+      promptAction.showToast({ message: '仅管理员/年级组长可分配任务' });
+      return;
+    }
     this.busy = true;
     try {
       if (this.d !== null && this.d.taskMode === 'class') {
@@ -222,19 +231,24 @@ struct AssignPage {
       }
       .width('100%')
       this.teacherChips(row)
-      Row({ space: 8 }) {
-        TextInput({ text: row.due, placeholder: '截止 YYYY-MM-DD(可选)' })
-          .fontSize(12).height(36).layoutWeight(1)
-          .onChange((v: string) => {
-            row.due = v;
+      if (this.canAssign()) {
+        Row({ space: 8 }) {
+          TextInput({ text: row.due, placeholder: '截止 YYYY-MM-DD(可选)' })
+            .fontSize(12).height(36).layoutWeight(1)
+            .onChange((v: string) => {
+              row.due = v;
+            })
+          PrimaryButton({
+            label: this.busy ? '…' : '保存',
+            usable: !this.busy,
+            onTap: () => this.saveRow(row)
           })
-        PrimaryButton({
-          label: this.busy ? '…' : '保存',
-          usable: !this.busy,
-          onTap: () => this.saveRow(row)
-        })
+        }
+        .width('100%')
+      } else {
+        Text('仅管理员/年级组长可分配任务,此处为只读视图。')
+          .fontSize(11).fontColor(OgC.INK_SUB)
       }
-      .width('100%')
     }
     .padding(12)
     .margin({ left: OgDim.PAD, right: OgDim.PAD })

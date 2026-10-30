@@ -6,7 +6,8 @@ import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError } from '../../common/OgNet';
 import { OgC, OgDim } from '../../common/OgTheme';
 import { OgFormat } from '../../common/OgFormat';
-import { ExamDetail, ExamSummary, RoomsResp, Seat, StaffInfo } from '../../model/Api';
+import { ExamDetail, ExamSummary, RoomsResp, Seat } from '../../model/Api';
+import { OgSession } from '../../common/OgSession';
 import { EmptyView, ErrorView, LoadingView, PrimaryButton, SectionHeader, TitleBar } from '../../components/Ui';
 
 interface RoomsParams {
@@ -65,7 +66,18 @@ struct RoomsPage {
     this.loading = false;
   }
 
+  // 服务端 POST/PATCH /rooms = canEditExam(仅管理员/组长/建卷教师)
+  private canEditRooms(): boolean {
+    const me = OgSession.me();
+    return me !== null && (me.role === 'admin' || me.role === 'leader'
+      || (this.d !== null && me.username === this.d.createdBy));
+  }
+
   private async generate(): Promise<void> {
+    if (!this.canEditRooms()) {
+      promptAction.showToast({ message: '仅管理员/年级组长/建卷教师可编排考场' });
+      return;
+    }
     const size = parseInt(this.genSize.trim(), 10);
     if (!(size >= 5 && size <= 200)) {
       promptAction.showToast({ message: '每场人数须为 5~200' });
@@ -86,6 +98,10 @@ struct RoomsPage {
   }
 
   private async swapSeats(a: SeatRef, b: SeatRef): Promise<void> {
+    if (!this.canEditRooms()) {
+      promptAction.showToast({ message: '仅管理员/年级组长/建卷教师可调整座位' });
+      return;
+    }
     this.busy = true;
     try {
       await OgNet.jpatch<Record<string, Object>>('/api/v1/exams/' + this.examId + '/rooms', {
@@ -102,6 +118,10 @@ struct RoomsPage {
   }
 
   private async setProctor(room: string, teacher: string): Promise<void> {
+    if (!this.canEditRooms()) {
+      promptAction.showToast({ message: '仅管理员/年级组长/建卷教师可指派监考' });
+      return;
+    }
     this.busy = true;
     try {
       await OgNet.jpatch<Record<string, Object>>('/api/v1/exams/' + this.examId + '/rooms', {
@@ -303,14 +323,16 @@ struct RoomsPage {
         .align(Alignment.Top)
       } else if (this.plan === null || this.plan.rooms.length === 0) {
         Column({ space: 14 }) {
-          EmptyView({ text: '尚未生成分场方案' })
-          PrimaryButton({
-            full: true,
-            label: '生成分场',
-            onTap: () => {
-              this.genOpen = true;
-            }
-          })
+          EmptyView({ text: this.canEditRooms() ? '尚未生成分场方案' : '尚未生成分场方案(仅建卷人/组长/管理员可编排)' })
+          if (this.canEditRooms()) {
+            PrimaryButton({
+              full: true,
+              label: '生成分场',
+              onTap: () => {
+                this.genOpen = true;
+              }
+            })
+          }
         }
         .padding(OgDim.PAD)
         .width('100%')
@@ -336,13 +358,15 @@ struct RoomsPage {
             .backgroundColor(OgC.BAD_BG)
             .borderRadius(8)
           }
-          PrimaryButton({
-            full: true,
-            label: '重新生成',
-            onTap: () => {
-              this.genOpen = true;
-            }
-          })
+          if (this.canEditRooms()) {
+            PrimaryButton({
+              full: true,
+              label: '重新生成',
+              onTap: () => {
+                this.genOpen = true;
+              }
+            })
+          }
         }
         .padding({ left: OgDim.PAD, right: OgDim.PAD, top: 8 })
         .width('100%')

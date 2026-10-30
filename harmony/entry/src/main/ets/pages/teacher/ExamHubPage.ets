@@ -286,10 +286,12 @@ struct ExamHubPage {
             }).catch(() => {});
           }
         })
-        GhostButton({
-          label: this.d !== null && this.d.published ? '撤回发布' : '发布成绩',
-          onTap: () => this.togglePublish()
-        })
+        if (this.canEdit()) {
+          GhostButton({
+            label: this.d !== null && this.d.published ? '撤回发布' : '发布成绩',
+            onTap: () => this.togglePublish()
+          })
+        }
       }
       .width('100%')
     }
@@ -495,7 +497,7 @@ struct ExamHubPage {
                     } as Record<string, Object>);
                 });
               })
-            if (this.d !== null && this.d.hasB === true) {
+            if (this.d !== null && this.d.hasB === true && this.canEdit()) {
               Text('指派A').fontSize(12).fontColor(OgC.BLUE)
                 .onClick(() => this.assignVariant(w.student, 'A'))
               Text('指派B').fontSize(12).fontColor(OgC.BLUE)
@@ -702,18 +704,20 @@ struct ExamHubPage {
     }
     .width('100%')
     Row({ space: 10 }) {
-      Text('编辑元数据').fontSize(12).fontColor(OgC.BRAND)
-        .onClick(() => {
-          if (this.d === null) {
-            return;
-          }
+      if (this.canEdit()) {
+        Text('编辑元数据').fontSize(12).fontColor(OgC.BRAND)
+          .onClick(() => {
+            if (this.d === null) {
+              return;
+            }
           this.mExamDate = this.d.examDate ?? '';
           this.mTerm = this.d.term ?? '';
           this.mExamType = this.d.examType ?? '';
           this.mExamGroup = this.d.examGroup ?? '';
           this.mAnonymous = this.d.anonymous === true;
           this.openSheet('meta');
-        })
+          })
+      }
       if (this.canEdit() && this.d !== null && this.d.manualMode !== true) {
         Text('修正参考答案').fontSize(12).fontColor(OgC.BRAND)
           .onClick(() => {

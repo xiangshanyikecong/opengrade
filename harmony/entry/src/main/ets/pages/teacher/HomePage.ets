@@ -86,6 +86,17 @@ struct HomePage {
     return n;
   }
 
+  private quickEntries(): QuickEntry[] {
+    const out: QuickEntry[] = [];
+    for (const q of QUICK) {
+      if (q.label === '👥 任务分配' && !OgSession.isManager()) {
+        continue; // 服务端 POST /tasks 仅管理员/组长
+      }
+      out.push(q);
+    }
+    return out;
+  }
+
   private recentExams(): ExamSummary[] {
     const out: ExamSummary[] = [];
     const n = Math.min(5, this.exams.length);
@@ -175,7 +186,7 @@ struct HomePage {
             } else {
               // 快捷入口
               Flex({ wrap: FlexWrap.Wrap }) {
-                ForEach(QUICK, (entry: QuickEntry) => {
+                ForEach(this.quickEntries(), (entry: QuickEntry) => {
                   this.quickCell(entry)
                 }, (entry: QuickEntry) => entry.url)
               }

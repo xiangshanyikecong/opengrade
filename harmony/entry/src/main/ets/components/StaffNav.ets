@@ -10,6 +10,7 @@ export interface NavItem {
   label: string;
   url: string;
   adminOnly: boolean;
+  managerOnly?: boolean; // 管理员/年级组长(服务端 manage 闸门对齐)
 }
 
 export const STAFF_NAV: NavItem[] = [
@@ -17,7 +18,7 @@ export const STAFF_NAV: NavItem[] = [
   { key: 'tasks', label: '我的任务', url: 'pages/teacher/TaskListPage', adminOnly: false },
   { key: 'exams', label: '考试列表', url: 'pages/teacher/ExamListPage', adminOnly: false },
   { key: 'create', label: '新建考试', url: 'pages/teacher/CreateExamPage', adminOnly: false },
-  { key: 'assign', label: '任务分配', url: 'pages/teacher/AssignPage', adminOnly: false },
+  { key: 'assign', label: '任务分配', url: 'pages/teacher/AssignPage', adminOnly: false, managerOnly: true },
   { key: 'trends', label: '纵向趋势', url: 'pages/teacher/StaffTrendsPage', adminOnly: false },
   { key: 'aggregate', label: '年级总表', url: 'pages/teacher/AggregatePage', adminOnly: false },
   { key: 'rooms', label: '考场编排', url: 'pages/teacher/RoomsPage', adminOnly: false },
@@ -31,6 +32,16 @@ export const STAFF_NAV: NavItem[] = [
 export struct StaffNavGrid {
   current: string = '';
   onClose: () => void = () => {};
+
+  private locked(item: NavItem): boolean {
+    if (item.adminOnly && !OgSession.isAdmin()) {
+      return true;
+    }
+    if (item.managerOnly === true && !OgSession.isManager()) {
+      return true;
+    }
+    return false;
+  }
 
   private go(item: NavItem): void {
     if (item.key === this.current) {
@@ -56,8 +67,8 @@ export struct StaffNavGrid {
           .justifyContent(FlexAlign.Center)
           .backgroundColor(item.key === this.current ? OgC.BRAND_LIGHT : OgC.CARD)
           .borderRadius(10)
-          .opacity(item.adminOnly && !OgSession.isAdmin() ? 0.35 : 1)
-          .enabled(!(item.adminOnly && !OgSession.isAdmin()))
+          .opacity(this.locked(item) ? 0.35 : 1)
+          .enabled(!this.locked(item))
           .onClick(() => this.go(item))
         }
       }, (item: NavItem) => item.key)
