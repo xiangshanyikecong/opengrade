@@ -239,9 +239,15 @@ export interface GradeResp {
   ver: number;
 }
 
+export interface GradeCurrent {
+  score: number;
+  ver: number;
+  by: string;
+}
+
 export interface GradeConflict {
   error: string;
-  current?: { score: number; ver: number; by: string };
+  current?: GradeCurrent;
 }
 
 // ---------- 学生/家长端 ----------

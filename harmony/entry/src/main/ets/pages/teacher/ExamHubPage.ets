@@ -13,7 +13,7 @@ import {
   AppealView, ExamDetail, RosterCandidate, RosterRow, SheetWarning, SuggestResp
 } from '../../model/Api';
 import {
-  EmptyView, ErrorView, LoadingView, Pill, PrimaryButton, GhostButton, SectionHeader, TitleBar
+  EmptyView, ErrorView, LoadingView, Pill, PrimaryButton, GhostButton, SectionCard, SectionHeader, TitleBar
 } from '../../components/Ui';
 import { StaffNavGrid } from '../../components/StaffNav';
 
@@ -146,7 +146,7 @@ struct ExamHubPage {
     await this.act(target ? '发布' : '撤回发布', (): Promise<Object> => {
       return OgNet.jpost<Record<string, string>>('/api/v1/exams/' + this.examId + '/publish', {
         'published': target
-      } as Record<string, boolean>);
+      } as Record<string, Object>);
     });
   }
 
@@ -154,7 +154,7 @@ struct ExamHubPage {
     await this.act('卷种指派', (): Promise<Object> => {
       return OgNet.jpost<Record<string, string>>('/api/v1/exams/' + this.examId + '/assign-variant', {
         'student': student, 'variant': variant
-      } as Record<string, string>);
+      } as Record<string, Object>);
     });
   }
 
@@ -167,7 +167,7 @@ struct ExamHubPage {
         await OgNet.jpost<Record<string, string>>(
           '/api/v1/exams/' + this.examId + '/results/' + s + '/void', {
             'voided': true
-          } as Record<string, boolean>);
+          } as Record<string, Object>);
       }
       promptAction.showToast({ message: '已保留卷 ' + keep + ',组内其余已作废' });
       await this.load();
@@ -258,7 +258,7 @@ struct ExamHubPage {
           label: '补传扫描',
           onTap: () => {
             router.pushUrl({
-              url: 'pages/teacher/UploadScansPage', params: { 'exam': this.examId } as Record<string, string>
+              url: 'pages/teacher/UploadScansPage', params: { 'exam': this.examId } as Record<string, Object>
             }).catch(() => {});
           }
         })
@@ -267,7 +267,7 @@ struct ExamHubPage {
             label: '录成绩',
             onTap: () => {
               router.pushUrl({
-                url: 'pages/teacher/ManualScoresPage', params: { 'exam': this.examId } as Record<string, string>
+                url: 'pages/teacher/ManualScoresPage', params: { 'exam': this.examId } as Record<string, Object>
               }).catch(() => {});
             }
           })
@@ -276,7 +276,7 @@ struct ExamHubPage {
           label: '学情',
           onTap: () => {
             router.pushUrl({
-              url: 'pages/teacher/AnalyticsPage', params: { 'exam': this.examId } as Record<string, string>
+              url: 'pages/teacher/AnalyticsPage', params: { 'exam': this.examId } as Record<string, Object>
             }).catch(() => {});
           }
         })
@@ -294,18 +294,6 @@ struct ExamHubPage {
     .alignItems(HorizontalAlign.Start)
   }
 
-  @Builder
-  hubSection(title: string, extra: string, slot: () => void) {
-    Column({ space: 6 }) {
-      SectionHeader({ text: title, extra: extra })
-      slot()
-    }
-    .width('100%')
-    .padding(14)
-    .backgroundColor(OgC.CARD)
-    .borderRadius(OgDim.RADIUS)
-    .alignItems(HorizontalAlign.Start)
-  }
 
   @Builder
   progressList() {
@@ -324,7 +312,7 @@ struct ExamHubPage {
           .onClick(() => {
             router.pushUrl({
               url: 'pages/teacher/GraderPage',
-              params: { 'exam': this.examId, 'q': String(p.question) } as Record<string, string>
+              params: { 'exam': this.examId, 'q': String(p.question) } as Record<string, Object>
             }).catch(() => {});
           })
       }
@@ -371,7 +359,7 @@ struct ExamHubPage {
                 this.act('缺考登记', (): Promise<Object> => {
                   return OgNet.jpost<Record<string, string>>('/api/v1/exams/' + this.examId + '/absent', {
                     'student': w.student, 'absent': true
-                  } as Record<string, boolean>);
+                  } as Record<string, Object>);
                 });
               })
             Text('作废').fontSize(12).fontColor(OgC.BAD)
@@ -380,7 +368,7 @@ struct ExamHubPage {
                   return OgNet.jpost<Record<string, string>>(
                     '/api/v1/exams/' + this.examId + '/results/' + w.student + '/void', {
                       'voided': true
-                    } as Record<string, boolean>);
+                    } as Record<string, Object>);
                 });
               })
             if (this.d !== null && this.d.hasB === true) {
@@ -444,7 +432,7 @@ struct ExamHubPage {
           .onClick(() => {
             router.pushUrl({
               url: 'pages/teacher/ManualScoresPage',
-              params: { 'exam': this.examId, 'entryReg': r.reg } as Record<string, string>
+              params: { 'exam': this.examId, 'entryReg': r.reg } as Record<string, Object>
             }).catch(() => {});
           })
       }
@@ -466,7 +454,7 @@ struct ExamHubPage {
               return OgNet.jpost<Record<string, string>>(
                 '/api/v1/exams/' + this.examId + '/results/' + v.student + '/void', {
                   'voided': false
-                } as Record<string, boolean>);
+                } as Record<string, Object>);
             });
           })
       }
@@ -491,7 +479,7 @@ struct ExamHubPage {
               url: 'pages/teacher/GraderPage',
               params: {
                 'exam': this.examId, 'q': String(f.question), 'student': String(f.student)
-              } as Record<string, string>
+              } as Record<string, Object>
             }).catch(() => {});
           })
         Text('清⚑').fontSize(12).fontColor(OgC.FLAG)
@@ -636,45 +624,27 @@ struct ExamHubPage {
         Scroll() {
           Column({ space: OgDim.GAP }) {
             this.stageCard()
-            this.hubSection('阅卷进度(逐题)', this.d.progress.length + ' 道主观题', (): void => {
-              this.progressList()
-            })
+            SectionCard({ title: '阅卷进度(逐题)', extra: this.d.progress.length + ' 道主观题', content: this.progressList })
             if (this.d.warnings.length > 0) {
-              this.hubSection('异常清单', this.d.stage.warnings + ' 待裁决', (): void => {
-                this.warningList()
-              })
+              SectionCard({ title: '异常清单', extra: this.d.stage.warnings + ' 待裁决', content: this.warningList })
             }
             if (this.d.duplicates !== undefined && this.d.duplicates.length > 0) {
-              this.hubSection('重复卷(同考号多份)', '保留一份', (): void => {
-                this.dupList()
-              })
+              SectionCard({ title: '重复卷(同考号多份)', extra: '保留一份', content: this.dupList })
             }
             if (this.missingRows().length > 0) {
-              this.hubSection('缺扫名单', this.missingRows().length + ' 人', (): void => {
-                this.missingList()
-              })
+              SectionCard({ title: '缺扫名单', extra: this.missingRows().length + ' 人', content: this.missingList })
             }
             if (this.d.voidedRows !== undefined && this.d.voidedRows.length > 0) {
-              this.hubSection('已作废卷', '可恢复', (): void => {
-                this.voidedList()
-              })
+              SectionCard({ title: '已作废卷', extra: '可恢复', content: this.voidedList })
             }
             if (this.d.flagged.length > 0) {
-              this.hubSection('⚑ 待复核队列', this.d.flagged.length + ' 份', (): void => {
-                this.flaggedList()
-              })
+              SectionCard({ title: '⚑ 待复核队列', extra: this.d.flagged.length + ' 份', content: this.flaggedList })
             }
             if (this.d.appeals !== undefined && this.d.appeals.length > 0) {
-              this.hubSection('成绩复核申请', '', (): void => {
-                this.appealList()
-              })
+              SectionCard({ title: '成绩复核申请', extra: '', content: this.appealList })
             }
-            this.hubSection('考试信息', '', (): void => {
-              this.metaList()
-            })
-            this.hubSection('导出与打印', '保存到「文件」', (): void => {
-              this.exportList()
-            })
+            SectionCard({ title: '考试信息', extra: '', content: this.metaList })
+            SectionCard({ title: '导出与打印', extra: '保存到「文件」', content: this.exportList })
             Text('').height(24)
           }
           .padding(OgDim.PAD)
@@ -870,7 +840,7 @@ struct ExamHubPage {
             return OgNet.jpost<Record<string, string>>(
               '/api/v1/exams/' + this.examId + '/appeals/' + no + '/resolve', {
                 'reply': reply
-              } as Record<string, string>);
+              } as Record<string, Object>);
           });
         }
       })

@@ -2,6 +2,11 @@
 
 import { OgC, OgDim } from '../common/OgTheme';
 
+// @BuilderParam 的默认值必须是 @Builder 函数(全局)。
+@Builder
+function emptyBuilder() {
+}
+
 @Component
 export struct TitleBar {
   title: string = '';
@@ -130,15 +135,15 @@ export struct KVRow {
 @Component
 export struct PrimaryButton {
   label: string = '';
-  enabled: boolean = true;
+  usable: boolean = true; // 避免与 CustomComponent.enabled 通用属性重名
   onTap: () => void = () => {};
 
   build() {
     Button(this.label)
       .fontSize(14)
-      .backgroundColor(this.enabled ? OgC.BRAND : OgC.LINE)
-      .fontColor(this.enabled ? Color.White : OgC.INK_SUB)
-      .enabled(this.enabled)
+      .backgroundColor(this.usable ? OgC.BRAND : OgC.LINE)
+      .fontColor(this.usable ? Color.White : OgC.INK_SUB)
+      .enabled(this.usable)
       .height(40)
       .layoutWeight(1)
       .onClick(() => this.onTap())
@@ -183,6 +188,26 @@ export struct SectionHeader {
   }
 }
 
+// 卡片分区:标题 + @BuilderParam 内容(页面用 @Builder 方法引用初始化)。
+@Component
+export struct SectionCard {
+  title: string = '';
+  extra: string = '';
+  @BuilderParam content: () => void = emptyBuilder;
+
+  build() {
+    Column({ space: 6 }) {
+      SectionHeader({ text: this.title, extra: this.extra })
+      this.content()
+    }
+    .width('100%')
+    .padding(14)
+    .backgroundColor(OgC.CARD)
+    .borderRadius(OgDim.RADIUS)
+    .alignItems(HorizontalAlign.Start)
+  }
+}
+
 @Component
 export struct LoadingView {
   text: string = '加载中…';
@@ -198,5 +223,3 @@ export struct LoadingView {
   }
 }
 
-function emptyBuilder() {
-}

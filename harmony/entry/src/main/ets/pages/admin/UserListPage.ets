@@ -327,7 +327,7 @@ struct UserListPage {
           })
         PrimaryButton({
           label: this.busy ? '创建中…' : '创建账号',
-          enabled: !this.busy,
+          usable: !this.busy,
           onTap: () => this.createUser()
         })
       }
@@ -349,7 +349,7 @@ struct UserListPage {
         })
       PrimaryButton({
         label: this.busy ? '重置中…' : '确认重置',
-        enabled: !this.busy,
+        usable: !this.busy,
         onTap: () => this.resetPassword()
       })
     }

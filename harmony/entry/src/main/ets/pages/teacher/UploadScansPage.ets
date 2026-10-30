@@ -72,11 +72,11 @@ struct UploadScansPage {
 
   private async pickCamera(): Promise<void> {
     try {
-      const result: cameraPicker.PickerResult = await cameraPicker.pick(getContext(this) as Context, {
-        cameraPosition: camera.CameraPosition.CAMERA_POSITION_BACK,
-        mediaType: cameraPicker.PickerMediaType.PHOTO,
-        photoUris: []
-      });
+      const profile: cameraPicker.PickerProfile = {
+        cameraPosition: camera.CameraPosition.CAMERA_POSITION_BACK
+      };
+      const result: cameraPicker.PickerResult =
+        await cameraPicker.pick(getContext(this) as Context, [cameraPicker.PickerMediaType.PHOTO], profile);
       if (result.resultUri !== '') {
         await this.addUris([result.resultUri]);
       }
@@ -186,7 +186,7 @@ struct UploadScansPage {
               }
               PrimaryButton({
                 label: this.busy ? '上传中…' : (this.picked.length > 0 ? '开始上传(' + this.picked.length + ' 张)' : '开始上传'),
-                enabled: !this.busy && this.picked.length > 0,
+                usable: !this.busy && this.picked.length > 0,
                 onTap: () => this.doUpload()
               })
             }

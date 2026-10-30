@@ -4,7 +4,7 @@
 import { http } from '@kit.NetworkKit';
 import { router } from '@kit.ArkUI';
 import { picker } from '@kit.CoreFileKit';
-import { fs } from '@kit.CoreFileKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { image } from '@kit.ImageKit';
 import { util } from '@kit.ArkTS';
 import { OgSession } from './OgSession';
@@ -16,6 +16,25 @@ export class OgError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+// JSON.parse 返回 any 会触发 arkts-no-any-unknown:统一经 Object 中转,调用方按需 narrow。
+export function parseJson(text: string): Object {
+  const raw: Object = JSON.parse(text);
+  return raw;
+}
+
+// 从响应文本提取 {error} 文案(非 JSON 响应回落到空串)。
+export function errorOfText(text: string): string {
+  try {
+    const m = parseJson(text) as Record<string, string>;
+    if (typeof m['error'] === 'string') {
+      return m['error'];
+    }
+  } catch (e) {
+    // 非 JSON(网关错误页等)
+  }
+  return '';
 }
 
 export interface UploadFile {
@@ -61,13 +80,9 @@ export class OgNet {
 
   static errText(status: number, body: string): string {
     if (body !== '') {
-      try {
-        const m = JSON.parse(body) as Record<string, string>;
-        if (typeof m['error'] === 'string' && m['error'] !== '') {
-          return m['error'];
-        }
-      } catch (e) {
-        // 非 JSON 响应(网关错误页等)回落到状态码文案
+      const msg = errorOfText(body);
+      if (msg !== '') {
+        return msg;
       }
     }
     if (status === 401) {
@@ -129,46 +144,51 @@ export class OgNet {
   }
 
   static async jget<T>(path: string, timeout?: number): Promise<T> {
-    const text = await OgNet.req({ method: 'GET', path: path, timeout: timeout }) as string;
-    return JSON.parse(text) as T;
+    const o: ReqOpts = { method: 'GET', path: path, timeout: timeout };
+    const text = await OgNet.req(o) as string;
+    return parseJson(text) as T;
   }
 
   static async jpost<T>(path: string, body: Object | null): Promise<T> {
-    const text = await OgNet.req({
+    const o: ReqOpts = {
       method: 'POST', path: path,
       body: body === null ? '{}' : JSON.stringify(body)
-    }) as string;
+    };
+    const text = await OgNet.req(o) as string;
     if (text === '') {
       return {} as T;
     }
-    return JSON.parse(text) as T;
+    return parseJson(text) as T;
   }
 
   static async jput<T>(path: string, body: Object | null): Promise<T> {
-    const text = await OgNet.req({
+    const o: ReqOpts = {
       method: 'PUT', path: path,
       body: body === null ? '{}' : JSON.stringify(body)
-    }) as string;
+    };
+    const text = await OgNet.req(o) as string;
     if (text === '') {
       return {} as T;
     }
-    return JSON.parse(text) as T;
+    return parseJson(text) as T;
   }
 
   static async jpatch<T>(path: string, body: Object): Promise<T> {
-    const text = await OgNet.req({ method: 'PATCH', path: path, body: JSON.stringify(body) }) as string;
+    const o: ReqOpts = { method: 'PATCH', path: path, body: JSON.stringify(body) };
+    const text = await OgNet.req(o) as string;
     if (text === '') {
       return {} as T;
     }
-    return JSON.parse(text) as T;
+    return parseJson(text) as T;
   }
 
   static async jdel<T>(path: string): Promise<T> {
-    const text = await OgNet.req({ method: 'DELETE', path: path }) as string;
+    const o: ReqOpts = { method: 'DELETE', path: path };
+    const text = await OgNet.req(o) as string;
     if (text === '') {
       return {} as T;
     }
-    return JSON.parse(text) as T;
+    return parseJson(text) as T;
   }
 
   // 服务器连通性校验(登录页用):返回版本号。
@@ -185,7 +205,7 @@ export class OgNet {
       if (resp.responseCode !== 200) {
         throw new OgError(resp.responseCode, '服务器返回 HTTP ' + resp.responseCode);
       }
-      const m = JSON.parse(resp.result as string) as Record<string, string>;
+      const m = parseJson(resp.result as string) as Record<string, string>;
       if (m['service'] !== 'opengrade') {
         throw new OgError(0, '这不是 OpenGrade 服务器');
       }
@@ -217,7 +237,7 @@ export class OgNet {
       if (resp.responseCode !== 200) {
         throw new OgError(resp.responseCode, OgNet.errText(resp.responseCode, text));
       }
-      return JSON.parse(text) as LoginResp;
+      return parseJson(text) as LoginResp;
     } catch (e) {
       if (e instanceof OgError) {
         throw e;
@@ -289,7 +309,7 @@ export class OgNet {
     }
   }
 
-  // 把 picker 返回的 file://media URI 拷入沙箱缓存,返回沙箱路径(multipart filePath 需要真实路径)。
+// 把 picker 返回的 file://media URI 拷入沙箱缓存,返回沙箱路径(multipart filePath 需要真实路径)。
   static async copyUriToCache(uri: string, cacheName: string): Promise<string> {
     const ctx = OgSession.context();
     const dest = ctx.cacheDir + '/' + cacheName;
@@ -320,7 +340,7 @@ export class OgNet {
     const buf = await OgNet.getBytes(path, 600000);
     const dp = new picker.DocumentViewPicker();
     const opt: picker.DocumentSaveOptions = { newFileNames: [fileName] };
-    const uris = await dp.save(opt);
+    const uris: string[] = await dp.save(opt);
     if (uris.length === 0) {
       return '';
     }
@@ -387,7 +407,7 @@ export class ImageCache {
       return;
     }
     try {
-      const pm = await OgNet.decodeImageUrl(url, maxDim);
+      const pm = await OgImageCodec.decodeUrl(url, maxDim);
       ImageCache.put(url, pm);
     } catch (e) {
       // 静默:预加载失败不打扰用户

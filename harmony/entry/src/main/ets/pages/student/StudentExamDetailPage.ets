@@ -213,6 +213,7 @@ struct StudentExamDetailPage {
                 .backgroundColor(OgC.WARN_BG)
                 .borderRadius(OgDim.RADIUS)
             } else {
+              Column({ space: OgDim.GAP }) {
               Column({ space: 8 }) {
                 Row() {
                   Column({ space: 2 }) {
@@ -366,7 +367,7 @@ struct StudentExamDetailPage {
               .borderRadius(OgDim.RADIUS)
               .alignItems(HorizontalAlign.Start)
 
-              if (this.d.absent !== true && this.d.wrongQuestions.length > 0) {
+              if (this.d.wrongQuestions.length > 0) {
                 Button('生成错题重练卡(' + this.d.wrongQuestions.length + ' 题)')
                   .width('100%')
                   .height(44)
@@ -380,11 +381,12 @@ struct StudentExamDetailPage {
                   })
               }
               Text('').height(24)
+              }
+              .padding(OgDim.PAD)
+              .width('100%')
             }
-            .padding(OgDim.PAD)
             .width('100%')
           }
-          .width('100%')
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)

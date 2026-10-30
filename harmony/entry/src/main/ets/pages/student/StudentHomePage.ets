@@ -14,7 +14,7 @@ import { MeView } from '../MePage';
 @Entry
 @Component
 struct StudentHomePage {
-  @State tabIndex: number = 0;
+  @State activeTab: number = 0;
   @State children: string[] = [];
   @State curChild: string = '';
   @State items: StudentExamItem[] = [];
@@ -148,15 +148,15 @@ struct StudentHomePage {
     Column({ space: 2 }) {
       Text(label)
         .fontSize(12)
-        .fontColor(this.tabIndex === idx ? OgC.BRAND : OgC.INK_SUB)
-        .fontWeight(this.tabIndex === idx ? FontWeight.Bold : FontWeight.Normal)
-      Row().width(24).height(2).backgroundColor(this.tabIndex === idx ? OgC.BRAND : Color.Transparent).borderRadius(1)
+        .fontColor(this.activeTab === idx ? OgC.BRAND : OgC.INK_SUB)
+        .fontWeight(this.activeTab === idx ? FontWeight.Bold : FontWeight.Normal)
+      Row().width(24).height(2).backgroundColor(this.activeTab === idx ? OgC.BRAND : Color.Transparent).borderRadius(1)
     }
     .layoutWeight(1)
     .height(48)
     .justifyContent(FlexAlign.Center)
     .onClick(() => {
-      this.tabIndex = idx;
+      this.activeTab = idx;
     })
   }
 
@@ -183,9 +183,9 @@ struct StudentHomePage {
         .width('100%')
         .padding({ left: OgDim.PAD, right: OgDim.PAD, top: 8, bottom: 4 })
       }
-      if (this.tabIndex === 0) {
+      if (this.activeTab === 0) {
         this.examTab()
-      } else if (this.tabIndex === 1) {
+      } else if (this.activeTab === 1) {
         StudentTrendsView({ childOf: this.curChild })
       } else {
         MeView()

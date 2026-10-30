@@ -7,7 +7,7 @@ import { picker } from '@kit.CoreFileKit';
 import { OgNet, OgError, UploadFile } from '../../common/OgNet';
 import { OgC, OgDim } from '../../common/OgTheme';
 import { StudentRow } from '../../model/Api';
-import { ErrorView, LoadingView, PrimaryButton, SectionHeader, TitleBar } from '../../components/Ui';
+import { ErrorView, GhostButton, LoadingView, PrimaryButton, SectionHeader, TitleBar } from '../../components/Ui';
 
 interface CreateExamResp {
   id: string;
@@ -103,8 +103,7 @@ struct CreateExamPage {
   private async pickLayoutFile(): Promise<void> {
     const dp = new picker.DocumentViewPicker();
     const opts: picker.DocumentSelectOptions = {
-      maxSelectNumber: 1,
-      fileSuffixChoices: ['.json']
+      maxSelectNumber: 1
     };
     try {
       const uris = await dp.select(opts);
@@ -324,7 +323,7 @@ struct CreateExamPage {
 
             PrimaryButton({
               label: this.busy ? '建考中…' : '建考(建档)',
-              enabled: !this.busy,
+              usable: !this.busy,
               onTap: () => this.submit()
             })
             Text('').height(24)

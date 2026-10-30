@@ -148,7 +148,7 @@ struct ExamListPage {
       Row({ space: 8 }) {
         PrimaryButton({
           label: (it.dirty ? '重新发布' : OgFormat.stageAction(it.stage, it.dirty)),
-          enabled: this.publishing !== it.id,
+          usable: this.publishing !== it.id,
           onTap: () => this.primaryAction(it)
         })
         GhostButton({

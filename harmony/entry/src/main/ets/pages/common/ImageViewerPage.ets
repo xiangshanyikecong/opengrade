@@ -18,7 +18,7 @@ struct ImageViewerPage {
   @State urls: string[] = [];
   @State index: number = 0;
   @State title: string = '查看';
-  @State scale: number = 1;
+  @State zoomScale: number = 1;
   @State offsetX: number = 0;
   @State offsetY: number = 0;
   private lastScale: number = 1;
@@ -41,7 +41,7 @@ struct ImageViewerPage {
   }
 
   private resetTransform(): void {
-    this.scale = 1;
+    this.zoomScale = 1;
     this.offsetX = 0;
     this.offsetY = 0;
     this.lastScale = 1;
@@ -61,17 +61,17 @@ struct ImageViewerPage {
       }
       .width('100%')
       .height('100%')
-      .scale({ x: this.scale, y: this.scale })
+      .scale({ x: this.zoomScale, y: this.zoomScale })
       .translate({ x: this.offsetX, y: this.offsetY })
       .gesture(
         GestureGroup(GestureMode.Exclusive,
           PinchGesture({ fingers: 2 })
             .onActionStart(() => {
-              this.lastScale = this.scale;
+              this.lastScale = this.zoomScale;
             })
             .onActionUpdate((event: GestureEvent) => {
-              this.scale = Math.min(6, Math.max(1, this.lastScale * event.scale));
-              if (this.scale <= 1.01) {
+              this.zoomScale = Math.min(6, Math.max(1, this.lastScale * event.scale));
+              if (this.zoomScale <= 1.01) {
                 this.offsetX = 0;
                 this.offsetY = 0;
               }
@@ -82,7 +82,7 @@ struct ImageViewerPage {
             }),
           PanGesture({ fingers: 1 })
             .onActionUpdate((event: GestureEvent) => {
-              if (this.scale > 1.01) {
+              if (this.zoomScale > 1.01) {
                 this.offsetX += event.offsetX;
                 this.offsetY += event.offsetY;
               }

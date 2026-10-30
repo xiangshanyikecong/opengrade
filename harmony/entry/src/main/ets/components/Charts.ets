@@ -171,7 +171,7 @@ export struct LineChart {
       Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Center }) {
         ForEach(this.series, (s: LineSeries) => {
           Row({ space: 4 }) {
-            Circle().width(8).height(8).fill(s.color)
+            Row().width(8).height(8).backgroundColor(s.color).borderRadius(4)
             Text(s.name).fontSize(11).fontColor(OgC.INK_SUB)
           }.margin({ right: 10, bottom: 2 })
         }, (s: LineSeries) => s.name)
@@ -267,7 +267,7 @@ export interface HBarItem {
 // 知识点掌握度横条(薄弱排前)
 @Component
 export struct HBarList {
-  @Prop @Watch('redraw') items: HBarItem[] = [];
+  @Prop items: HBarItem[] = [];
   @Prop sortAsc: boolean = true;
   @Prop barHeight: number = 26;
 

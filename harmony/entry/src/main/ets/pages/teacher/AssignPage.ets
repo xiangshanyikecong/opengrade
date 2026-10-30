@@ -171,7 +171,7 @@ struct AssignPage {
                     })
                   PrimaryButton({
                     label: this.busy ? '…' : '保存',
-                    enabled: !this.busy,
+                    usable: !this.busy,
                     onTap: () => this.saveRow(row)
                   })
                 }

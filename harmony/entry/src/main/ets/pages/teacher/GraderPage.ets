@@ -291,7 +291,7 @@ struct GraderPage {
           this.jumpNextUngraded();
         }
       } else {
-        await this.saveWhole(v, s.mark ?? '', s.ink ?? []);
+        await this.saveWhole(v, s.mark ?? '', s.ink ?? [], true);
         if (this.autoAdv) {
           this.jumpNextUngraded();
         }

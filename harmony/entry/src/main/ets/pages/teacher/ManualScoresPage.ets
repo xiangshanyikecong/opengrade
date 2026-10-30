@@ -152,7 +152,7 @@ struct ManualScoresPage {
                 Column({ space: 1 }) {
                   Text((r.name !== '' ? r.name + ' ' : '') + r.reg)
                     .fontSize(13).fontColor(r.absent ? OgC.INK_SUB : OgC.INK)
-                    .strikethrough(r.absent)
+                    .decoration({ type: TextDecorationType.LineThrough, color: OgC.INK_SUB })
                   if (r.classes !== '') {
                     Text(r.classes).fontSize(10).fontColor(OgC.INK_SUB)
                   }
@@ -188,7 +188,7 @@ struct ManualScoresPage {
         Row({ space: 10 }) {
           PrimaryButton({
             label: this.busy ? '保存中…' : '保存全部(' + this.regCount() + ')',
-            enabled: !this.busy,
+            usable: !this.busy,
             onTap: () => this.saveAll()
           })
         }
