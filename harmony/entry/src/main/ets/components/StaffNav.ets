@@ -20,6 +20,8 @@ export const STAFF_NAV: NavItem[] = [
   { key: 'assign', label: '任务分配', url: 'pages/teacher/AssignPage', adminOnly: false },
   { key: 'trends', label: '纵向趋势', url: 'pages/teacher/StaffTrendsPage', adminOnly: false },
   { key: 'aggregate', label: '年级总表', url: 'pages/teacher/AggregatePage', adminOnly: false },
+  { key: 'rooms', label: '考场编排', url: 'pages/teacher/RoomsPage', adminOnly: false },
+  { key: 'workload', label: '工作量', url: 'pages/teacher/WorkloadPage', adminOnly: false },
   { key: 'bank', label: '校本题库', url: 'pages/teacher/BankListPage', adminOnly: false },
   { key: 'users', label: '用户管理', url: 'pages/admin/UserListPage', adminOnly: true },
   { key: 'me', label: '账号设置', url: 'pages/MePage', adminOnly: false }

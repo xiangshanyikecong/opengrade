@@ -644,6 +644,21 @@ export interface AppealBan {
   time: string;
 }
 
+export interface WorkloadRow {
+  username: string;
+  displayName?: string;
+  graded: number;
+  flagged: number;
+  byExam?: Record<string, number>;
+}
+
+export interface AuditEntry {
+  time: string;
+  by: string;
+  action: string;
+  detail: string;
+}
+
 export interface SuggestResp {
   student: number;
   reg: string;

@@ -91,6 +91,17 @@ struct StudentExamDetailPage {
     return out;
   }
 
+  private async saveReportPdf(): Promise<void> {
+    try {
+      promptAction.showToast({ message: '正在生成成绩单…' });
+      const uri = await OgNet.downloadToPicker(
+        '/api/v1/student/exams/' + this.examId + '/report.pdf' + this.childQ(), '成绩单-' + this.examId + '.pdf');
+      promptAction.showToast({ message: uri === '' ? '已取消' : '已保存,可在「文件」中查看打印' });
+    } catch (e) {
+      promptAction.showToast({ message: e instanceof OgError ? e.message : '下载失败', duration: 3000 });
+    }
+  }
+
   private async tryNextPage(): Promise<void> {
     if (this.d === null || this.d.pageURL === undefined) {
       return;
@@ -366,6 +377,17 @@ struct StudentExamDetailPage {
               .backgroundColor(OgC.CARD)
               .borderRadius(OgDim.RADIUS)
               .alignItems(HorizontalAlign.Start)
+
+              if (this.d.absent !== true) {
+                Button('下载成绩单 PDF')
+                  .width('100%')
+                  .height(42)
+                  .fontSize(14)
+                  .backgroundColor(OgC.CARD)
+                  .fontColor(OgC.BRAND)
+                  .border({ width: 1, color: OgC.BRAND, radius: 10 })
+                  .onClick(() => this.saveReportPdf())
+              }
 
               if (this.d.wrongQuestions.length > 0) {
                 Button('生成错题重练卡(' + this.d.wrongQuestions.length + ' 题)')

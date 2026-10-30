@@ -536,6 +536,17 @@ struct GraderPage {
           .fontColor(OgC.BLUE)
           .maxLines(1)
       }
+      if (this.meta !== null && this.meta.anonymous !== true && this.curReg() !== '') {
+        Text('答卷 ›')
+          .fontSize(12)
+          .fontColor(OgC.BLUE)
+          .onClick(() => {
+            router.pushUrl({
+              url: 'pages/teacher/ReviewPage',
+              params: { 'exam': this.examId, 'reg': this.curReg() } as Record<string, string>
+            }).catch(() => {});
+          })
+      }
     }
     .width('100%')
     .padding({ left: OgDim.PAD, right: OgDim.PAD, top: 6, bottom: 6 })

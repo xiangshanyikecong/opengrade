@@ -10,7 +10,7 @@ import { OgSession } from '../../common/OgSession';
 import { OgC, OgDim } from '../../common/OgTheme';
 import { OgFormat } from '../../common/OgFormat';
 import {
-  AppealView, ExamDetail, RosterCandidate, RosterRow, SheetWarning, SuggestResp
+  AppealView, AuditEntry, ExamDetail, RosterCandidate, RosterRow, SheetWarning, SuggestResp
 } from '../../model/Api';
 import {
   EmptyView, ErrorView, LoadingView, Pill, PrimaryButton, GhostButton, SectionHeader, TitleBar
@@ -46,6 +46,10 @@ struct ExamHubPage {
   // 复核回复
   @State appealReply: string = '';
   @State appealNo: number = 0;
+  // 审计日志
+  @State auditOpen: boolean = false;
+  @State audit: AuditEntry[] = [];
+  @State auditLoading: boolean = false;
 
   aboutToAppear(): void {
     const p = router.getParams() as HubParams | null;
@@ -602,6 +606,15 @@ struct ExamHubPage {
               } as Record<string, Object>
             }).catch(() => {});
           })
+        Text('答卷 ›').fontSize(12).fontColor(OgC.BLUE)
+          .onClick(() => {
+            if (f.reg !== undefined && f.reg !== '') {
+              router.pushUrl({
+                url: 'pages/teacher/ReviewPage',
+                params: { 'exam': this.examId, 'reg': f.reg } as Record<string, string>
+              }).catch(() => {});
+            }
+          })
         Text('清⚑').fontSize(12).fontColor(OgC.FLAG)
           .onClick(() => {
             this.act('清除标记', (): Promise<Object> => {
@@ -636,8 +649,15 @@ struct ExamHubPage {
         if (a.status === 'resolved' && a.reply !== undefined && a.reply !== '') {
           Text('回复:' + a.reply + '(' + a.resolvedBy + ')').fontSize(11).fontColor(OgC.BRAND_DEEP)
         }
-        if (a.status !== 'resolved' && this.canEdit()) {
-          Row({ space: 10 }) {
+        Row({ space: 10 }) {
+          Text('查看答卷并改分 ›').fontSize(12).fontColor(OgC.BLUE)
+            .onClick(() => {
+              router.pushUrl({
+                url: 'pages/teacher/ReviewPage',
+                params: { 'exam': this.examId, 'reg': a.by } as Record<string, string>
+              }).catch(() => {});
+            })
+          if (a.status !== 'resolved' && this.canEdit()) {
             Text('回复裁决 ›').fontSize(12).fontColor(OgC.BRAND)
               .onClick(() => {
                 this.appealNo = a.n;
@@ -654,8 +674,8 @@ struct ExamHubPage {
               })
             Blank()
           }
-          .width('100%')
         }
+        .width('100%')
       }
       .width('100%')
       .padding({ top: 8, bottom: 8 })
@@ -702,6 +722,11 @@ struct ExamHubPage {
           })
       }
       if (OgSession.isManager()) {
+        Text('审计日志').fontSize(12).fontColor(OgC.BRAND)
+          .onClick(() => {
+            this.loadAudit();
+            this.auditOpen = true;
+          })
         Blank()
         Text('删除考试').fontSize(12).fontColor(OgC.BAD)
           .onClick(() => this.deleteExam())
@@ -782,13 +807,57 @@ struct ExamHubPage {
       height: SheetSize.FIT_CONTENT, dragBar: true,
       onWillDisappear: () => {
         this.closeSheet();
+        this.auditOpen = false;
       }
     })
   }
 
+  private async loadAudit(): Promise<void> {
+    this.auditLoading = true;
+    try {
+      this.audit = await OgNet.jget<AuditEntry[]>('/api/v1/exams/' + this.examId + '/audit');
+    } catch (e) {
+      this.audit = [];
+      promptAction.showToast({ message: e instanceof OgError ? e.message : '审计加载失败' });
+    }
+    this.auditLoading = false;
+  }
+
+  @Builder
+  auditSheet() {
+    Column({ space: 8 }) {
+      if (this.auditLoading) {
+        LoadingView()
+      } else if (this.audit.length === 0) {
+        Text('暂无操作记录').fontSize(12).fontColor(OgC.INK_SUB)
+      }
+      ForEach(this.audit, (a: AuditEntry) => {
+        Column({ space: 2 }) {
+          Row({ space: 6 }) {
+            Text(a.action).fontSize(13).fontWeight(FontWeight.Medium).fontColor(OgC.INK)
+            Blank()
+            Text(a.time).fontSize(10).fontColor(OgC.INK_SUB)
+          }
+          .width('100%')
+          if (a.detail !== '') {
+            Text(a.detail).fontSize(11).fontColor(OgC.INK_SUB)
+          }
+          Text('操作人 ' + a.by).fontSize(10).fontColor(OgC.INK_SUB)
+        }
+        .width('100%')
+        .padding({ top: 6, bottom: 6 })
+        .border({ width: { bottom: 1 }, color: OgC.LINE })
+      }, (a: AuditEntry, i: number) => 'a' + i)
+    }
+    .padding(OgDim.PAD)
+    .width('100%')
+  }
+
   @Builder
   anySheetBuilder() {
-    if (this.sheetKind === 'nav') {
+    if (this.auditOpen) {
+      this.auditSheet()
+    } else if (this.sheetKind === 'nav') {
       StaffNavGrid({ current: 'exams', onClose: () => {
         this.closeSheet();
       } })
