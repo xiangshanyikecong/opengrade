@@ -142,8 +142,8 @@ struct UserListPage {
 
   private confirmDelete(u: PublicUser): void {
     AlertDialog.show({
-      message: '确认删除账号 ' + u.username + '(' + (u.displayName !== '' ? u.displayName : u.username) + ')?
-删除后该账号无法登录,考试与成绩数据不受影响。',
+      message: '确认删除账号 ' + u.username + '('
+        + (u.displayName !== '' ? u.displayName : u.username) + ')? 删除后该账号无法登录,考试与成绩数据不受影响。',
       title: '删除账号',
       autoCancel: true,
       alignment: DialogAlignment.Center,

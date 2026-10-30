@@ -377,7 +377,7 @@ export class OgNet {
   static clearAppCache(): void {
     try {
       const ctx = OgSession.context();
-      const files: string[] = fs.listFile(ctx.cacheDir);
+      const files: string[] = fs.listFileSync(ctx.cacheDir);
       for (const f of files) {
         try {
           fs.unlinkSync(ctx.cacheDir + '/' + f);
