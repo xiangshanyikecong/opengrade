@@ -120,6 +120,8 @@ struct LoginPage {
           if (this.serverOk !== '') {
             Text(this.serverOk).fontSize(12).fontColor(OgC.GOOD).width('100%')
           }
+          Text('模拟器/手机请填电脑的局域网 IP(如 http://192.168.1.10:8787),不能用 127.0.0.1')
+            .fontSize(11).fontColor(OgC.INK_SUB).width('100%')
           if (this.servers.length > 0) {
             Flex({ wrap: FlexWrap.Wrap }) {
               ForEach(this.servers, (s: string) => {

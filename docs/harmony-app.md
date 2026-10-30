@@ -88,6 +88,8 @@ harmony/
 
 ## 五、构建与真机验证(需 DevEco Studio 5.0+)
 
+> 完整的模拟器/真机运行步骤、服务器连通排查与角色验收清单见 [harmony-emulator.md](harmony-emulator.md)。
+
 ```bash
 # 服务端(先起,手机与电脑同一局域网)
 go build -o ogserver ./cmd/ogserver

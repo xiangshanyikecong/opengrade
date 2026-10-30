@@ -316,6 +316,7 @@ docs/    产品方案存档、架构说明、路线图
 - [与智学网功能差距分析(缺口清单)](docs/feature-gap-vs-zhixuewang.md)
 - [与现实不匹配的差距清单(现实对齐批次)](docs/reality-gap.md)
 - [鸿蒙客户端](docs/harmony-app.md)
+- [鸿蒙客户端运行与验收(模拟器/真机)](docs/harmony-emulator.md)
 - [技术架构](docs/architecture.md)
 - [路线图](docs/roadmap.md)
 

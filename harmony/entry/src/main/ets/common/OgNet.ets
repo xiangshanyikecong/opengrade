@@ -137,7 +137,7 @@ export class OgNet {
       if (e instanceof OgError) {
         throw e;
       }
-      throw new OgError(0, '网络异常:无法连接服务器');
+      throw new OgError(0, '无法连接服务器:请检查地址与网络(模拟器/手机请填宿主机局域网 IP,不能用 127.0.0.1)');
     } finally {
       hr.destroy();
     }
@@ -230,7 +230,7 @@ export class OgNet {
       if (e instanceof OgError) {
         throw e;
       }
-      throw new OgError(0, '网络异常:无法连接服务器');
+      throw new OgError(0, '无法连接服务器:请检查地址与网络(模拟器/手机请填宿主机局域网 IP,不能用 127.0.0.1)');
     } finally {
       hr.destroy();
     }
