@@ -155,10 +155,7 @@ export class OgNet {
       body: body === null ? '{}' : JSON.stringify(body)
     };
     const text = await OgNet.req(o) as string;
-    if (text === '') {
-      return {} as T;
-    }
-    return parseJson(text) as T;
+    return parseJson(text === '' ? '{}' : text) as T;
   }
 
   static async jput<T>(path: string, body: Object | null): Promise<T> {
@@ -167,28 +164,19 @@ export class OgNet {
       body: body === null ? '{}' : JSON.stringify(body)
     };
     const text = await OgNet.req(o) as string;
-    if (text === '') {
-      return {} as T;
-    }
-    return parseJson(text) as T;
+    return parseJson(text === '' ? '{}' : text) as T;
   }
 
   static async jpatch<T>(path: string, body: Object): Promise<T> {
     const o: ReqOpts = { method: 'PATCH', path: path, body: JSON.stringify(body) };
     const text = await OgNet.req(o) as string;
-    if (text === '') {
-      return {} as T;
-    }
-    return parseJson(text) as T;
+    return parseJson(text === '' ? '{}' : text) as T;
   }
 
   static async jdel<T>(path: string): Promise<T> {
     const o: ReqOpts = { method: 'DELETE', path: path };
     const text = await OgNet.req(o) as string;
-    if (text === '') {
-      return {} as T;
-    }
-    return parseJson(text) as T;
+    return parseJson(text === '' ? '{}' : text) as T;
   }
 
   // 服务器连通性校验(登录页用):返回版本号。

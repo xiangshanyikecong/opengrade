@@ -385,7 +385,6 @@ struct StudentExamDetailPage {
               .padding(OgDim.PAD)
               .width('100%')
             }
-            .width('100%')
           }
         }
         .layoutWeight(1)
