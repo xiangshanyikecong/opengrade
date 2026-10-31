@@ -8,7 +8,7 @@ import { OgC, OgDim } from '../../common/OgTheme';
 import { OgFormat } from '../../common/OgFormat';
 import { PublicUser } from '../../model/Api';
 import { EmptyView, ErrorView, LoadingView, Pill, PrimaryButton, TitleBar } from '../../components/Ui';
-import { StaffNavGrid } from '../../components/StaffNav';
+import { NAV_SHEET_HEIGHT, StaffNavGrid } from '../../components/StaffNav';
 
 const ROLES: string[] = ['admin', 'leader', 'teacher', 'student', 'parent'];
 
@@ -269,7 +269,9 @@ struct UserListPage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.sheetOpen, this.anySheetBuilder(), {
-      height: SheetSize.FIT_CONTENT, dragBar: true
+      // 导航分支与其他页同高;建号/改密表单分支自适应
+      height: this.sheetKind === 'nav' ? NAV_SHEET_HEIGHT : SheetSize.FIT_CONTENT,
+      dragBar: true
     })
   }
 

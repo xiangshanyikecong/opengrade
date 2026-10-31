@@ -30,6 +30,10 @@ export const STAFF_NAV: NavItem[] = [
   { key: 'me', label: '账号设置', url: 'pages/MePage', adminOnly: false }
 ];
 
+// 工作台导航弹层统一高度:网格 ceil(项数/3)*62=310 + 上下 PAD 32,再加标题栏/拖条留量。
+// 各页 bindSheet 必须引用本常量(混合弹层在 nav 分支也用它),否则同一弹层各页高度不一。
+export const NAV_SHEET_HEIGHT: number = 460;
+
 @Component
 export struct StaffNavGrid {
   current: string = '';

@@ -15,7 +15,7 @@ import { OgSession } from '../../common/OgSession';
 import { OgC, OgDim } from '../../common/OgTheme';
 import { OgFormat } from '../../common/OgFormat';
 import { EmptyView, LoadingView, Pill, PrimaryButton, SectionHeader, TitleBar } from '../../components/Ui';
-import { StaffNavGrid } from '../../components/StaffNav';
+import { NAV_SHEET_HEIGHT, StaffNavGrid } from '../../components/StaffNav';
 
 interface AnalyzeQ {
   kind: string;
@@ -688,7 +688,7 @@ struct LayoutScanPage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: 460, dragBar: true, title: { title: "工作台导航" }
+      height: NAV_SHEET_HEIGHT, dragBar: true, title: { title: '工作台导航' }
     })
   }
 

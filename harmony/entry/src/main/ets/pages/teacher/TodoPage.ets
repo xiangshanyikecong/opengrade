@@ -13,7 +13,7 @@ import { OgC, OgDim } from '../../common/OgTheme';
 import { OgFormat } from '../../common/OgFormat';
 import { ExamSummary, TaskItem } from '../../model/Api';
 import { EmptyView, ErrorView, LoadingView, Pill, PrimaryButton, SectionHeader, TitleBar } from '../../components/Ui';
-import { StaffNavGrid } from '../../components/StaffNav';
+import { NAV_SHEET_HEIGHT, StaffNavGrid } from '../../components/StaffNav';
 
 interface TodoItem {
   key: string;
@@ -366,7 +366,7 @@ struct TodoPage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: 460, dragBar: true, title: { title: "工作台导航" }
+      height: NAV_SHEET_HEIGHT, dragBar: true, title: { title: '工作台导航' }
     })
   }
 

@@ -15,7 +15,7 @@ import {
 import {
   EmptyView, ErrorView, LoadingView, Pill, PrimaryButton, GhostButton, SectionHeader, TitleBar
 } from '../../components/Ui';
-import { StaffNavGrid } from '../../components/StaffNav';
+import { NAV_SHEET_HEIGHT, StaffNavGrid } from '../../components/StaffNav';
 
 interface HubParams {
   exam: string;
@@ -825,7 +825,9 @@ struct ExamHubPage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.sheetOpen, this.anySheetBuilder(), {
-      height: SheetSize.FIT_CONTENT, dragBar: true,
+      // 导航分支与其他页同高;其余表单分支自适应
+      height: this.sheetKind === 'nav' ? NAV_SHEET_HEIGHT : SheetSize.FIT_CONTENT,
+      dragBar: true,
       onWillDisappear: () => {
         this.closeSheet();
         this.auditOpen = false;
