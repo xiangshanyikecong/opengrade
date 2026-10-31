@@ -1,5 +1,6 @@
 // 工作台总览(教职员首页):任务与考试的聚合仪表盘 + 高频入口 + 最近考试。
 // 数据全部来自既有端点(/api/v1/my/tasks + /api/v1/exams),服务端零改动。
+// 自适应:快捷入口/统计用 GridRow 官方栅格,列数按断点配置(外屏窄竖屏 2×2,内屏/横屏一行)。
 
 import { router } from '@kit.ArkUI';
 import { OgNet, OgError } from '../../common/OgNet';
@@ -13,22 +14,31 @@ import { EmptyView, ErrorView, LoadingView, Pill, TitleBar } from '../../compone
 import { StaffNavGrid, navSheetOptions } from '../../components/StaffNav';
 
 interface QuickEntry {
+  icon: string;
   label: string;
   url: string;
 }
 
 const QUICK: QuickEntry[] = [
-  { label: '🔔 待办中心', url: 'pages/teacher/TodoPage' },
-  { label: '📋 我的任务', url: 'pages/teacher/TaskListPage' },
-  { label: '📷 拍卷建考', url: 'pages/teacher/LayoutScanPage' },
-  { label: '📝 考试列表', url: 'pages/teacher/ExamListPage' },
-  { label: '➕ 新建考试', url: 'pages/teacher/CreateExamPage' },
-  { label: '👥 任务分配', url: 'pages/teacher/AssignPage' },
-  { label: '📈 纵向趋势', url: 'pages/teacher/StaffTrendsPage' },
-  { label: '📊 年级总表', url: 'pages/teacher/AggregatePage' },
-  { label: '📚 校本题库', url: 'pages/teacher/BankListPage' },
-  { label: '⚙️ 账号设置', url: 'pages/MePage' }
+  { icon: '🔔', label: '待办中心', url: 'pages/teacher/TodoPage' },
+  { icon: '📋', label: '我的任务', url: 'pages/teacher/TaskListPage' },
+  { icon: '📷', label: '拍卷建考', url: 'pages/teacher/LayoutScanPage' },
+  { icon: '📝', label: '考试列表', url: 'pages/teacher/ExamListPage' },
+  { icon: '➕', label: '新建考试', url: 'pages/teacher/CreateExamPage' },
+  { icon: '👥', label: '任务分配', url: 'pages/teacher/AssignPage' },
+  { icon: '📈', label: '纵向趋势', url: 'pages/teacher/StaffTrendsPage' },
+  { icon: '📊', label: '年级总表', url: 'pages/teacher/AggregatePage' },
+  { icon: '📚', label: '校本题库', url: 'pages/teacher/BankListPage' },
+  { icon: '⚙️', label: '账号设置', url: 'pages/MePage' }
 ];
+
+// 统计项:路由用 url 字符串(点按仅 pushUrl),避免 @Builder 闭包参数
+interface StatItem {
+  n: number;
+  label: string;
+  color: string;
+  url: string;
+}
 
 @Entry
 @Component
@@ -93,12 +103,38 @@ struct HomePage {
   private quickEntries(): QuickEntry[] {
     const out: QuickEntry[] = [];
     for (const q of QUICK) {
-      if (q.label === '👥 任务分配' && !OgSession.isManager()) {
+      if (q.label === '任务分配' && !OgSession.isManager()) {
         continue; // 服务端 POST /tasks 仅管理员/组长
       }
       out.push(q);
     }
     return out;
+  }
+
+  // 主指标 4 项:窄屏(折叠外屏)2×2,内屏/横屏一行四个
+  private primaryStats(): StatItem[] {
+    return [
+      { n: this.tasks.length, label: '我的任务', color: OgC.INK, url: 'pages/teacher/TaskListPage' },
+      {
+        n: this.undoneTasks(), label: '未完成任务',
+        color: this.undoneTasks() > 0 ? OgC.WARN : OgC.INK_SUB, url: 'pages/teacher/TaskListPage'
+      },
+      {
+        n: this.stageCount(['awaiting_scan', 'scanning', 'anomalies', 'grading']),
+        label: '进行中考试', color: OgC.BRAND, url: 'pages/teacher/ExamListPage'
+      },
+      { n: this.sumOf((e: ExamSummary) => e.ungraded), label: '待阅切片', color: OgC.WARN, url: 'pages/teacher/TaskListPage' }
+    ];
+  }
+
+  // 次要指标 4 项:统一一行小字
+  private secondaryStats(): StatItem[] {
+    return [
+      { n: this.stageCount(['ready']), label: '待发布', color: OgC.WARN, url: 'pages/teacher/ExamListPage' },
+      { n: this.stageCount(['published']), label: '已发布', color: OgC.GOOD, url: 'pages/teacher/ExamListPage' },
+      { n: this.sumOf((e: ExamSummary) => e.warnings), label: '异常', color: OgC.BAD, url: 'pages/teacher/ExamListPage' },
+      { n: this.sumOf((e: ExamSummary) => (e.appeals ?? 0)), label: '复核', color: OgC.FLAG, url: 'pages/teacher/ExamListPage' }
+    ];
   }
 
   private recentExams(): ExamSummary[] {
@@ -111,31 +147,48 @@ struct HomePage {
   }
 
   @Builder
-  statTile(v: number, label: string, color: string, onTap: () => void) {
+  statCell(st: StatItem) {
     Column({ space: 2 }) {
-      Text(String(v)).fontSize(22).fontWeight(FontWeight.Bold).fontColor(color)
-      Text(label).fontSize(11).fontColor(OgC.INK_SUB)
+      Text(String(st.n)).fontSize(21).fontWeight(FontWeight.Bold).fontColor(st.color)
+      Text(st.label).fontSize(10).fontColor(OgC.INK_SUB)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
     }
-    .layoutWeight(1)
-    .padding({ top: 10, bottom: 10 })
-    .backgroundColor(OgC.CARD)
-    .borderRadius(10)
-    .onClick(() => onTap())
+    .width('100%')
+    .padding({ top: 11, bottom: 11 })
+    .onClick(() => {
+      router.pushUrl({ url: st.url }).catch(() => {});
+    })
+  }
+
+  @Builder
+  miniStat(st: StatItem) {
+    Row({ space: 4 }) {
+      Text(st.label).fontSize(11).fontColor(OgC.INK_SUB).maxLines(1)
+      Text(String(st.n)).fontSize(12).fontWeight(FontWeight.Bold).fontColor(st.color)
+    }
+    .width('100%')
+    .justifyContent(FlexAlign.Center)
+    .padding({ top: 6, bottom: 6 })
+    .onClick(() => {
+      router.pushUrl({ url: st.url }).catch(() => {});
+    })
   }
 
   @Builder
   quickCell(entry: QuickEntry) {
-    Text(entry.label)
-      .fontSize(13)
-      .fontColor(OgC.INK)
-      .backgroundColor(OgC.CARD)
-      .borderRadius(10)
-      .padding({ left: 14, right: 14, top: 10, bottom: 10 })
-      .margin({ right: 8, bottom: 8 })
-      .onClick(() => {
-        router.pushUrl({ url: entry.url }).catch(() => {});
-      })
+    Column({ space: 3 }) {
+      Text(entry.icon).fontSize(20)
+      Text(entry.label).fontSize(11).fontColor(OgC.INK)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    .width('100%')
+    .height(64)
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor(OgC.CARD)
+    .borderRadius(OgDim.RADIUS)
+    .onClick(() => {
+      router.pushUrl({ url: entry.url }).catch(() => {});
+    })
   }
 
   @Builder
@@ -188,52 +241,40 @@ struct HomePage {
             } else if (this.failed) {
               ErrorView({ msg: this.failMsg, onRetry: () => this.load() })
             } else {
-              // 快捷入口
-              Flex({ wrap: FlexWrap.Wrap }) {
+              // 快捷入口:图标网格(外屏 4 列,内屏/横屏 5 列)
+              GridRow({ columns: { sm: 4, md: 5, lg: 5 }, gutter: { column: 8, row: 8 } }) {
                 ForEach(this.quickEntries(), (entry: QuickEntry) => {
-                  this.quickCell(entry)
+                  GridCol({ span: 1 }) {
+                    this.quickCell(entry)
+                  }
                 }, (entry: QuickEntry) => entry.url)
               }
               .width('100%')
 
-              // 任务概况
-              Column({ space: 8 }) {
-                Row({ space: 8 }) {
-                  this.statTile(this.tasks.length, '我的任务', OgC.INK, () => {
-                    router.pushUrl({ url: 'pages/teacher/TaskListPage' }).catch(() => {});
-                  })
-                  this.statTile(this.undoneTasks(), '未完成任务', this.undoneTasks() > 0 ? OgC.WARN : OgC.INK_SUB, () => {
-                    router.pushUrl({ url: 'pages/teacher/TaskListPage' }).catch(() => {});
-                  })
+              // 任务与考试概况:一张卡,主指标(窄屏 2×2/宽屏一行)+ 细分小字行
+              Column() {
+                GridRow({ columns: { sm: 2, md: 4, lg: 4 } }) {
+                  ForEach(this.primaryStats(), (st: StatItem) => {
+                    GridCol({ span: 1 }) {
+                      this.statCell(st)
+                    }
+                  }, (st: StatItem) => st.label)
                 }
                 .width('100%')
-                Row({ space: 8 }) {
-                  this.statTile(this.stageCount(['awaiting_scan', 'scanning', 'anomalies', 'grading']),
-                    '进行中考试', OgC.BRAND, () => {
-                      router.pushUrl({ url: 'pages/teacher/ExamListPage' }).catch(() => {});
-                    })
-                  this.statTile(this.stageCount(['ready']), '待发布', OgC.WARN, () => {
-                    router.pushUrl({ url: 'pages/teacher/ExamListPage' }).catch(() => {});
-                  })
-                  this.statTile(this.stageCount(['published']), '已发布', OgC.INK_SUB, () => {
-                    router.pushUrl({ url: 'pages/teacher/ExamListPage' }).catch(() => {});
-                  })
-                }
-                .width('100%')
-                Row({ space: 8 }) {
-                  this.statTile(this.sumOf((e: ExamSummary) => e.ungraded), '待阅切片', OgC.WARN, () => {
-                    router.pushUrl({ url: 'pages/teacher/TaskListPage' }).catch(() => {});
-                  })
-                  this.statTile(this.sumOf((e: ExamSummary) => e.warnings), '待处理异常', OgC.BAD, () => {
-                    router.pushUrl({ url: 'pages/teacher/ExamListPage' }).catch(() => {});
-                  })
-                  this.statTile(this.sumOf((e: ExamSummary) => (e.appeals ?? 0)), '复核申请', OgC.FLAG, () => {
-                    router.pushUrl({ url: 'pages/teacher/ExamListPage' }).catch(() => {});
-                  })
+                Row().height(1).width('100%').backgroundColor(OgC.LINE).margin({ top: 8 })
+                GridRow({ columns: 4 }) {
+                  ForEach(this.secondaryStats(), (st: StatItem) => {
+                    GridCol({ span: 1 }) {
+                      this.miniStat(st)
+                    }
+                  }, (st: StatItem) => st.label)
                 }
                 .width('100%')
               }
               .width('100%')
+              .padding({ left: 4, right: 4 })
+              .backgroundColor(OgC.CARD)
+              .borderRadius(OgDim.RADIUS)
 
               // 最近考试
               if (this.exams.length === 0) {
