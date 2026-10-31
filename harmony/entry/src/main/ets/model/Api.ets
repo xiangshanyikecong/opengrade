@@ -232,6 +232,8 @@ export interface SliceItem {
   missing?: boolean;
   parts?: PartState[];
   elective?: ElectiveView;
+  locked?: boolean;  // 正被他人持有阅卷租约(服务端 lease):阅卷端应跳过
+  lockedBy?: string; // 租约持有人账号(提示展示用)
 }
 
 export interface GradeResp {

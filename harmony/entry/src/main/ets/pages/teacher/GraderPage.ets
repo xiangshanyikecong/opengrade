@@ -1,6 +1,7 @@
 // 触屏阅卷工作台(Grader Studio 移动版):
 //   切片预加载(后 8 张)→ 触屏评分盘(两键合成/±0.5/小数)→ ✓✗⚑ 标注 → 画笔批注
 //   → 小问逐问打分自动汇总 → 选做组涂选展示 → 匿名卷隐藏考号 → 409 乐观锁拉取最新
+//   → 分片领取租约(claim 兼心跳 90s,TTL 3 分钟;跳过他人持有,翻片/离页释放)
 //   → 下一未评/待复核跳转。评分数据契约与 web 端完全一致(POST /api/v1/grades)。
 
 import { router } from '@kit.ArkUI';
@@ -40,8 +41,16 @@ struct GraderPage {
   @State syncTick: number = 0; // 触发切片区域重渲染
   // 宽屏(md/lg:平板/横屏/折叠屏内屏)左卷右盘双栏;断点实时跟随,折叠展开中自动切换
   @StorageProp('ogBp') bp: string = 'sm';
+  // 阅卷分片租约(协作阅卷「谁在阅哪张」,TTL 3 分钟):每端至多持有一张;
+  // 只驱动「跳过他人持有」,不拦写路径 —— 正确性由评分乐观锁(409)兜底。
+  private heldQ: number = 0;       // 持有租约的题号(0 = 无)
+  private heldStudent: number = 0; // 持有租约的学生号
+  private heartTimer: number = -1; // 心跳定时器(90s 续期)
+  private pageActive: boolean = true;
+  private jumping: boolean = false; // 下一未评领取链在途防重入
 
   aboutToAppear(): void {
+    this.startHeartbeat();
     const p = router.getParams() as GraderParams | null;
     if (p === null || p === undefined || p.exam === undefined) {
       this.failed = true;
@@ -51,6 +60,49 @@ struct GraderPage {
     }
     this.examId = p.exam;
     this.init(parseInt(p.q ?? '0', 10), parseInt(p.student ?? '0', 10));
+  }
+
+  aboutToDisappear(): void {
+    this.stopHeartbeat();
+    this.releaseHeld(); // 离开阅卷页:释放租约(失败由 TTL 自愈)
+  }
+
+  onPageShow(): void {
+    this.pageActive = true;
+    this.startHeartbeat();
+  }
+
+  onPageHide(): void {
+    // 暂离(如跳答卷回溯/切后台):停心跳并释放,回来后写路径会重新领取
+    this.pageActive = false;
+    this.stopHeartbeat();
+    this.releaseHeld();
+  }
+
+  private startHeartbeat(): void {
+    if (this.heartTimer >= 0) {
+      return; // aboutToAppear 与 onPageShow 双入口,已在跑则不重复
+    }
+    this.heartTimer = setInterval(() => this.renewHeld(), 90000);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartTimer >= 0) {
+      clearInterval(this.heartTimer);
+      this.heartTimer = -1;
+    }
+  }
+
+  // 心跳:只为「正在阅的那张」续期(浏览离开的租约交给 TTL 自然过期)
+  private renewHeld(): void {
+    if (!this.pageActive || this.heldStudent <= 0) {
+      return;
+    }
+    const s = this.curSlice();
+    if (this.heldQ !== this.qIndex || s === null || s.student !== this.heldStudent) {
+      return;
+    }
+    this.claimReq(this.heldStudent).catch(() => {});
   }
 
   private async init(deepQ: number, deepStudent: number): Promise<void> {
@@ -107,6 +159,9 @@ struct GraderPage {
   }
 
   private async loadQuestion(q: number, keepStudent: number): Promise<void> {
+    if (this.heldQ > 0 && this.heldQ !== q) {
+      await this.releaseHeld(); // 切题释放旧题租约(409 同题重载不受影响)
+    }
     this.loading = true;
     try {
       const arr = await OgNet.jget<SliceItem[]>(
@@ -179,6 +234,79 @@ struct GraderPage {
     const resp = await OgNet.jpost<Record<string, Object>>('/api/v1/grades', body);
     const ver = resp['ver'] as number;
     return ver;
+  }
+
+  private claimReq(student: number): Promise<Record<string, Object>> {
+    const body: Record<string, Object> = { 'question': this.qIndex, 'student': student };
+    return OgNet.jpost<Record<string, Object>>('/api/v1/exams/' + this.examId + '/slices/claim', body);
+  }
+
+  private async releaseHeld(): Promise<void> {
+    if (this.heldStudent <= 0) {
+      return;
+    }
+    const q = this.heldQ;
+    const st = this.heldStudent;
+    this.heldQ = 0;
+    this.heldStudent = 0;
+    const body: Record<string, Object> = { 'question': q, 'student': st };
+    try {
+      await OgNet.jpost<Record<string, Object>>('/api/v1/exams/' + this.examId + '/slices/release', body);
+    } catch (e) {
+      // 释放失败不打扰用户:租约 TTL 过期自愈
+    }
+  }
+
+  private sliceByStudent(student: number): SliceItem | null {
+    for (const it of this.slices) {
+      if (it.student === student) {
+        return it;
+      }
+    }
+    return null;
+  }
+
+  // 载入后已被他人评完:本地置灰(分数以服务端为准,下次整表重拉时回填)
+  private markRemotelyGraded(student: number): void {
+    const s = this.sliceByStudent(student);
+    if (s === null) {
+      return;
+    }
+    if (this.hasParts() && s.parts !== undefined && s.parts !== null) {
+      for (const p of s.parts) {
+        p.graded = true;
+      }
+    }
+    s.graded = true;
+  }
+
+  // ensureHeld 领取当前题下该生的阅卷租约(已持有则免请求;claim 兼心跳)。
+  // 返回 'held'(可写)| 'graded'(已被评完,已本地置灰)| 'locked'(他人持有)| 'proceed'
+  // (网络故障:放行交给写路径 409 兜底,不因领取失败阻断评分)
+  private async ensureHeld(student: number): Promise<string> {
+    if (this.heldQ === this.qIndex && this.heldStudent === student) {
+      return 'held';
+    }
+    await this.releaseHeld();
+    try {
+      const resp = await this.claimReq(student);
+      if ((resp['status'] as string) === 'graded') {
+        this.markRemotelyGraded(student);
+        return 'graded';
+      }
+      this.heldQ = this.qIndex;
+      this.heldStudent = student;
+      return 'held';
+    } catch (e) {
+      if (e instanceof OgError && e.status === 409) {
+        const s = this.sliceByStudent(student);
+        if (s !== null) {
+          s.locked = true;
+        }
+        return 'locked';
+      }
+      return 'proceed';
+    }
   }
 
   // 写整题(无小问):score/mark/ink 一次写入
@@ -287,22 +415,31 @@ struct GraderPage {
       return;
     }
     this.saving = true;
+    let diverted = false;
     try {
-      if (this.hasParts() && s.parts !== undefined && s.parts !== null && s.parts.length > 0) {
+      const h = await this.ensureHeld(s.student);
+      if (h === 'locked') {
+        // 他人正阅:不打分,自动跳下一份未评(graded/held/proceed 放行:改分/复核带 ver 正常写)
+        diverted = true;
+        promptAction.showToast({ message: '⚠ 这份卷正被他人阅,已跳下一份未评', duration: 3200 });
+        await this.jumpNextUngraded();
+      } else if (this.hasParts() && s.parts !== undefined && s.parts !== null && s.parts.length > 0) {
         await this.savePart(this.curPart, v, true);
         // 自动跳下一问;全部问评完则跳下一份未评
         if (this.autoAdv && this.curPart < s.parts.length - 1) {
           this.curPart++;
         } else if (this.autoAdv) {
-          this.jumpNextUngraded();
+          await this.jumpNextUngraded();
         }
       } else {
         await this.saveWhole(v, s.mark ?? '', s.ink ?? [], true);
         if (this.autoAdv) {
-          this.jumpNextUngraded();
+          await this.jumpNextUngraded();
         }
       }
-      this.syncTick++;
+      if (!diverted) {
+        this.syncTick++;
+      }
     } catch (e) {
       this.onSaveError(e);
     }
@@ -337,12 +474,17 @@ struct GraderPage {
     if (s === null || this.saving) {
       return;
     }
-    const nextMark = s.mark === mark ? '' : mark;
     this.saving = true;
     try {
-      await this.saveMarkOrInk(nextMark, s.ink ?? []);
-      if (nextMark === 'flag') {
-        promptAction.showToast({ message: '已标记待复核;复核改分后再清除 ⚑', duration: 3000 });
+      const h = await this.ensureHeld(s.student);
+      if (h === 'locked') {
+        promptAction.showToast({ message: '⚠ 这份卷正被他人阅,标记未保存', duration: 3200 });
+      } else {
+        const nextMark = s.mark === mark ? '' : mark;
+        await this.saveMarkOrInk(nextMark, s.ink ?? []);
+        if (nextMark === 'flag') {
+          promptAction.showToast({ message: '已标记待复核;复核改分后再清除 ⚑', duration: 3000 });
+        }
       }
     } catch (e) {
       this.onSaveError(e);
@@ -394,22 +536,36 @@ struct GraderPage {
     }
   }
 
-  private jumpNextUngraded(): void {
-    const s = this.curSlice();
-    let start = this.cur + 1;
-    if (this.hasParts() && s !== null && s.parts !== undefined && s.parts !== null &&
-      this.curPart < s.parts.length - 1) {
-      return; // 小问未评完不切卷(由 applyScore 推进 curPart)
+  // 下一未评:落位前先领取租约 —— 他人持有(locked)/已被评完的片由 ensureHeld
+  // 本地标记后跳过,两位老师自动错开各自推进;全部不可落时提示已阅完。
+  private async jumpNextUngraded(): Promise<void> {
+    if (this.jumping) {
+      return; // 领取链在途防重入(连点/自动跳重叠)
     }
-    for (let i = start; i < this.slices.length; i++) {
-      if (this.ungradedAt(i)) {
+    this.jumping = true;
+    try {
+      const s = this.curSlice();
+      if (this.hasParts() && s !== null && s.parts !== undefined && s.parts !== null &&
+        this.curPart < s.parts.length - 1) {
+        return; // 小问未评完不切卷(由 applyScore 推进 curPart)
+      }
+      for (let i = this.cur + 1; i < this.slices.length; i++) {
+        if (!this.ungradedAt(i) || this.slices[i].locked === true) {
+          continue;
+        }
+        const h = await this.ensureHeld(this.slices[i].student);
+        if (h !== 'held' && h !== 'proceed') {
+          continue; // ensureHeld 已本地标记 graded/locked,继续找
+        }
         this.cur = i;
         this.curPart = 0;
         this.preload();
         return;
       }
+      promptAction.showToast({ message: '本题已全部阅完' });
+    } finally {
+      this.jumping = false;
     }
-    promptAction.showToast({ message: '本题已全部阅完' });
   }
 
   private ungradedAt(i: number): boolean {
@@ -729,7 +885,9 @@ struct GraderPage {
         Text('待复核 ›').fontSize(12).fontColor(OgC.FLAG).padding(6)
           .onClick(() => this.jumpNextFlagged())
         Text('下一未评 ›').fontSize(12).fontColor(OgC.BRAND).padding(6)
-          .onClick(() => this.jumpNextUngraded())
+          .onClick(() => {
+            this.jumpNextUngraded().catch(() => {});
+          })
       }
       .width('100%')
       .padding({ left: OgDim.PAD, right: OgDim.PAD })

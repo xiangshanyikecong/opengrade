@@ -112,6 +112,8 @@ func newServer(dataDir string, seed bool) (*Server, error) {
 	}))
 	mux.HandleFunc("GET /api/v1/exams/{id}/report", staff(withStore(handleExamReport)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/slices", staff(withStore(handleSlices)))
+	mux.HandleFunc("POST /api/v1/exams/{id}/slices/claim", staff(withStore(handleSliceClaim)))     // 阅卷分片领取/续期租约
+	mux.HandleFunc("POST /api/v1/exams/{id}/slices/release", staff(withStore(handleSliceRelease))) // 阅卷分片租约释放
 	mux.HandleFunc("GET /api/v1/exams/{id}/slice/{student}/{q}", staff(withStore(handleSliceImage)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/page/{student}", staff(withStore(handleExamPageStaff)))
 	mux.HandleFunc("GET /api/v1/exams/{id}/overlay/{student}", staff(withStore(handleExamOverlayStaff)))
@@ -1206,8 +1208,11 @@ func handleSlices(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 		Missing  bool           `json:"missing"`         // 无切片图(手工补录卷),工作台显示占位
 		Parts    []partState    `json:"parts,omitempty"` // 拆分小问的当前评分(版式 v3)
 		Elective *electiveView  `json:"elective,omitempty"`
+		Locked   bool           `json:"locked,omitempty"`   // 正被他人持有阅卷租约(见 lease.go):阅卷端应跳过
+		LockedBy string         `json:"lockedBy,omitempty"` // 租约持有人账号(展示用)
 	}
 	out := make([]item, 0, len(ex.Results))
+	liveLeases := store.LiveLeases(ex.ID) // 一次取全量活租约(锁内拷贝),循环里只查 map
 	for si := range ex.Results {
 		if ex.Results[si] == nil || ex.Results[si].Voided {
 			continue // 教师视图下不可见学生 / 作废卷不进阅卷队列
@@ -1267,6 +1272,11 @@ func handleSlices(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 			_, it.Graded, _ = score.SubjectiveScore(spec, ex.Grades, si+1, q)
 		}
 		it.Missing = !fileExists(filepath.Join(store.SliceDir(ex.ID), fmt.Sprintf("s%02d_q%02d.png", si+1, q)))
+		// 阅卷租约回填:本人持有的不算锁定(各端"跳过他人持有"的判定依据)
+		if by, held := liveLeases[leaseKey(si+1, q)]; held {
+			it.LockedBy = by
+			it.Locked = by != u.Username
+		}
 		out = append(out, it)
 	}
 	writeJSON(w, http.StatusOK, out)

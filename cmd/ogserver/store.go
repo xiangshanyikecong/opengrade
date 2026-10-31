@@ -196,6 +196,10 @@ type Store struct {
 	flushEvery time.Duration
 	stopFlush  chan struct{}
 	stopDone   chan struct{}
+
+	// 阅卷分片租约:examID → "s{学生号}_q{题号}" → 租约。纯内存会话态(见 lease.go):
+	// 不落盘、不进快照/摘要,服务重启或考试驱逐即清空,由 TTL 与重新领取自愈。
+	leases map[string]map[string]sliceLease
 }
 
 // defaultFlushEvery 评分类变更的去抖落盘周期;defaultCacheMax 全量考试驻留上限。
@@ -308,7 +312,8 @@ func NewStore(dir string) (*Store, error) {
 	}
 	s := &Store{dir: dir, exams: map[string]*Exam{}, summaries: map[string]*ExamSummary{},
 		dirty: map[string]*Exam{}, rev: map[string]uint64{}, access: map[string]uint64{},
-		cacheMax: defaultCacheMax,
+		leases:     map[string]map[string]sliceLease{},
+		cacheMax:   defaultCacheMax,
 		flushEvery: defaultFlushEvery, stopFlush: make(chan struct{}), stopDone: make(chan struct{})}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -953,6 +958,7 @@ func (s *Store) Delete(id string) error {
 	delete(s.dirty, id)  // 挂起的去抖落盘一并撤销(在途写盘由 FlushAll 写后复核兜底)
 	delete(s.access, id)
 	delete(s.rev, id)
+	delete(s.leases, id) // 阅卷租约随考试一并清空(内存会话态,见 lease.go)
 	return nil
 }
 
