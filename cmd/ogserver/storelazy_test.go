@@ -8,6 +8,7 @@ package main
 //   - 摘要粗筛口径与全量考试一致(列表/学生端/监考冲突的字段来源)。
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -267,5 +268,67 @@ func TestSummaryRegsMatchFindIndex(t *testing.T) {
 	}
 	if sm := s.summaries[ex.ID]; len(sm.Regs) != 1 {
 		t.Fatalf("恢复后摘要 Regs 应即时恢复: %v", sm.Regs)
+	}
+}
+
+func TestSummaryRegsSortedAndBinarySearch(t *testing.T) {
+	// 乱序上传(扫描乱序入库)→ 摘要 Regs 必须升序,二分粗筛口径正确
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ex, err := s.Create(NewExam{
+		Layout: card.Layout{Version: 2, Title: "SORT", RegDigits: 4, Columns: 2,
+			Questions:   []card.QuestionSpec{{Kind: card.KindChoice, Options: 4, Score: 2}},
+			Subjectives: []card.SubjectiveSpec{{Kind: card.KindSubjective, Score: 6}},
+		},
+		Key: []string{"A"},
+		Results: []*omr.Result{
+			{RegNumber: "0003", RegValid: true, Answers: []string{"A"}},
+			{RegNumber: "0001", RegValid: true, Answers: []string{"A"}},
+			{RegNumber: "0002", RegValid: true, Answers: []string{"A"}},
+		},
+		Roster: []roster.Student{
+			{Reg: "0001", Name: "甲", Classes: []string{"一班"}},
+			{Reg: "0002", Name: "乙", Classes: []string{"一班"}},
+			{Reg: "0003", Name: "丙", Classes: []string{"一班"}},
+		},
+		CreatedBy: "t",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := s.summaries[ex.ID]
+	if len(sm.Regs) != 3 || sm.Regs[0] != "0001" || sm.Regs[1] != "0002" || sm.Regs[2] != "0003" {
+		t.Fatalf("摘要 Regs 应升序: %v", sm.Regs)
+	}
+	for _, reg := range []string{"0001", "0002", "0003"} {
+		if !summaryHasReg(sm, reg) {
+			t.Fatalf("二分漏判 %s", reg)
+		}
+	}
+	if summaryHasReg(sm, "0009") {
+		t.Fatal("二分误判 0009 在册")
+	}
+	s.Stop()
+
+	// 旧版摘要(Regs 卷序)载入归一化:手工写乱序摘要,重启后二分口径仍正确
+	var old ExamSummary
+	b, _ := os.ReadFile(filepath.Join(dir, ex.ID, "summary.json"))
+	json.Unmarshal(b, &old)
+	old.Regs = []string{"0003", "0001", "0002"}
+	ob, _ := json.Marshal(old)
+	if err := os.WriteFile(filepath.Join(dir, ex.ID, "summary.json"), ob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Stop()
+	sm2 := s2.summaries[ex.ID]
+	if sm2.Regs[0] != "0001" || !summaryHasReg(sm2, "0002") {
+		t.Fatalf("旧摘要载入应归一化排序: %v", sm2.Regs)
 	}
 }

@@ -306,11 +306,11 @@ func handleStudentTrends(w http.ResponseWriter, r *http.Request, store *Store, u
 	}
 	// 时间轴口径与教师端 visibleExamsAsc 一致:考试日期优先(未填用创建时间)。
 	// 只按创建时间排,补录建考(创建晚于考试日期)会让个人曲线与教师端/年级总表互相矛盾。
-	// 摘要粗筛:已发布 ∧ 本人在册(Regs 与 findIndex 同口径:未作废卷的最终考号),
-	// 命中的考试才按需加载 —— 学生端趋势零全量加载。
+	// 摘要粗筛:已发布 ∧ 本人在册(Regs 与 findIndex 同口径:未作废卷的最终考号,
+	// 二分查找),命中的考试才按需加载 —— 学生端趋势零全量加载。
 	var order []trendOrderAsc
 	store.VisitSummaries(func(sm *ExamSummary) {
-		if !sm.Published || !containsStr(sm.Regs, reg) {
+		if !sm.Published || !summaryHasReg(sm, reg) {
 			return
 		}
 		order = append(order, trendOrderAsc{sm.ID, sm.ExamDate, sm.CreatedAt})

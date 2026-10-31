@@ -228,7 +228,9 @@ type ExamSummary struct {
 
 	Classes   []string `json:"classes,omitempty"`   // 名册班级并集(可见性判定)
 	Proctors  []string `json:"proctors,omitempty"`  // 考场监考并集(跨考试监考冲突粗筛)
-	// Regs 是未作废卷的最终考号(人工指派优先,findIndex 同口径):学生端定位"哪些考试有我"。
+	// Regs 是未作废卷的最终考号(人工指派优先,findIndex 同口径),**升序存储**:
+	// 学生端粗筛(哪些考试有我)按二分查找,千场考试 × 千人名册时把锁内比对从
+	// O(考试×名册) 降到 O(考试×log 名册) —— 发布瞬间查分高峰的主路径。
 	Regs []string `json:"regs,omitempty"`
 
 	Tasks      map[string]string `json:"tasks,omitempty"`      // 按题任务:"q{n}" → 教师
@@ -273,7 +275,14 @@ func computeSummary(ex *Exam) *ExamSummary {
 			sm.Regs = append(sm.Regs, reg)
 		}
 	}
+	sort.Strings(sm.Regs) // 学生端二分粗筛的主路径,见 Regs 注释
 	return sm
+}
+
+// summaryHasReg 二分判定考号是否在摘要考号集内(Regs 升序,computeSummary 保证)。
+func summaryHasReg(sm *ExamSummary, reg string) bool {
+	i := sort.SearchStrings(sm.Regs, reg)
+	return i < len(sm.Regs) && sm.Regs[i] == reg
 }
 
 // writeSummaryFile 原子落盘摘要(与 exam.json 同目录)。
@@ -324,6 +333,7 @@ func NewStore(dir string) (*Store, error) {
 			if err == nil {
 				var sm ExamSummary
 				if json.Unmarshal(b, &sm) == nil && sm.ID != "" {
+					sort.Strings(sm.Regs) // 旧版摘要 Regs 是卷序:载入归一化,保二分口径
 					s.summaries[sm.ID] = &sm
 					continue
 				}

@@ -177,7 +177,7 @@ func handleStudentExams(w http.ResponseWriter, r *http.Request, store *Store, u 
 			return // 成绩发布控制:未发布不可查
 		}
 		for _, reg := range regs {
-			if containsStr(sm.Regs, reg) {
+			if summaryHasReg(sm, reg) {
 				matchedIDs = append(matchedIDs, sm.ID)
 				return
 			}
