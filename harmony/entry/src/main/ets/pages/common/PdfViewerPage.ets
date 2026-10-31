@@ -146,9 +146,9 @@ struct PdfViewerPage {
     }
     this.shareBusy = true;
     try {
-      await OgShare.shareFile(this.sandboxPath, this.title);
+      await OgShare.openWith(this.sandboxPath, 'application/pdf');
     } catch (e) {
-      promptAction.showToast({ message: '分享失败或已取消' });
+      promptAction.showToast({ message: '没有找到可打开 PDF 的应用' });
     }
     this.shareBusy = false;
   }
@@ -209,7 +209,7 @@ struct PdfViewerPage {
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
-        Text('分享').fontSize(13).fontColor(OgC.BRAND)
+        Text('转发').fontSize(13).fontColor(OgC.BRAND)
           .enabled(this.sandboxPath !== '' && !this.shareBusy)
           .opacity(this.shareBusy ? 0.5 : 1)
           .onClick(() => this.doShare())

@@ -1,53 +1,23 @@
-// 系统分享:把沙箱内文件(成绩单 PDF/成绩册等)交给系统分享面板。
-// 文件须在应用沙箱内(fileUri 转换);接收方权限由系统分享中心临时授予。
+// 跨应用打开/转发:把沙箱文件经 fileUri 交给系统选择其他应用打开
+// (PDF 阅读器/网盘/聊天应用,后续转发即分享)。只用 Want + fileUri 基础 API,零 Kit 依赖。
 
-import { systemShare } from '@kit.ShareKit';
-import { uniformTypeDescriptor } from '@kit.ArkData';
+import { common, Want } from '@kit.AbilityKit';
 import { fileUri } from '@kit.CoreFileKit';
-import { fileIo as fs } from '@kit.CoreFileKit';
-import { OgNet } from './OgNet';
 import { OgSession } from './OgSession';
 
 export class OgShare {
-  // 分享沙箱文件(utd 用通用文件类型,兼容性最稳)。
-  static async shareFile(sandboxPath: string, title: string): Promise<void> {
-    const uri = fileUri.getUriFromPath(sandboxPath);
-    const data: systemShare.SharedData = new systemShare.SharedData({
-      utd: uniformTypeDescriptor.UniformDataType.FILE,
-      content: uri
-    });
-    data.title = title;
-    const controller = systemShare.getSystemShareController(data);
-    await controller.startSystemShare();
-  }
+  // FLAG_GRANT_READ_URI_PERMISSION:临时授予目标应用读该 URI 的权限
+  private static readonly FLAG_GRANT_READ: number = 1;
 
-  // 拉取远端接口内容 → 落沙箱 → 分享(成绩单 PDF 等)。
-  static async shareUrl(path: string, fileName: string, title: string): Promise<void> {
-    const buf = await OgNet.getBytes(path, 600000);
-    const dir = OgSession.context().cacheDir + '/share';
-    try {
-      fs.mkdirSync(dir);
-    } catch (e) {
-      // 已存在
-    }
-    const sandboxPath = dir + '/' + fileName;
-    const f = fs.openSync(sandboxPath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-    try {
-      fs.writeSync(f.fd, buf);
-    } finally {
-      fs.closeSync(f.fd);
-    }
-    await OgShare.shareFile(sandboxPath, title);
-  }
-
-  // 已在沙箱的二进制直接分享。
-  static async shareBuffer(buf: ArrayBuffer, sandboxPath: string, title: string): Promise<void> {
-    const f = fs.openSync(sandboxPath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-    try {
-      fs.writeSync(f.fd, buf);
-    } finally {
-      fs.closeSync(f.fd);
-    }
-    await OgShare.shareFile(sandboxPath, title);
+  // 调起「选择应用打开」:失败(无应用可处理)由调用方 catch 提示。
+  static async openWith(sandboxPath: string, mimeType: string): Promise<void> {
+    const ctx = OgSession.context() as common.UIAbilityContext;
+    const want: Want = {
+      action: 'ohos.want.action.viewData',
+      uri: fileUri.getUriFromPath(sandboxPath),
+      type: mimeType,
+      flags: OgShare.FLAG_GRANT_READ
+    };
+    await ctx.startAbility(want);
   }
 }

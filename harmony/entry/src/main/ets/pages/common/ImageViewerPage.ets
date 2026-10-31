@@ -37,6 +37,7 @@ struct ImageViewerPage {
   @State areaW: number = 0;
   @State areaH: number = 0;
   @State inkFailed: boolean = false;
+  @State inkFailMsg: string = '';
   private lastScale: number = 1;
   private loadedInkUrl: string = '';
 
@@ -104,7 +105,8 @@ struct ImageViewerPage {
       })
       .catch((e: Error) => {
         if (this.loadedInkUrl === target) {
-          this.inkFailed = e instanceof OgError ? e.message : '图像加载失败';
+          this.inkFailed = true;
+          this.inkFailMsg = e instanceof OgError ? e.message : '图像加载失败';
         }
       });
   }
@@ -145,7 +147,7 @@ struct ImageViewerPage {
             .height(this.imgH)
           } else if (this.inkFailed) {
             Column({ space: 8 }) {
-              Text(this.inkFailed).fontSize(13).fontColor(Color.White)
+              Text(this.inkFailMsg).fontSize(13).fontColor(Color.White)
               Text('点按重试').fontSize(13).fontColor(OgC.BRAND).onClick(() => this.loadInk(this.curUrl()))
             }
             .width('100%')

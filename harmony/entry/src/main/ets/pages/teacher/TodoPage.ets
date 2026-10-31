@@ -67,7 +67,7 @@ struct TodoPage {
     const now = Date.now();
     for (const t of tasks) {
       const done = t.total > 0 && t.graded >= t.total;
-      const urgent = !done && this.dueSoon(t.due, now);
+      const urgent = !done && this.dueSoon(t.due ?? '', now);
       out.push({
         key: 'task-' + t.exam + '-' + t.kind + '-' + (t.question ?? 0),
         kind: 'task',

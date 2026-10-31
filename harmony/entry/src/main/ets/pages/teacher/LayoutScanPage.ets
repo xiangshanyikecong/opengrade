@@ -181,7 +181,7 @@ struct LayoutScanPage {
     }
     if (resp.overlay !== undefined && resp.overlay !== '') {
       const pm = await this.decodeB64(resp.overlay, 1600);
-      if (pm !== null) {
+      if (pm !== undefined) {
         this.overlays.push(pm);
       }
     }
