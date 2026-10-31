@@ -23,6 +23,19 @@ interface HubParams {
   exam: string;
 }
 
+// 长列表卡片:超 10 条分页 + 卡片可折叠(大考试在手机上只构建当前页节点,避免整表渲染卡顿)
+const LIST_PAGE_SIZE: number = 10;
+
+function pageCountOf(total: number): number {
+  return Math.max(1, Math.ceil(total / LIST_PAGE_SIZE));
+}
+
+// 页码越界(操作刷新后总数变少)自动回首页
+function pageSliceOf<T>(arr: T[], page: number): T[] {
+  const p = page < pageCountOf(arr.length) ? page : 0;
+  return arr.slice(p * LIST_PAGE_SIZE, p * LIST_PAGE_SIZE + LIST_PAGE_SIZE);
+}
+
 @Entry
 @Component
 struct ExamHubPage {
@@ -52,6 +65,9 @@ struct ExamHubPage {
   @State auditOpen: boolean = false;
   @State audit: AuditEntry[] = [];
   @State auditLoading: boolean = false;
+  // 长列表卡片折叠/页码(键:progress/warnings/dup/missing/voided/flagged/appeal)
+  @State folded: Record<string, boolean> = {};
+  @State pageNo: Record<string, number> = {};
 
   aboutToAppear(): void {
     const p = router.getParams() as HubParams | null;
@@ -92,6 +108,44 @@ struct ExamHubPage {
   // 该题是否已全部阅完(与任务列表 isDone 同口径):阅完点「阅本题」只提示不进入
   private qDone(p: ProgressRow): boolean {
     return p.total > 0 && p.graded >= p.total;
+  }
+
+  // —— 长列表折叠/分页状态(键固定,整表重赋值确保 @State 触发重渲染)——
+  private isFolded(kind: string): boolean {
+    const v = this.folded[kind];
+    return v !== undefined && v === true;
+  }
+
+  private toggleFold(kind: string): void {
+    const kinds: string[] = ['progress', 'warnings', 'dup', 'missing', 'voided', 'flagged', 'appeal'];
+    const next: Record<string, boolean> = {};
+    for (const k of kinds) {
+      const v = this.folded[k];
+      if (v !== undefined) {
+        next[k] = v;
+      }
+    }
+    next[kind] = !this.isFolded(kind);
+    this.folded = next;
+  }
+
+  private pageOf(kind: string, total: number): number {
+    const v = this.pageNo[kind];
+    const p = v !== undefined ? v : 0;
+    return p < pageCountOf(total) ? p : 0;
+  }
+
+  private setPage(kind: string, p: number): void {
+    const kinds: string[] = ['warnings', 'dup', 'missing', 'voided', 'flagged', 'appeal'];
+    const next: Record<string, number> = {};
+    for (const k of kinds) {
+      const v = this.pageNo[k];
+      if (v !== undefined) {
+        next[k] = v;
+      }
+    }
+    next[kind] = p;
+    this.pageNo = next;
   }
 
   private openSheet(kind: string): void {
@@ -312,11 +366,63 @@ struct ExamHubPage {
 
 
   // 卡片壳:统一在页面内调用自身 @Builder 方法(不跨组件传 Builder 引用,避免 this 丢失闪退)
+  // 长列表卡片头:折叠开关 + 数量角标
+  @Builder
+  cardHead(kind: string, title: string, total: number) {
+    Row({ space: 6 }) {
+      Text(this.isFolded(kind) ? '▸' : '▾').fontSize(12).fontColor(OgC.INK_SUB).width(14)
+      Row() { }.width(4).height(14).backgroundColor(OgC.BRAND).borderRadius(2)
+      Text(title).fontSize(14).fontWeight(FontWeight.Bold).fontColor(OgC.INK).layoutWeight(1)
+      if (total > 0) {
+        Text(String(total)).fontSize(12).fontColor(OgC.INK_SUB)
+      }
+    }
+    .width('100%')
+    .margin({ top: 6, bottom: 2 })
+    .onClick(() => this.toggleFold(kind))
+  }
+
+  // 分页条:总数超每页条数才出现
+  @Builder
+  cardPager(kind: string, total: number) {
+    if (total > LIST_PAGE_SIZE) {
+      Row({ space: 12 }) {
+        Text('‹ 上一页')
+          .fontSize(12)
+          .fontColor(this.pageOf(kind, total) > 0 ? OgC.BRAND : OgC.INK_SUB)
+          .opacity(this.pageOf(kind, total) > 0 ? 1 : 0.4)
+          .onClick(() => {
+            const p = this.pageOf(kind, total);
+            if (p > 0) {
+              this.setPage(kind, p - 1);
+            }
+          })
+        Text('第 ' + (this.pageOf(kind, total) + 1) + '/' + pageCountOf(total) + ' 页 · 共 ' + total + ' 条')
+          .fontSize(11).fontColor(OgC.INK_SUB)
+        Text('下一页 ›')
+          .fontSize(12)
+          .fontColor(this.pageOf(kind, total) + 1 < pageCountOf(total) ? OgC.BRAND : OgC.INK_SUB)
+          .opacity(this.pageOf(kind, total) + 1 < pageCountOf(total) ? 1 : 0.4)
+          .onClick(() => {
+            const p = this.pageOf(kind, total);
+            if (p + 1 < pageCountOf(total)) {
+              this.setPage(kind, p + 1);
+            }
+          })
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.Center)
+      .padding({ top: 8 })
+    }
+  }
+
   @Builder
   progressCard() {
     Column({ space: 6 }) {
-      SectionHeader({ text: '阅卷进度(逐题)', extra: this.d !== null ? (this.d.progress ?? []).length + ' 道主观题' : '' })
-      this.progressList()
+      this.cardHead('progress', '阅卷进度(逐题)', this.d !== null ? (this.d.progress ?? []).length : 0)
+      if (!this.isFolded('progress')) {
+        this.progressList()
+      }
     }
     .width('100%')
     .padding(14)
@@ -328,8 +434,11 @@ struct ExamHubPage {
   @Builder
   warningCard() {
     Column({ space: 6 }) {
-      SectionHeader({ text: '异常清单', extra: this.d !== null ? this.d.stage.warnings + ' 待裁决' : '' })
-      this.warningList()
+      this.cardHead('warnings', '异常清单', this.d !== null ? (this.d.warnings ?? []).length : 0)
+      if (!this.isFolded('warnings')) {
+        this.warningList()
+        this.cardPager('warnings', this.d !== null ? (this.d.warnings ?? []).length : 0)
+      }
     }
     .width('100%')
     .padding(14)
@@ -341,8 +450,11 @@ struct ExamHubPage {
   @Builder
   dupCard() {
     Column({ space: 6 }) {
-      SectionHeader({ text: '重复卷(同考号多份)', extra: '保留一份' })
-      this.dupList()
+      this.cardHead('dup', '重复卷(同考号多份)', this.d !== null ? (this.d.duplicates ?? []).length : 0)
+      if (!this.isFolded('dup')) {
+        this.dupList()
+        this.cardPager('dup', this.d !== null ? (this.d.duplicates ?? []).length : 0)
+      }
     }
     .width('100%')
     .padding(14)
@@ -354,8 +466,11 @@ struct ExamHubPage {
   @Builder
   missingCard() {
     Column({ space: 6 }) {
-      SectionHeader({ text: '缺扫名单', extra: this.missingRows().length + ' 人' })
-      this.missingList()
+      this.cardHead('missing', '缺扫名单', this.missingRows().length)
+      if (!this.isFolded('missing')) {
+        this.missingList()
+        this.cardPager('missing', this.missingRows().length)
+      }
     }
     .width('100%')
     .padding(14)
@@ -367,8 +482,11 @@ struct ExamHubPage {
   @Builder
   voidedCard() {
     Column({ space: 6 }) {
-      SectionHeader({ text: '已作废卷', extra: '可恢复' })
-      this.voidedList()
+      this.cardHead('voided', '已作废卷', this.d !== null ? (this.d.voidedRows ?? []).length : 0)
+      if (!this.isFolded('voided')) {
+        this.voidedList()
+        this.cardPager('voided', this.d !== null ? (this.d.voidedRows ?? []).length : 0)
+      }
     }
     .width('100%')
     .padding(14)
@@ -380,8 +498,11 @@ struct ExamHubPage {
   @Builder
   flaggedCard() {
     Column({ space: 6 }) {
-      SectionHeader({ text: '⚑ 待复核队列', extra: this.d !== null ? (this.d.flagged ?? []).length + ' 份' : '' })
-      this.flaggedList()
+      this.cardHead('flagged', '⚑ 待复核队列', this.d !== null ? (this.d.flagged ?? []).length : 0)
+      if (!this.isFolded('flagged')) {
+        this.flaggedList()
+        this.cardPager('flagged', this.d !== null ? (this.d.flagged ?? []).length : 0)
+      }
     }
     .width('100%')
     .padding(14)
@@ -393,8 +514,11 @@ struct ExamHubPage {
   @Builder
   appealCard() {
     Column({ space: 6 }) {
-      SectionHeader({ text: '成绩复核申请', extra: '' })
-      this.appealList()
+      this.cardHead('appeal', '成绩复核申请', this.d !== null ? (this.d.appeals ?? []).length : 0)
+      if (!this.isFolded('appeal')) {
+        this.appealList()
+        this.cardPager('appeal', this.d !== null ? (this.d.appeals ?? []).length : 0)
+      }
     }
     .width('100%')
     .padding(14)
@@ -474,7 +598,7 @@ struct ExamHubPage {
 
   @Builder
   warningList() {
-    ForEach(this.d !== null ? (this.d.warnings ?? []) : [], (w: SheetWarning) => {
+    ForEach(this.d !== null ? pageSliceOf(this.d.warnings ?? [], this.pageOf('warnings', (this.d.warnings ?? []).length)) : [], (w: SheetWarning) => {
       Column({ space: 6 }) {
         Row({ space: 8 }) {
           Text('卷 ' + w.student + (w.reg !== undefined && w.reg !== '' ? ' · ' + w.reg : ''))
@@ -537,7 +661,7 @@ struct ExamHubPage {
 
   @Builder
   dupList() {
-    ForEach(this.d !== null ? (this.d.duplicates ?? []) : [], (g: number[], gi: number) => {
+    ForEach(this.d !== null ? pageSliceOf(this.d.duplicates ?? [], this.pageOf('dup', (this.d.duplicates ?? []).length)) : [], (g: number[], gi: number) => {
       Row({ space: 8 }) {
         Text('考号 ' + this.regOfSheet(g[0]) + ' · 卷 ' + g.join(','))
           .fontSize(12).fontColor(OgC.INK).layoutWeight(1)
@@ -557,7 +681,7 @@ struct ExamHubPage {
 
   @Builder
   missingList() {
-    ForEach(this.missingRows(), (r: RosterRow) => {
+    ForEach(pageSliceOf(this.missingRows(), this.pageOf('missing', this.missingRows().length)), (r: RosterRow) => {
       Row({ space: 8 }) {
         Column({ space: 1 }) {
           Text((r.name !== undefined ? r.name + ' ' : '') + r.reg).fontSize(13).fontColor(OgC.INK)
@@ -591,7 +715,7 @@ struct ExamHubPage {
 
   @Builder
   voidedList() {
-    ForEach(this.d !== null ? (this.d.voidedRows ?? []) : [], (v: VoidRow) => {
+    ForEach(this.d !== null ? pageSliceOf(this.d.voidedRows ?? [], this.pageOf('voided', (this.d.voidedRows ?? []).length)) : [], (v: VoidRow) => {
       Row({ space: 8 }) {
         Text('卷 ' + v.student + (v.reg !== '' ? ' · ' + v.reg : '')).fontSize(12).fontColor(OgC.INK_SUB)
           .layoutWeight(1)
@@ -613,7 +737,7 @@ struct ExamHubPage {
 
   @Builder
   flaggedList() {
-    ForEach(this.d !== null ? (this.d.flagged ?? []) : [], (f: FlagRow) => {
+    ForEach(this.d !== null ? pageSliceOf(this.d.flagged ?? [], this.pageOf('flagged', (this.d.flagged ?? []).length)) : [], (f: FlagRow) => {
       Row({ space: 8 }) {
         Text('第 ' + (this.d !== null ? (this.d.objective ?? []).length + f.question : f.question)
           + ' 题 · 卷 ' + f.student + (f.reg !== undefined && f.reg !== '' ? ' · ' + f.reg : '')
@@ -655,7 +779,7 @@ struct ExamHubPage {
 
   @Builder
   appealList() {
-    ForEach(this.d !== null ? (this.d.appeals ?? []) : [], (a: AppealView) => {
+    ForEach(this.d !== null ? pageSliceOf(this.d.appeals ?? [], this.pageOf('appeal', (this.d.appeals ?? []).length)) : [], (a: AppealView) => {
       Column({ space: 6 }) {
         Row({ space: 8 }) {
           Pill({
