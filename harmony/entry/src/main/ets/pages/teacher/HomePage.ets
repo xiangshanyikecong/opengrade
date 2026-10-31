@@ -242,7 +242,7 @@ struct HomePage {
               ErrorView({ msg: this.failMsg, onRetry: () => this.load() })
             } else {
               // 快捷入口:图标网格(外屏 4 列,内屏/横屏 5 列)
-              GridRow({ columns: { sm: 4, md: 5, lg: 5 }, gutter: { column: 8, row: 8 } }) {
+              GridRow({ columns: { sm: 4, md: 5, lg: 5 }, gutter: 8 }) {
                 ForEach(this.quickEntries(), (entry: QuickEntry) => {
                   GridCol({ span: 1 }) {
                     this.quickCell(entry)
