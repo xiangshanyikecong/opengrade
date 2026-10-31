@@ -28,12 +28,16 @@ var backupStampRe = regexp.MustCompile(`^\d{8}-\d{6}$`)
 
 // StartBackupLoop 启动后台备份协程(非阻塞)。destDir 为空时备份到 srcDir/backups;
 // 指定外部目录(如另一块物理盘)时,快照与裁剪都以该目录为根,数据目录损坏不再连坐备份。
-func StartBackupLoop(srcDir, destDir string, interval time.Duration, keep int) {
+// before 在每次备份前回调(拷贝前先冲刷评分类去抖落盘,快照才含最近一个去抖周期内的评分),可为 nil。
+func StartBackupLoop(srcDir, destDir string, interval time.Duration, keep int, before func()) {
 	if destDir == "" {
 		destDir = filepath.Join(srcDir, "backups")
 	}
 	go func() {
 		for {
+			if before != nil {
+				before()
+			}
 			if err := backupOnce(srcDir, destDir, keep); err != nil {
 				log.Printf("数据备份失败(不影响服务;目标目录 %s 可写吗?): %v", destDir, err)
 			}

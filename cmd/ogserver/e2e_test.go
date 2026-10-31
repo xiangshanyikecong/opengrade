@@ -835,6 +835,7 @@ func TestFullSystemReview(t *testing.T) {
 
 	// ---------- K. 重启持久化与会话失效 ----------
 	t.Run("K_重启持久化与会话失效", func(t *testing.T) {
+		srv.Exams.FlushAll() // 评分类走去抖落盘:重启前冲刷(生产由优雅关停完成)
 		srv2, err := newServer(dir, false) // 模拟重启:同数据目录,全新进程状态
 		if err != nil {
 			t.Fatal(err)

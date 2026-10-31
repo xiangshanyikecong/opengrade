@@ -61,6 +61,8 @@ func TestAuditKnowledgeSurvivesLaterSaves(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 从磁盘重载,两条审计都在、知识点标签还在
+	// (SetGradePart 走评分类去抖落盘,重启语义=先冲刷再重开)
+	s.FlushAll()
 	s2, err := NewStore(s.dir)
 	if err != nil {
 		t.Fatal(err)

@@ -411,7 +411,7 @@ func (s *Store) SessionUser(token string) (*User, bool) {
 	}
 	if time.Now().After(sess.Expires) {
 		delete(s.Sessions, token)
-		_ = s.saveLocked()
+		_ = s.saveSessionsLocked() // 清的是会话,落 sessions.json(此前误落 org.json,死 token 要等下次登录才被冲掉)
 		return nil, false
 	}
 	u, ok := s.Users[sess.Username]

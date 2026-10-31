@@ -14,13 +14,16 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"context"
 	"io/fs"
 	"log"
+	"os/signal"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"image/png"
@@ -259,7 +262,7 @@ func main() {
 	if dest == "" {
 		dest = os.Getenv("OPENGRADE_BACKUP_DIR")
 	}
-	StartBackupLoop(*dataDir, dest, 12*time.Hour, 10) // 启动即一次,此后每 12 小时,保留最近 10 份
+	StartBackupLoop(*dataDir, dest, 12*time.Hour, 10, srv.Exams.FlushAll) // 拷贝前冲刷去抖落盘,快照含最近评分
 	log.Printf("OpenGrade API 监听 %s", *addr)
 	// 无超时的 http.Server 会被慢连接/半开连接无限占住句柄(A-7):
 	// 读头要快(防护),读体放宽(多页 PDF 批量上传可达数百 MB),写放宽(成绩册/讲评 PDF 导出)。
@@ -271,7 +274,22 @@ func main() {
 		WriteTimeout:      30 * time.Minute,
 		IdleTimeout:       120 * time.Second,
 	}
-	log.Fatal(httpSrv.ListenAndServe())
+	// 优雅关停:Ctrl+C/服务管理器停服时冲刷评分类去抖落盘再退出(硬断电仍有一个去抖周期的丢失窗口,分数可重录)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		s := <-sigCh
+		log.Printf("收到 %v,正在冲刷未落盘变更并关停…", s)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutdownCtx)
+		srv.Exams.Stop()
+	}()
+	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		srv.Exams.Stop()
+		log.Fatal(err)
+	}
+	srv.Exams.Stop()
 }
 
 // authedHandler 是已通过鉴权(并可带角色约束)的处理器。
@@ -877,9 +895,11 @@ func handleListExams(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		Flagged    int    `json:"flagged,omitempty"` // ⚑ 待复核数(列表角标)
 	}
 	out := []summary{} // 空列表也返回 [],避免 null 使前端 .map/.forOf 崩溃
-	for _, ex := range store.List() {
+	// VisitAll 锁内只读聚合:列表页原先每请求对全部考试做整场深拷贝快照,
+	// 千人校×几十场是最大的读路径成本;summary 是值类型,锁内构建即快照。
+	store.VisitAll(func(ex *Exam) {
 		if !canOpenExam(u, ex, store.School) {
-			continue // 学科教师只看任教班级+学科的考试
+			return // 学科教师只看任教班级+学科的考试
 		}
 		stage := examStage(ex)
 		pending := 0
@@ -898,7 +918,7 @@ func handleListExams(w http.ResponseWriter, r *http.Request, store *Store, u *au
 			Expected: stage.Expected, Warnings: stage.Warnings, Ungraded: stage.Ungraded, Total: stage.Total,
 			Dirty: stage.Dirty, Appeals: pending, Flagged: stage.Flagged,
 		})
-	}
+	})
 	writeJSON(w, http.StatusOK, out)
 }
 

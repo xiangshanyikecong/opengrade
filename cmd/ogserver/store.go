@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -166,20 +167,35 @@ func (ex *Exam) AssignedReg(student int) string {
 	return ""
 }
 
-// Store 是考试会话的文件存储(目录 + JSON,零外部依赖;SQLite 迁移在路线图 M1 末)。
+// Store 是考试会话的文件存储(目录 + JSON,零外部依赖)。
+// 写路径分两档:关键操作(建考/删除/补传/发布/改答案等)同步原子落盘;
+// 评分类热路径(SetGrade/SetGradePart 等)只改内存并标记脏,由后台 flusher
+// 去抖合并落盘(缺省 1s)——把「每笔评分全量重写 exam.json」的写放大摊平,
+// 全局锁内只剩内存变更。崩溃丢失窗口 = 一个去抖周期内的评分类改动(可重录)。
+// SQLite 迁移经 2026-10 依赖评审否决:工作集本就全内存,SQLite 不改内存模型,
+// 纯 Go 驱动引入数十个间接依赖违反零依赖红线(结论见 roadmap M-Store)。
 type Store struct {
 	mu       sync.Mutex
 	dir      string
 	exams    map[string]*Exam
 	shortSeq int     // 考试短号发号器(1000 起,重启后按存量去重续发)
 	School   *School // 组织架构(年级↔班级),newServer 装配;nil=未配置(权限判定按全看兜底)
+
+	dirty      map[string]*Exam // 待落盘考试(去抖合并;nil = flusher 未启动,markDirty 退回同步)
+	flushEvery time.Duration
+	stopFlush  chan struct{}
+	stopDone   chan struct{}
 }
+
+// defaultFlushEvery 评分类变更的去抖落盘周期。
+const defaultFlushEvery = time.Second
 
 func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, exams: map[string]*Exam{}}
+	s := &Store{dir: dir, exams: map[string]*Exam{}, dirty: map[string]*Exam{},
+		flushEvery: defaultFlushEvery, stopFlush: make(chan struct{}), stopDone: make(chan struct{})}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -200,7 +216,94 @@ func NewStore(dir string) (*Store, error) {
 		migrateExam(&ex)
 		s.exams[ex.ID] = &ex
 	}
+	go s.flushLoop()
 	return s, nil
+}
+
+// markDirtyAsync 把评分类变更标记为待落盘,由后台 flusher 去抖合并落盘。
+// 调用方持锁。flusher 未启动(零值 Store 的边缘用法)时退回同步落盘保语义。
+func (s *Store) markDirtyAsync(ex *Exam) {
+	if s.dirty == nil {
+		_ = s.save(ex)
+		return
+	}
+	s.dirty[ex.ID] = ex
+}
+
+// flushLoop 周期性把脏考试合并落盘;关停时冲刷一次再退出。
+func (s *Store) flushLoop() {
+	defer close(s.stopDone)
+	t := time.NewTicker(s.flushEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stopFlush:
+			s.FlushAll()
+			return
+		case <-t.C:
+			s.FlushAll()
+		}
+	}
+}
+
+// FlushAll 把当前所有脏考试合并落盘:快照锁内取(冻结一致状态),
+// 序列化与写盘锁外做(2MB 级 exam.json 的 marshal+rename 不再霸占全局锁)。
+// 写盘期间被删除的考试,写完复核后清理目录,不留复活物。
+func (s *Store) FlushAll() {
+	type job struct {
+		id  string
+		buf []byte
+	}
+	s.mu.Lock()
+	if len(s.dirty) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	var jobs []job
+	for id, ex := range s.dirty {
+		if _, ok := s.exams[id]; !ok {
+			delete(s.dirty, id) // 已删除:丢弃,不再写盘
+			continue
+		}
+		b, err := json.MarshalIndent(ex.snapshot(), "", "  ")
+		if err != nil {
+			log.Printf("序列化考试 %s 失败(下轮重试): %v", id, err)
+			continue
+		}
+		jobs = append(jobs, job{id: id, buf: b})
+	}
+	s.mu.Unlock()
+	for _, j := range jobs {
+		dir := filepath.Join(s.dir, j.id)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			log.Printf("创建考试目录 %s 失败(下轮重试): %v", dir, err)
+			continue // 保留脏标记,下轮重试
+		}
+		err := writeFileAtomic(filepath.Join(dir, "exam.json"), j.buf, 0o644)
+		s.mu.Lock()
+		if _, ok := s.exams[j.id]; ok {
+			if err != nil {
+				log.Printf("落盘考试 %s 失败(下轮重试): %v", j.id, err)
+			} else {
+				delete(s.dirty, j.id)
+			}
+		} else {
+			delete(s.dirty, j.id)
+			_ = os.RemoveAll(dir) // 写盘期间被删除:清掉本写盘复活的目录
+		}
+		s.mu.Unlock()
+	}
+}
+
+// Stop 停止 flusher 并冲刷未落盘变更(优雅关停/测试收尾用)。
+func (s *Store) Stop() {
+	select {
+	case <-s.stopFlush:
+		return // 已停
+	default:
+	}
+	close(s.stopFlush)
+	<-s.stopDone
 }
 
 // migrateExam 旧版本数据升级(内存态,下次落盘自然固化):
@@ -412,7 +515,8 @@ func (s *Store) SetGrade(id string, student, question int, g score.Grade, by str
 	ex.Grades[key] = g
 	markDirtyLocked(ex)
 	ex.log(by, "setGrade", fmt.Sprintf("第 %d 卷 主观题 %d:%s %.1f 分", student, question, verb, g.Score))
-	return g.Ver, s.save(ex)
+	s.markDirtyAsync(ex) // 评分类热路径:去抖落盘(写放大摊平),见 Store 注释
+	return g.Ver, nil
 }
 
 // SetGradePart 写入一条小问评分(版式 v3 拆分题):大题总分由统分层自动求和。
@@ -461,7 +565,8 @@ func (s *Store) SetGradePart(id string, student, question, part int, g score.Gra
 	markDirtyLocked(ex)
 	label := ex.Layout.Subjectives[question-1].Parts[part-1].Label
 	ex.log(by, "setGrade", fmt.Sprintf("第 %d 卷 主观题 %d 小问%s:%s %.1f 分", student, question, label, verb, g.Score))
-	return g.Ver, s.save(ex)
+	s.markDirtyAsync(ex) // 评分类热路径:去抖落盘
+	return g.Ver, nil
 }
 
 // SetObjectiveKey 修正客观题参考答案并落盘(答案键录错时的补救,自动触发全班重统)。
@@ -604,7 +709,24 @@ func (s *Store) Delete(id string) error {
 		return fmt.Errorf("删除考试数据失败(文件被其它程序占用?): %w", err)
 	}
 	delete(s.exams, id)
+	delete(s.dirty, id) // 挂起的去抖落盘一并撤销(在途写盘由 FlushAll 写后复核兜底)
 	return nil
+}
+
+// VisitAll 在锁内逐场考试调用 fn(按创建时间新→旧):供列表类只读聚合使用,
+// 免去整场深拷贝快照 —— 千人校列表页原先每请求深拷贝全部考试,是最大的读路径成本。
+// fn 只能读 *Exam、不得保留指针,也不得再进入会拿 s.mu 的 Store 方法。
+func (s *Store) VisitAll(fn func(*Exam)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sorted := make([]*Exam, 0, len(s.exams))
+	for _, ex := range s.exams {
+		sorted = append(sorted, ex)
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].CreatedAt.After(sorted[j].CreatedAt) })
+	for _, ex := range sorted {
+		fn(ex)
+	}
 }
 
 // SetTask 分配阅卷任务:主观题 question(1-based)→ 教师账号(teacher 为空表示撤销)。
@@ -1022,7 +1144,8 @@ func (s *Store) ClearFlagMarks(id string, student, question int, by string) (int
 		return 0, fmt.Errorf("该卷该题没有 ⚑ 标记")
 	}
 	ex.log(by, "clearFlag", fmt.Sprintf("清除第 %d 卷主观题 %d 的 ⚑ 待复核标记(%d 处)", student, question, cleared))
-	return cleared, s.save(ex)
+	s.markDirtyAsync(ex) // 复核改分同属阅卷会话热路径:去抖落盘
+	return cleared, nil
 }
 
 // NextShortID 预发一个考试短号(建考时复合码核对要在入库前生效;Create 会复用它)。
