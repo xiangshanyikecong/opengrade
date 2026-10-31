@@ -249,7 +249,7 @@ struct ExamListPage {
                 }, (it: ExamSummary) => it.id + it.stage + String(it.published))
               }
               .width('100%')
-              .alignItems(ItemAlign.Start)
+              .alignItems(VerticalAlign.Top)
             }, (row: ExamSummary[], ri: number) => 'r' + ri + (row.length > 0 ? row[0].id : ''))
           } else {
             ForEach(this.filtered(), (it: ExamSummary) => {

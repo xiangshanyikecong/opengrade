@@ -139,7 +139,7 @@ struct TaskListPage {
                 }, (it: TaskItem) => it.exam + '-' + it.kind + '-' + (it.question ?? 0))
               }
               .width('100%')
-              .alignItems(ItemAlign.Start)
+              .alignItems(VerticalAlign.Top)
             }, (row: TaskItem[], ri: number) => 'r' + ri + (row.length > 0 ? row[0].exam + row[0].kind : ''))
           } else {
             ForEach(this.items, (it: TaskItem) => {
