@@ -300,6 +300,57 @@
     落点差 tanθ×半页间距 → 行网格配对做系统平移扫描;两栏测试的行网格/页脚节距若相同会被判单栏
     (真实分栏两栏内容流节距必然不同)
 
+## M3.14 一卡多人拼版批(A3 两拼,2026-10-31)
+
+- [x] **card 拼版渲染层**:`ImposeSVG`/`ImposePNG` —— A3 横放(420×297)母版,左右各印一份完整 A4 卡
+    (SVG 卡体抽 `writeSVGBody` 平移 `<g>` 包裹、PNG 逐行 blit),中缝印虚线裁切线;
+    右半可 nil(奇数名册末张单卡);`RenderSVG` 卡体抽出可复用,Layout/Validate/几何编译零改动
+- [x] **omr 切分器 `omr.SplitImpose`**(定位之前必须切分:拼版纸 8 角标直喂 findLocators 会
+    四象限恰好各得其一,静默拟合成横跨两卡的四边形):
+    角标候选收集(尺寸/实心度/方形四角闸门,复用 connectedBlobs,不做象限唯一假设)
+    ×三级二值化(Otsu/自适应/墨迹百分位)×两级尺寸窗;**近邻拒绝**——裁切线虚线段是 2mm
+    实心小方块、恰落尺寸窗内(间距 0.8×边长),真角标彼此 ≥37×边长,有近邻者整链剔除;
+    聚类中点切分限幅 42%~58% 图宽;空白半版(单侧 ≥3 角标、另侧 0)裁出有卡侧并带 note,
+    单卡误传(簇间距 ≥ 半张卡宽)整页原样返回,候选不足回退几何中线对半
+- [x] **服务端接入**:`Exam.Imposition`(0/2,建考 multipart `impose=2` 持久化,与 threshold/abAuto
+    同机制);`ingestScanImages` 逐纸切分后进既有逐页归组管线(每半张 = 一份卷,失败信息带
+    「第 N 张纸左/右半」前缀);空白半版剔除不产异常卷;多页版式互斥 400(手工科目/非法值同拒);
+    `/api/v1/omr?impose=2` 数组契约 `{results,failed,notes}`(缺省单 Result 不变);
+    `/api/v1/cards?impose=2` A3 拼版母版;`cards.pdf` 拼版每页 A3 装 2 名学生(流式不变)
+- [x] **三端 UI**:教师工作台建考「卡纸形态」下拉(拼版选择明示语义);设计器「下载 A3 两拼母版」
+    按钮(多页版式禁用);鸿蒙 CreateExamPage 拼版开关(UploadScans 不动——切分在服务端)
+- [x] `ogctl gen -impose 2`(A3 母版 + 逐生两拼卷)/`read -impose 2`(切分逐半输出数组)
+- [x] 测试:card/omr 单测(清晰/畸变/空白半版/单卡误传/裁切线近邻拒绝)+ `impose_e2e_test.go`
+    (3 人 2 纸、客观分左右半互不串、空白半版 note、互斥 400、/omr 数组契约、出卡 PDF、普通建考回归)
+- [x] 踩坑记录:切分限幅的单位是图宽不是半宽(0.58×mid 把 2479 的正确切点钳到 1438);
+    合成靶场对 A3 整图加 ±4° 旋转会把外侧角标摆出画幅(单卡 ±4° 的畸变域按 A4 尺寸标定)——
+    e2e 夹具加 5% 白边距再畸变(等效翻拍留台面);极端种子下角标质心偏移走「漏涂→人工指派」
+    既有兜底(非拼版回归);真机拼版样本库与单卡样本库一并纳入 M1 验收基线
+
+## M-Store 存储增量化批(2026-10-31,SQLite 依赖评审结论:否决)
+
+- [x] **依赖评审**:SQLite 迁移不做 —— 工作集本就全内存(启动全量载入),SQLite 不改内存模型,
+    查询能力用不上(所有访问都是按考试 ID 取整会话);modernc.org/sqlite 纯 Go 但引入数十个
+    间接依赖,违反「唯一第三方依赖 golang.org/x/crypto」红线(TWAIN 先例同口径),
+    mattn/go-sqlite3 需 cgo(Windows 构建不可行);data/ 可读 JSON 是开放数据卖点
+- [x] **评分类写路径去抖落盘**:`Store.markDirtyAsync` + 后台 flusher(1s)—— SetGrade/SetGradePart/
+    ClearFlagMarks 只改内存+置脏,flusher **锁内取深拷贝快照、锁外 marshal+原子写**,
+    千人校 5000 笔评分从 5000 次全量重写 exam.json(2.4MB/次)摊平为每秒至多一次,
+    全局锁内只剩内存变更;关键操作(建考/删除/补传/发布/撤回/改答案/指派/作废等)保持同步落盘;
+    崩溃丢失窗口 = 一个去抖周期内的评分类改动(分数可重录,与既有断电语义同量级);
+    优雅关停(SIGINT/SIGTERM → http.Shutdown + Stop 冲刷)与备份循环拷贝前 FlushAll 兜底
+- [x] **删除竞争闭环**:Delete 同步撤销脏标记;FlushAll 写盘后复核考试仍存在,在途写盘
+    写完即清目录(删除后去抖落盘不复活 exam.json);storeflush_test 语义锚点
+- [x] **列表读路径免整场深拷贝**:`Store.VisitAll`(锁内只读聚合)替代 handleListExams 的
+    List() 整场深拷贝 —— 千人校×几十场列表页原先每请求克隆全部考试,是最大读路径成本;
+    summary 值类型锁内构建即快照;Get/详情/阅卷路径保持深拷贝快照(A-1 语义不变)
+- [x] **顺手修复**:auth.SessionUser 过期清理误调 saveLocked()(org.json)改为
+    saveSessionsLocked()(sessions.json)—— 死 token 此前要等下次登录/登出才被冲掉
+- [x] 测试:storeflush_test.go(去抖语义/磁盘一致/删除竞争/Stop 冲刷/同步操作即时)+
+    concurrent_grade_e2e_test.go(3 场考试 90 笔并发评分 + 列表/详情高频读 + 冲刷重启全量断言);
+    auditfix/e2e 重启用例补显式 FlushAll(生产由优雅关停完成);go test ./... 全绿
+    (注:-race 需带 gcc 工具链的环境,并发正确性同时由快照隔离 + A-1 语义保证)
+
 ## M-H 鸿蒙客户端批(HarmonyOS NEXT 原生 App,2026-10-28,见 [harmony-app.md](harmony-app.md))
 
 > 纯 ArkTS(Stage 模型)零第三方依赖客户端,仓库 `harmony/` 目录;全角色主线,
