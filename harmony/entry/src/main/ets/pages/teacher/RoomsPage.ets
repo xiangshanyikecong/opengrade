@@ -46,8 +46,9 @@ struct RoomsPage {
   @State selA: SeatRef | null = null; // 对调选择的第一座位
 
   aboutToAppear(): void {
+    // 无参进入(导航)时 getParams() 返回 undefined,只判 null 会崩
     const p = router.getParams() as RoomsParams | null;
-    if (p !== null && p.exam !== undefined) {
+    if (p !== null && p !== undefined && p.exam !== undefined) {
       this.examId = p.exam;
     }
     this.load();
@@ -58,7 +59,7 @@ struct RoomsPage {
     this.failed = false;
     try {
       if (this.examId === '') {
-        this.choices = await OgNet.jget<ExamSummary[]>('/api/v1/exams');
+        this.choices = (await OgNet.jget<ExamSummary[]>('/api/v1/exams')) ?? [];
       } else {
         if (this.d === null) {
           this.d = await OgNet.jget<ExamDetail>('/api/v1/exams/' + this.examId);
@@ -151,7 +152,7 @@ struct RoomsPage {
       return [];
     }
     const out: string[] = [];
-    for (const s of this.d.staff) {
+    for (const s of (this.d.staff ?? [])) {
       out.push(s.username);
     }
     return out;
@@ -173,9 +174,9 @@ struct RoomsPage {
     if (this.plan === null) {
       return null;
     }
-    for (const r of this.plan.rooms) {
+    for (const r of (this.plan.rooms ?? [])) {
       if (r.name === room) {
-        for (const s of r.seats) {
+        for (const s of (r.seats ?? [])) {
           if (s.idx === idx) {
             return s;
           }
@@ -250,7 +251,7 @@ struct RoomsPage {
     Column({ space: 8 }) {
       Row({ space: 8 }) {
         Text(room.name).fontSize(14).fontWeight(FontWeight.Bold).fontColor(OgC.INK).layoutWeight(1)
-        Text(room.seats.length + ' 座').fontSize(11).fontColor(OgC.INK_SUB)
+        Text((room.seats ?? []).length + ' 座').fontSize(11).fontColor(OgC.INK_SUB)
       }
       .width('100%')
       // 监考芯片
@@ -279,7 +280,7 @@ struct RoomsPage {
       .width('100%')
       // 座位网格:点两个座位对调
       Grid() {
-        ForEach(room.seats, (s: Seat) => {
+        ForEach((room.seats ?? []), (s: Seat) => {
           GridItem() {
             Column({ space: 1 }) {
               Text(s.reg === '' ? '空' : s.reg)
@@ -306,7 +307,7 @@ struct RoomsPage {
       .columnsGap(4)
       .rowsGap(4)
       .width('100%')
-      .height(Math.ceil(room.seats.length / 4) * 50)
+      .height(Math.ceil((room.seats ?? []).length / 4) * 50)
     }
     .width('100%')
     .padding(12)
@@ -333,7 +334,7 @@ struct RoomsPage {
         .layoutWeight(1)
         .scrollBar(BarState.Off)
         .align(Alignment.Top)
-      } else if (this.plan === null || this.plan.rooms.length === 0) {
+      } else if (this.plan === null || (this.plan.rooms ?? []).length === 0) {
         Column({ space: 14 }) {
           EmptyView({ text: this.canEditRooms() ? '尚未生成分场方案' : '尚未生成分场方案(仅建卷人/组长/管理员可编排)' })
           if (this.canEditRooms()) {
@@ -352,14 +353,14 @@ struct RoomsPage {
         Column({ space: 6 }) {
           Row({ space: 8 }) {
             SectionHeader({
-              text: '共 ' + this.plan.rooms.length + ' 场',
+              text: '共 ' + (this.plan.rooms ?? []).length + ' 场',
               extra: '点两个座位对调;打印留电脑端'
             })
           }
           .width('100%')
-          if (this.plan.conflicts !== undefined && this.plan.conflicts.length > 0) {
+          if ((this.plan.conflicts ?? []).length > 0) {
             Column({ space: 4 }) {
-              ForEach(this.plan.conflicts, (c: ConflictRow) => {
+              ForEach((this.plan.conflicts ?? []), (c: ConflictRow) => {
                 Text('⚠ 监考冲突:' + c.teacher + ' 同日同场次已在 '
                   + otherExamLabel(c) + ' ' + c.otherRoom + ' 监考')
                   .fontSize(11).fontColor(OgC.BAD)
@@ -383,7 +384,7 @@ struct RoomsPage {
         .padding({ left: OgDim.PAD, right: OgDim.PAD, top: 8 })
         .width('100%')
         List({ space: 10 }) {
-          ForEach(this.plan.rooms, (room: RoomRow) => {
+          ForEach((this.plan.rooms ?? []), (room: RoomRow) => {
             ListItem() {
               this.roomCard(room)
             }
@@ -407,7 +408,7 @@ struct RoomsPage {
 
   private roomSig(room: RoomRow): string {
     let sig = '';
-    for (const s of room.seats) {
+    for (const s of (room.seats ?? [])) {
       sig += s.reg + ',';
     }
     return sig + '|' + (room.teacher ?? '');

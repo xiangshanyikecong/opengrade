@@ -21,7 +21,7 @@ struct LockPage {
 
   aboutToAppear(): void {
     const p = router.getParams() as LockParams | null;
-    if (p !== null && p.next !== undefined) {
+    if (p !== null && p !== undefined && p.next !== undefined) {
       this.nextUrl = p.next;
     }
     // 已开生物识别则自动拉起一次

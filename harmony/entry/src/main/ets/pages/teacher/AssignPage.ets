@@ -37,7 +37,7 @@ struct AssignPage {
 
   aboutToAppear(): void {
     const p = router.getParams() as AssignParams | null;
-    if (p !== null && p.exam !== undefined) {
+    if (p !== null && p !== undefined && p.exam !== undefined) {
       this.examId = p.exam;
     }
     this.load();
@@ -48,7 +48,7 @@ struct AssignPage {
     this.failed = false;
     try {
       if (this.examId === '') {
-        const all = await OgNet.jget<ExamSummary[]>('/api/v1/exams');
+        const all = (await OgNet.jget<ExamSummary[]>('/api/v1/exams')) ?? [];
         const out: ExamSummary[] = [];
         for (const e of all) {
           if (e.subjective > 0 || e.stage === 'grading') {

@@ -26,7 +26,7 @@ struct AnalyticsPage {
 
   aboutToAppear(): void {
     const p = router.getParams() as AnalyticsParams | null;
-    if (p !== null && p.exam !== undefined) {
+    if (p !== null && p !== undefined && p.exam !== undefined) {
       this.examId = p.exam;
     }
     this.load();

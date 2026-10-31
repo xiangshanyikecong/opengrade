@@ -53,7 +53,7 @@ struct ExamHubPage {
 
   aboutToAppear(): void {
     const p = router.getParams() as HubParams | null;
-    if (p !== null && p.exam !== undefined) {
+    if (p !== null && p !== undefined && p.exam !== undefined) {
       this.examId = p.exam;
     }
     this.load();
@@ -130,12 +130,13 @@ struct ExamHubPage {
       return [];
     }
     const absentRegs: Record<string, boolean> = {};
-    for (const a of this.d.absent) {
+    for (const a of (this.d.absent ?? [])) {
       absentRegs[a.reg] = true;
     }
     const out: RosterRow[] = [];
-    for (const r of this.d.roster) {
-      if (r.reg !== '' && this.d.scannedReg[r.reg] !== true && !absentRegs[r.reg]) {
+    const scanned: Record<string, boolean> = this.d.scannedReg ?? {};
+    for (const r of (this.d.roster ?? [])) {
+      if (r.reg !== '' && scanned[r.reg] !== true && !absentRegs[r.reg]) {
         out.push(r);
       }
     }
@@ -307,7 +308,7 @@ struct ExamHubPage {
   @Builder
   progressCard() {
     Column({ space: 6 }) {
-      SectionHeader({ text: '阅卷进度(逐题)', extra: this.d !== null ? this.d.progress.length + ' 道主观题' : '' })
+      SectionHeader({ text: '阅卷进度(逐题)', extra: this.d !== null ? (this.d.progress ?? []).length + ' 道主观题' : '' })
       this.progressList()
     }
     .width('100%')
@@ -372,7 +373,7 @@ struct ExamHubPage {
   @Builder
   flaggedCard() {
     Column({ space: 6 }) {
-      SectionHeader({ text: '⚑ 待复核队列', extra: this.d !== null ? this.d.flagged.length + ' 份' : '' })
+      SectionHeader({ text: '⚑ 待复核队列', extra: this.d !== null ? (this.d.flagged ?? []).length + ' 份' : '' })
       this.flaggedList()
     }
     .width('100%')
@@ -423,10 +424,10 @@ struct ExamHubPage {
 
   @Builder
   progressList() {
-    ForEach(this.d !== null ? this.d.progress : [], (p: ProgressRow) => {
+    ForEach(this.d !== null ? (this.d.progress ?? []) : [], (p: ProgressRow) => {
       Row({ space: 8 }) {
         Column({ space: 2 }) {
-          Text('第 ' + (this.d !== null ? this.d.objective.length + p.question : p.question) + ' 题 · 满分 '
+          Text('第 ' + (this.d !== null ? (this.d.objective ?? []).length + p.question : p.question) + ' 题 · 满分 '
             + OgFormat.score(p.max) + (p.elective !== undefined && p.elective !== '' ? ' · 选做' : ''))
             .fontSize(13).fontColor(OgC.INK)
           Text((p.teacher !== undefined && p.teacher !== '' ? '阅卷人 ' + p.teacher + ' · ' : '')
@@ -453,7 +454,7 @@ struct ExamHubPage {
 
   @Builder
   warningList() {
-    ForEach(this.d !== null ? this.d.warnings : [], (w: SheetWarning) => {
+    ForEach(this.d !== null ? (this.d.warnings ?? []) : [], (w: SheetWarning) => {
       Column({ space: 6 }) {
         Row({ space: 8 }) {
           Text('卷 ' + w.student + (w.reg !== undefined && w.reg !== '' ? ' · ' + w.reg : ''))
@@ -516,7 +517,7 @@ struct ExamHubPage {
 
   @Builder
   dupList() {
-    ForEach(this.d !== null && this.d.duplicates !== undefined ? this.d.duplicates : [], (g: number[], gi: number) => {
+    ForEach(this.d !== null ? (this.d.duplicates ?? []) : [], (g: number[], gi: number) => {
       Row({ space: 8 }) {
         Text('考号 ' + this.regOfSheet(g[0]) + ' · 卷 ' + g.join(','))
           .fontSize(12).fontColor(OgC.INK).layoutWeight(1)
@@ -570,7 +571,7 @@ struct ExamHubPage {
 
   @Builder
   voidedList() {
-    ForEach(this.d !== null && this.d.voidedRows !== undefined ? this.d.voidedRows : [], (v: VoidRow) => {
+    ForEach(this.d !== null ? (this.d.voidedRows ?? []) : [], (v: VoidRow) => {
       Row({ space: 8 }) {
         Text('卷 ' + v.student + (v.reg !== '' ? ' · ' + v.reg : '')).fontSize(12).fontColor(OgC.INK_SUB)
           .layoutWeight(1)
@@ -592,9 +593,9 @@ struct ExamHubPage {
 
   @Builder
   flaggedList() {
-    ForEach(this.d !== null ? this.d.flagged : [], (f: FlagRow) => {
+    ForEach(this.d !== null ? (this.d.flagged ?? []) : [], (f: FlagRow) => {
       Row({ space: 8 }) {
-        Text('第 ' + (this.d !== null ? this.d.objective.length + f.question : f.question)
+        Text('第 ' + (this.d !== null ? (this.d.objective ?? []).length + f.question : f.question)
           + ' 题 · 卷 ' + f.student + (f.reg !== undefined && f.reg !== '' ? ' · ' + f.reg : '')
           + ' · 当前 ' + OgFormat.score(f.score) + ' 分')
           .fontSize(12).fontColor(OgC.INK).layoutWeight(1)
@@ -634,7 +635,7 @@ struct ExamHubPage {
 
   @Builder
   appealList() {
-    ForEach(this.d !== null && this.d.appeals !== undefined ? this.d.appeals : [], (a: AppealView) => {
+    ForEach(this.d !== null ? (this.d.appeals ?? []) : [], (a: AppealView) => {
       Column({ space: 6 }) {
         Row({ space: 8 }) {
           Pill({
@@ -721,7 +722,7 @@ struct ExamHubPage {
       if (this.canEdit() && this.d !== null && this.d.manualMode !== true) {
         Text('修正参考答案').fontSize(12).fontColor(OgC.BRAND)
           .onClick(() => {
-            this.keyBuf = this.d !== null ? this.d.key.join(' ') : '';
+            this.keyBuf = this.d !== null ? (this.d.key ?? []).join(' ') : '';
             this.openSheet('key');
           })
       }
@@ -790,22 +791,22 @@ struct ExamHubPage {
           Column({ space: OgDim.GAP }) {
             this.stageCard()
             this.progressCard()
-            if (this.d.warnings.length > 0) {
+            if ((this.d.warnings ?? []).length > 0) {
               this.warningCard()
             }
-            if (this.d.duplicates !== undefined && this.d.duplicates.length > 0) {
+            if ((this.d.duplicates ?? []).length > 0) {
               this.dupCard()
             }
             if (this.missingRows().length > 0) {
               this.missingCard()
             }
-            if (this.d.voidedRows !== undefined && this.d.voidedRows.length > 0) {
+            if ((this.d.voidedRows ?? []).length > 0) {
               this.voidedCard()
             }
-            if (this.d.flagged.length > 0) {
+            if ((this.d.flagged ?? []).length > 0) {
               this.flaggedCard()
             }
-            if (this.d.appeals !== undefined && this.d.appeals.length > 0) {
+            if ((this.d.appeals ?? []).length > 0) {
               this.appealCard()
             }
             this.metaCard()

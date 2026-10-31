@@ -190,48 +190,72 @@ struct StaffTrendsPage {
   build() {
     Column() {
       TitleBar({ title: '纵向趋势', showBack: false })
-      Scroll() {
-        Row({ space: 8 }) {
-          Text('全科')
-            .fontSize(12)
-            .fontColor(this.selSubject === '' ? Color.White : OgC.INK)
-            .backgroundColor(this.selSubject === '' ? OgC.BLUE : OgC.CARD)
-            .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-            .borderRadius(14)
-            .margin({ right: 8 })
-            .onClick(() => {
-              this.selSubject = '';
-              this.load();
-            })
-          ForEach(this.subjects(), (sub: string) => {
-            Text(sub)
+      // 筛选栏:学科 / 班级分组两行展示,左端带固定小标签,避免两组 chips 混在一起难分辨
+      Column({ space: 6 }) {
+        Scroll() {
+          Row({ space: 8 }) {
+            Text('学科')
+              .fontSize(11).fontColor(OgC.INK_SUB).width(32)
+            Text('全科')
               .fontSize(12)
-              .fontColor(this.selSubject === sub ? Color.White : OgC.INK)
-              .backgroundColor(this.selSubject === sub ? OgC.BLUE : OgC.CARD)
+              .fontColor(this.selSubject === '' ? Color.White : OgC.INK)
+              .backgroundColor(this.selSubject === '' ? OgC.BLUE : OgC.CARD)
               .padding({ left: 12, right: 12, top: 6, bottom: 6 })
               .borderRadius(14)
               .margin({ right: 8 })
               .onClick(() => {
-                this.selSubject = this.selSubject === sub ? '' : sub;
+                this.selSubject = '';
                 this.load();
               })
-          }, (sub: string) => sub + String(this.selSubject === sub))
-          ForEach(this.resp !== null ? this.resp!.classes : [], (c: string) => {
-            Text(c)
+            ForEach(this.subjects(), (sub: string) => {
+              Text(sub)
+                .fontSize(12)
+                .fontColor(this.selSubject === sub ? Color.White : OgC.INK)
+                .backgroundColor(this.selSubject === sub ? OgC.BLUE : OgC.CARD)
+                .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+                .borderRadius(14)
+                .margin({ right: 8 })
+                .onClick(() => {
+                  this.selSubject = this.selSubject === sub ? '' : sub;
+                  this.load();
+                })
+            }, (sub: string) => sub + String(this.selSubject === sub))
+          }
+        }
+        .scrollable(ScrollDirection.Horizontal)
+        .width('100%')
+        Scroll() {
+          Row({ space: 8 }) {
+            Text('班级')
+              .fontSize(11).fontColor(OgC.INK_SUB).width(32)
+            Text('全部班级')
               .fontSize(12)
-              .fontColor(this.selClass === c ? Color.White : OgC.INK)
-              .backgroundColor(this.selClass === c ? OgC.BRAND : OgC.CARD)
+              .fontColor(this.selClass === '' ? Color.White : OgC.INK)
+              .backgroundColor(this.selClass === '' ? OgC.BRAND : OgC.CARD)
               .padding({ left: 12, right: 12, top: 6, bottom: 6 })
               .borderRadius(14)
-              .border({ width: 1, color: this.selClass === c ? OgC.BRAND : OgC.LINE })
+              .margin({ right: 8 })
               .onClick(() => {
-                this.selClass = this.selClass === c ? '' : c;
+                this.selClass = '';
                 this.load();
               })
-          }, (c: string) => c)
+            ForEach(this.resp !== null ? (this.resp!.classes ?? []) : [], (c: string) => {
+              Text(c)
+                .fontSize(12)
+                .fontColor(this.selClass === c ? Color.White : OgC.INK)
+                .backgroundColor(this.selClass === c ? OgC.BRAND : OgC.CARD)
+                .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+                .borderRadius(14)
+                .onClick(() => {
+                  this.selClass = this.selClass === c ? '' : c;
+                  this.load();
+                })
+            }, (c: string) => c + String(this.selClass === c))
+          }
         }
+        .scrollable(ScrollDirection.Horizontal)
+        .width('100%')
       }
-      .scrollable(ScrollDirection.Horizontal)
       .width('100%')
       .padding({ left: OgDim.PAD, right: OgDim.PAD, top: 8, bottom: 4 })
 

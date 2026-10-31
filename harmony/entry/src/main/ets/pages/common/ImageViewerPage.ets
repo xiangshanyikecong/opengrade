@@ -43,7 +43,7 @@ struct ImageViewerPage {
 
   aboutToAppear(): void {
     const p = router.getParams() as ViewerParams | null;
-    if (p === null) {
+    if (p === null || p === undefined) {
       return;
     }
     if (p.urls !== undefined && p.urls !== null && p.urls.length > 0) {

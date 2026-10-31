@@ -279,8 +279,11 @@ export struct MeView {
         // 学校服务器(含延迟)
         Column({ space: 8 }) {
           Row({ space: 8 }) {
-            SectionHeader({ text: '学校服务器' })
-            Blank()
+            // SectionHeader 内部是 width('100%'),直接放 Row 会占满整行把「测速」挤出屏幕,必须限宽
+            Column() {
+              SectionHeader({ text: '学校服务器' })
+            }
+            .layoutWeight(1)
             Text(this.pinging ? '测速中…' : '测速')
               .fontSize(12)
               .fontColor(OgC.BRAND)

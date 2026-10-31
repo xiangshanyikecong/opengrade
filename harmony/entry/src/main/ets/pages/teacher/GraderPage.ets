@@ -53,7 +53,7 @@ struct GraderPage {
   aboutToAppear(): void {
     this.wide = graderIsWide();
     const p = router.getParams() as GraderParams | null;
-    if (p === null || p.exam === undefined) {
+    if (p === null || p === undefined || p.exam === undefined) {
       this.failed = true;
       this.failMsg = '缺少考试参数';
       this.loading = false;

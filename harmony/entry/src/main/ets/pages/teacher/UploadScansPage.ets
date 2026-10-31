@@ -47,7 +47,7 @@ struct UploadScansPage {
 
   aboutToAppear(): void {
     const p = router.getParams() as UploadParams | null;
-    if (p !== null && p.exam !== undefined) {
+    if (p !== null && p !== undefined && p.exam !== undefined) {
       this.examId = p.exam;
     } else {
       this.failed = true;

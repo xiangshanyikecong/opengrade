@@ -37,7 +37,7 @@ struct StudentExamDetailPage {
 
   aboutToAppear(): void {
     const p = router.getParams() as DetailParams | null;
-    if (p !== null) {
+    if (p !== null && p !== undefined && p.id !== undefined) {
       this.examId = p.id;
       this.child = p.child ?? '';
     }

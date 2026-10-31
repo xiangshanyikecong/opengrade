@@ -35,7 +35,7 @@ struct ManualScoresPage {
 
   aboutToAppear(): void {
     const p = router.getParams() as ScoresParams | null;
-    if (p !== null && p.exam !== undefined) {
+    if (p !== null && p !== undefined && p.exam !== undefined) {
       this.examId = p.exam;
     }
     this.load();
@@ -47,10 +47,10 @@ struct ManualScoresPage {
       const rows: ScoreRow[] = [];
       if (this.d !== null) {
         const absentRegs: Record<string, boolean> = {};
-        for (const a of this.d.absent) {
+        for (const a of (this.d.absent ?? [])) {
           absentRegs[a.reg] = true;
         }
-        for (const r of this.d.roster) {
+        for (const r of (this.d.roster ?? [])) {
           const existing = this.d.manualScores !== undefined ? this.d.manualScores[r.reg] : undefined;
           rows.push({
             reg: r.reg,

@@ -27,7 +27,7 @@ struct PracticePage {
 
   aboutToAppear(): void {
     const p = router.getParams() as PracticeParams | null;
-    if (p !== null) {
+    if (p !== null && p !== undefined && p.id !== undefined) {
       this.examId = p.id;
       this.child = p.child ?? '';
     }

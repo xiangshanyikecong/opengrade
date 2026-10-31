@@ -36,7 +36,7 @@ struct ExamListPage {
     this.loading = this.items.length === 0;
     this.failed = false;
     try {
-      this.items = await OgNet.jget<ExamSummary[]>('/api/v1/exams');
+      this.items = (await OgNet.jget<ExamSummary[]>('/api/v1/exams')) ?? [];
     } catch (e) {
       this.failed = true;
       this.failMsg = e instanceof OgError ? e.message : '加载失败';
@@ -79,6 +79,14 @@ struct ExamListPage {
   private canEditExam(it: ExamSummary): boolean {
     const me = OgSession.me();
     return me !== null && (me.role === 'admin' || me.role === 'leader' || it.mine);
+  }
+
+  // 主操作文案:与 primaryAction 的分支一致;返回「详情」时主按钮不渲染(与 Ghost 详情去重)
+  private primaryLabel(it: ExamSummary): string {
+    if ((it.stage === 'ready' || it.dirty) && !this.canEditExam(it)) {
+      return '详情';
+    }
+    return it.dirty ? '重新发布' : OgFormat.stageAction(it.stage, it.dirty);
   }
 
   private primaryAction(it: ExamSummary): void {
@@ -144,12 +152,13 @@ struct ExamListPage {
           .fontSize(12).fontColor(OgC.BAD)
       }
       Row({ space: 8 }) {
-        PrimaryButton({
-          label: ((it.stage === 'ready' || it.dirty) && !this.canEditExam(it)
-            ? '详情' : (it.dirty ? '重新发布' : OgFormat.stageAction(it.stage, it.dirty))),
-          usable: this.publishing !== it.id,
-          onTap: () => this.primaryAction(it)
-        })
+        if (this.primaryLabel(it) !== '详情') {
+          PrimaryButton({
+            label: this.primaryLabel(it),
+            usable: this.publishing !== it.id,
+            onTap: () => this.primaryAction(it)
+          })
+        }
         GhostButton({
           label: '详情',
           onTap: () => {

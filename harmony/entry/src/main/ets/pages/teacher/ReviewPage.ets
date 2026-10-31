@@ -39,7 +39,7 @@ struct ReviewPage {
 
   aboutToAppear(): void {
     const p = router.getParams() as ReviewParams | null;
-    if (p !== null) {
+    if (p !== null && p !== undefined && p.exam !== undefined) {
       this.examId = p.exam;
       this.reg = p.reg;
     }

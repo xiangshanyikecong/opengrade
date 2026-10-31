@@ -38,7 +38,7 @@ struct PdfViewerPage {
 
   aboutToAppear(): void {
     const p = router.getParams() as PdfParams | null;
-    if (p !== null) {
+    if (p !== null && p !== undefined) {
       if (p.title !== undefined && p.title !== '') {
         this.title = p.title;
       }

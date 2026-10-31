@@ -41,7 +41,7 @@ struct CreateExamPage {
 
   aboutToAppear(): void {
     const p = router.getParams() as CreateParams | null;
-    if (p !== null && p.presetLayout !== undefined && p.presetLayout !== '') {
+    if (p !== null && p !== undefined && p.presetLayout !== undefined && p.presetLayout !== '') {
       this.layoutText = p.presetLayout;
       if (p.presetSubject !== undefined && p.presetSubject !== '') {
         this.subject = p.presetSubject;
