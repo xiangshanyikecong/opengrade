@@ -61,12 +61,42 @@ type pageIdent struct {
 // ingestScanImages 把一批整卷扫描件判读、归组、合并为逐生结果。
 // 书 book 为 A 卷(或唯一版式)逐页编译产物;opt 沿用会话二值化配置;ab 为 AB 上下式(非 AB 为 nil)。
 // base 是本批之前的存量卷数:补传场景切片/回溯图的全局卷号 = base + 批内序号。
-func ingestScanImages(imgs []image.Image, book []*card.Sheet, opt omr.Options, base int, ab *abSupport) ingestResult {
+// impose = 2 时(拼版考试)每张 A3 先按角标聚类切回左右两份单卡再判读,
+// 切分必须发生在定位之前 —— 拼版纸 8 个角标整图直喂 findLocators 会四象限错配。
+func ingestScanImages(imgs []image.Image, book []*card.Sheet, opt omr.Options, base int, ab *abSupport, impose int) ingestResult {
 	out := ingestResult{failed: []scanFail{}, notes: []string{}}
 	pageCount := len(book)
 
 	fail := func(idx int, err error) {
 		out.failed = append(out.failed, scanFail{idx, err.Error()})
+	}
+
+	// 拼版切分:每张纸先展开为 1~2 份单卡子图(omr.SplitImpose 自动剔除空白半版并带 note),
+	// 之后全部走既有单页管线(建考已校验拼版只允许单页版式,pageCount==1)。
+	// 失败记录的张序为切分后序,错误信息带「第 N 张纸左/右半」前缀供对纸定位。
+	if impose == 2 {
+		var expanded []image.Image
+		tags := make([]string, 0, len(imgs)*2)
+		for i, img := range imgs {
+			l, r, spNotes := omr.SplitImpose(img)
+			out.notes = append(out.notes, spNotes...)
+			if l != nil {
+				expanded = append(expanded, l)
+				tags = append(tags, fmt.Sprintf("第 %d 张纸左半", i+1))
+			}
+			if r != nil {
+				expanded = append(expanded, r)
+				tags = append(tags, fmt.Sprintf("第 %d 张纸右半", i+1))
+			}
+		}
+		imgs = expanded
+		fail = func(idx int, err error) {
+			tag := ""
+			if idx >= 1 && idx <= len(tags) {
+				tag = tags[idx-1] + ":"
+			}
+			out.failed = append(out.failed, scanFail{idx, tag + err.Error()})
+		}
 	}
 
 	if pageCount <= 1 { // 单页版式:每张即一份完整卷

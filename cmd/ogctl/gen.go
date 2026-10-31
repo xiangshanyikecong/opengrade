@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/opengrade/opengrade/card"
+	"github.com/opengrade/opengrade/raster"
 )
 
 // layoutFlags 是 gen 共用的版式参数。
@@ -28,6 +29,7 @@ type layoutFlags struct {
 	// 用于演示名册模糊匹配/人工指派的异常卷自愈流程)
 	corruptStudent int
 	variant        string // AB 卷种:空=单卷 | A | B(卡面印卷种点)
+	impose         int    // 拼版:0=普通 | 2 = A3 横放两拼(母版与逐生卷均按 A3 2拼出)
 }
 
 func addLayoutFlags(fs *flag.FlagSet, lf *layoutFlags) {
@@ -42,6 +44,7 @@ func addLayoutFlags(fs *flag.FlagSet, lf *layoutFlags) {
 	fs.IntVar(&lf.students, "students", 0, "模拟涂卡学生份数(0=只出空白卡)")
 	fs.Int64Var(&lf.seed, "seed", 1, "随机种子(复现实验)")
 	fs.StringVar(&lf.layoutFile, "layout-file", "", "版式 JSON 文件(v1/v2 均可;指定后忽略 -questions/-options/-title)")
+	fs.IntVar(&lf.impose, "impose", 0, "拼版:0=普通单卡 | 2 = A3 横放两拼(母版/学生卷按每纸 2 份出)")
 }
 
 // resolveLayout 由命令行参数得到待出卡的版式(preLayout 优先,供 demo 注入内置版式)。
@@ -119,14 +122,34 @@ func generate(lf layoutFlags) (*genResult, error) {
 	if err := writeJSON(filepath.Join(lf.out, "key.json"), map[string]any{"version": 1, "answers": key}); err != nil {
 		return nil, err
 	}
-	// 空白卡矢量稿(打印母版)
+	// 空白卡矢量稿(打印母版);拼版时另出 A3 两拼母版
 	if err := os.WriteFile(filepath.Join(lf.out, "sheet.svg"), card.RenderSVG(sheet, nil), 0o644); err != nil {
 		return nil, err
+	}
+	if lf.impose == 2 {
+		if err := os.WriteFile(filepath.Join(lf.out, "sheet2up.svg"), card.ImposeSVG(sheet, sheet, nil, nil), 0o644); err != nil {
+			return nil, err
+		}
 	}
 	if lf.students == 0 {
 		if err := card.RenderPNG(sheet, nil).SavePNG(filepath.Join(lf.out, "sheet.png")); err != nil {
 			return nil, err
 		}
+	}
+	if lf.impose == 2 {
+		// 逐生 A3 两拼卷:第 2k-1、2k 名同纸,奇数末张右半留白
+		for i := 0; i < len(gr.fillings); i += 2 {
+			left := card.RenderPNG(sheet, &gr.fillings[i])
+			var right *raster.Canvas
+			if i+1 < len(gr.fillings) {
+				right = card.RenderPNG(sheet, &gr.fillings[i+1])
+			}
+			p := filepath.Join(lf.out, "students", fmt.Sprintf("card2up_%02d.png", i/2+1))
+			if err := card.ImposePNG(left, right).SavePNG(p); err != nil {
+				return nil, err
+			}
+		}
+		return gr, nil
 	}
 	for i, f := range gr.fillings {
 		p := filepath.Join(lf.out, "students", fmt.Sprintf("card_%02d.png", i+1))
@@ -154,6 +177,9 @@ func cmdGen(args []string) error {
 	fmt.Printf("版式文件: %s\n", filepath.Join(gr.outDir, "sheet.layout.json"))
 	fmt.Printf("参考答案: %s\n", filepath.Join(gr.outDir, "key.json"))
 	fmt.Printf("打印母版: %s(浏览器打开可直接打印 A4)\n", filepath.Join(gr.outDir, "sheet.svg"))
+	if lf.impose == 2 {
+		fmt.Printf("拼版母版: %s(A3 横放两拼,每纸 2 份空白卡 + 裁切线)\n", filepath.Join(gr.outDir, "sheet2up.svg"))
+	}
 	for i := range gr.fillings {
 		fmt.Printf("学生卷 %2d: %s\n", i+1, filepath.Join(gr.outDir, "students", fmt.Sprintf("card_%02d.png", i+1)))
 	}

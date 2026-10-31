@@ -23,6 +23,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+
+	"github.com/opengrade/opengrade/raster"
 	"sort"
 	"strconv"
 	"strings"
@@ -344,15 +346,33 @@ func handleExamCardsPDF(w http.ResponseWriter, r *http.Request, store *Store, u 
 		httpError(w, http.StatusUnprocessableEntity, fmt.Errorf("名册中没有考号位数匹配的学生,无法出卡"))
 		return
 	}
+	// 拼版考试:每页 A3 横放装 2 名学生(第 2k-1、2k 张),中缝裁切线;
+	// 单页版式才有拼版(建考已互斥多页),len(book)==1。
+	impose := ex.Imposition == 2 && len(book) == 1
+	pageW, pageH := 210.0, 297.0
+	pages := len(fills) * len(book)
+	if impose {
+		pageW, pageH = 420.0, 297.0
+		pages = (len(fills) + 1) / 2
+	}
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=opengrade-cards-%s-%s.pdf", ex.ID, variant))
-	err = export.StreamPagesPDF(w, len(fills)*len(book), func(i int) (image.Image, error) {
+	err = export.StreamPagesPDF(w, pages, func(i int) (image.Image, error) {
 		if err := r.Context().Err(); err != nil {
 			return nil, fmt.Errorf("客户端已断开,停止出卡: %w", err)
 		}
+		if impose {
+			lo := i * 2
+			left := card.RenderPNG(book[0], &card.Filling{Reg: fills[lo], CodePrefix: prefix})
+			right := (*raster.Canvas)(nil)
+			if lo+1 < len(fills) {
+				right = card.RenderPNG(book[0], &card.Filling{Reg: fills[lo+1], CodePrefix: prefix})
+			}
+			return card.ImposePNG(left, right).ToGray(), nil
+		}
 		f := &card.Filling{Reg: fills[i/len(book)], CodePrefix: prefix}
 		return card.RenderPNG(book[i%len(book)], f).ToGray(), nil
-	}, 210, 297)
+	}, pageW, pageH)
 	if err != nil && r.Context().Err() == nil {
 		// 头部已发出,无法改状态码:记日志供排障(客户端断开的静默中止不记)
 		log.Printf("出卡 PDF 中断(exam %s / variant %s): %v", ex.ID, variant, err)

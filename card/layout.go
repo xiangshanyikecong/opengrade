@@ -26,8 +26,11 @@ const (
 	DPI     = 300.0
 	pxPerMM = DPI / 25.4
 
-	locatorSideMM  = 5.0  // 四角实心方块边长
+	locatorSideMM  = 5.0 // 四角实心方块边长
 	locatorInsetMM = 10.0 // 方块左上角距页边距离
+
+	// LocatorSideMM 导出定位角标边长(mm),供 OMR 侧按纸宽推算期望尺寸(拼版切分用)。
+	LocatorSideMM = locatorSideMM
 
 	choiceRMM   = 1.7  // 客观题涂卡圆半径
 	regRMM      = 1.55 // 考号涂卡圆半径

@@ -31,6 +31,7 @@ struct CreateExamPage {
   @State layoutText: string = '';
   @State keyText: string = '[]';
   @State abAuto: boolean = false;
+  @State impose: boolean = false;
   @State students: StudentRow[] = [];
   @State allClasses: string[] = [];
   @State pickedClasses: Record<string, boolean> = {};
@@ -168,6 +169,9 @@ struct CreateExamPage {
         fields['key'] = this.keyText.trim() === '' ? '[]' : this.keyText.trim();
         if (this.abAuto) {
           fields['abAuto'] = '1';
+        }
+        if (this.impose) {
+          fields['impose'] = '2';
         }
       }
       const files: UploadFile[] = [];
@@ -327,6 +331,21 @@ struct CreateExamPage {
                     .selectedColor(OgC.BRAND)
                     .onChange((on: boolean) => {
                       this.abAuto = on;
+                    })
+                }
+                .width('100%')
+                Row({ space: 8 }) {
+                  Column({ space: 2 }) {
+                    Text('拼版两拼(A3 横放印 2 份卡)').fontSize(13).fontColor(OgC.INK)
+                    Text('一张 A3 印左右两份卡,扫描后自动切分;多页版式不支持')
+                      .fontSize(10).fontColor(OgC.INK_SUB)
+                  }
+                  .alignItems(HorizontalAlign.Start)
+                  .layoutWeight(1)
+                  Toggle({ type: ToggleType.Switch, isOn: this.impose })
+                    .selectedColor(OgC.BRAND)
+                    .onChange((on: boolean) => {
+                      this.impose = on;
                     })
                 }
                 .width('100%')

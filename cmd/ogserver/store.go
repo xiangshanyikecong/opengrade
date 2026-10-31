@@ -32,7 +32,10 @@ type Exam struct {
 	Grades       map[string]score.Grade `json:"grades"`       // key: score.GradeKey(s, q)
 	Threshold    string                 `json:"threshold"`    // 读卡二值化方式
 	Preprocess   *omr.Preprocess        `json:"preprocess,omitempty"` // 判读前灰度预处理链(中值/伽马/CLAHE)
-	Roster       []roster.Student       `json:"roster,omitempty"`
+	// Imposition 拼版(一卡多人):0=普通单卡;2 = 一张 A3 横放印左右两份 A4 卡,
+	// 上传的扫描件先按角标聚类切分回单卡再判读(omr.SplitImpose)。多页版式不支持(建考 400)。
+	Imposition int              `json:"imposition,omitempty"`
+	Roster     []roster.Student `json:"roster,omitempty"`
 	Assignments  map[string]string      `json:"assignments,omitempty"` // "s{学生号}" → 人工确认的考号
 	CreatedBy    string                 `json:"createdBy,omitempty"`   // 建考账号
 	Subject      string                 `json:"subject,omitempty"`     // 学科(教师按学科过滤考试)
@@ -128,6 +131,7 @@ type NewExam struct {
 	PageGroups [][]*image.Gray // 多页版式:每生按页序的矫正图组(第 1 页兼容旧文件名)
 	Threshold  string
 	Preprocess *omr.Preprocess
+	Imposition int // 拼版:0/2(A3 横放 2 拼,上传件先切分再判读)
 	CreatedBy  string
 	Subject    string
 	Roster     []roster.Student
@@ -243,6 +247,7 @@ func (s *Store) Create(ne NewExam) (*Exam, error) {
 		Grades:       map[string]score.Grade{},
 		Threshold:    ne.Threshold,
 		Preprocess:   ne.Preprocess,
+		Imposition:   ne.Imposition,
 		Roster:       ne.Roster,
 		Assignments:  map[string]string{},
 		CreatedBy:    ne.CreatedBy,

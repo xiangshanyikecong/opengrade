@@ -1128,7 +1128,11 @@ function loadCreate() {
       <label>二值化方式
         <select id="threshold"><option value="otsu">全局 Otsu(常规扫描)</option><option value="adaptive">局部自适应(阴影/翻拍)</option></select>
       </label>
+      <label>卡纸形态
+        <select id="impose"><option value="0">普通单卡(A4 一卡)</option><option value="2">拼版两拼(A3 横放印 2 份卡)</option></select>
+      </label>
     </div>
+    <p class="hint" id="imposeHint" hidden style="margin:4px 0 0">⚠ 拼版:一张 A3 横放印左右两份完整 A4 卡(设计器可出 A3 两拼母版),扫描上传后自动按角标切分,每半张 = 一份卷;名册奇数时末张右半空白自动跳过。多页版式不支持拼版。</p>
     <label>学生名册(可选;用于异常卷考号推荐、缺扫名单与班级统计;手工成绩科目必填)
       <div style="display:flex;gap:8px;align-items:center;margin:4px 0 6px;flex-wrap:wrap">
         <button class="ghost" onclick="toggleRosterPicker()">从班级选名册(学生账号带出)</button>
@@ -1144,6 +1148,8 @@ function loadCreate() {
     <div class="err" id="examMsg" style="margin-top:8px"></div>
   </div>`;
   document.getElementById("createExamBtn").onclick = submitCreateExam;
+  const imposeSel = document.getElementById("impose");
+  if (imposeSel) imposeSel.onchange = () => { document.getElementById("imposeHint").hidden = imposeSel.value !== "2"; };
   fillSessionOptions("examSession");
   let h = null;
   document.getElementById("examLayout").addEventListener("input", () => {
@@ -1396,6 +1402,7 @@ function toggleExamKind() {
   document.getElementById("manualKindBox").hidden = !manual;
   document.getElementById("examImagesLabel").hidden = manual;
   document.getElementById("threshold").closest("label").style.visibility = manual ? "hidden" : "visible";
+  document.getElementById("impose").closest("label").style.visibility = manual ? "hidden" : "visible";
 }
 
 function appendMetaFields(fd) {
@@ -1427,6 +1434,7 @@ async function submitCreateExam() {
       fd.append("layout", JSON.stringify(layout));
       fd.append("key", JSON.stringify(key));
       fd.append("threshold", document.getElementById("threshold").value);
+      if (document.getElementById("impose").value === "2") fd.append("impose", "2"); // 多页版式互斥由服务端校验(400)
       // AB 卷:高级手填 layout2 走自定义路径(题序自定);否则勾选「启用 AB 卷」= 服务端
       // 自动生成 B 卷(打乱客观题序),答案键两卷共用、无需单独录 B 卷答案。
       const layout2 = document.getElementById("examLayout2").value.trim();

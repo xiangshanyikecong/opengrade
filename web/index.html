@@ -149,9 +149,10 @@
       <div class="err" id="paperMsg"></div>
       <div id="paperResult" style="display:grid;gap:8px"></div>
     </div>
-    <button class="primary" id="gen">生成 / 刷新预览</button>
-    <button class="secondary" id="download" disabled>下载 SVG(可打印)</button>
-    <div class="err" id="designMsg"></div>
+  <button class="primary" id="gen">生成 / 刷新预览</button>
+  <button class="secondary" id="download" disabled>下载 SVG(可打印)</button>
+  <button class="secondary" id="downloadImpose" disabled title="A3 横放一张印两份空白卡 + 中缝裁切线;建考时选「拼版两拼」后整批按 A3 出">下载 A3 两拼母版</button>
+  <div class="err" id="designMsg"></div>
   </section>
   <div class="preview-wrap">
     <div id="pageTabs" class="hint no-print" style="min-height:20px"></div>
@@ -644,6 +645,7 @@ async function gen() {
     : "";
   $("download").disabled = false;
   $("download2").disabled = false;
+  $("downloadImpose").disabled = pageCount > 1; // 拼版仅单页版式(服务端同口径)
   $("examLayout").value = JSON.stringify(buildLayout());
   localStorage.setItem("og.lastLayout", $("examLayout").value); // 供教师工作台「新建考试」一键载入
   setDesignMode("preview"); // 生成成功自动切到预览
@@ -658,6 +660,16 @@ $("download").onclick = () => {
   const blob = new Blob([currentSVG], { type: "image/svg+xml" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob); a.download = "opengrade-sheet.svg"; a.click();
+  URL.revokeObjectURL(a.href);
+};
+// A3 两拼母版:同一空白卡印左右两份 + 裁切线(个性化按名册出卡走考试详情「打印 A/B 卷」)
+$("downloadImpose").onclick = async () => {
+  $("designMsg").textContent = "";
+  const res = await fetch("/api/v1/cards?impose=2", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ layout: buildLayout() }) });
+  if (!res.ok) { $("designMsg").className = "err"; $("designMsg").textContent = (await res.json()).error; return; }
+  const blob = new Blob([await res.text()], { type: "image/svg+xml" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "opengrade-sheet-2up-a3.svg"; a.click();
   URL.revokeObjectURL(a.href);
 };
 

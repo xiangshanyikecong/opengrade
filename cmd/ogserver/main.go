@@ -353,6 +353,7 @@ func seedDemo(authStore *auth.Store) error {
 }
 
 // handleCards 依据版式 JSON 渲染答题卡;?format=png 返回位图,缺省返回可打印 SVG。
+// ?impose=2 输出 A3 横放拼版母版(同一张卡印左右两份 + 裁切线,仅第 1 页可拼)。
 func handleCards(w http.ResponseWriter, r *http.Request, u *auth.User) {
 	var req struct {
 		Layout  card.Layout   `json:"layout"`
@@ -374,8 +375,24 @@ func handleCards(w http.ResponseWriter, r *http.Request, u *auth.User) {
 			return
 		}
 	}
+	impose, _ := strconv.Atoi(r.URL.Query().Get("impose"))
+	if impose == 2 && pageNo != 1 {
+		httpError(w, http.StatusBadRequest, fmt.Errorf("拼版母版仅支持单页版式或第 1 页"))
+		return
+	}
 	w.Header().Set("X-Pages", strconv.Itoa(len(book)))
 	sheet := book[pageNo-1]
+	if impose == 2 { // A3 拼版母版:同一卡印两份(个性化出卡走 cards.pdf)
+		if r.URL.Query().Get("format") == "png" {
+			pngCard := card.RenderPNG(sheet, req.Filling)
+			w.Header().Set("Content-Type", "image/png")
+			_ = png.Encode(w, card.ImposePNG(pngCard, pngCard))
+			return
+		}
+		w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
+		_, _ = w.Write(card.ImposeSVG(sheet, sheet, req.Filling, req.Filling))
+		return
+	}
 	if r.URL.Query().Get("format") == "png" {
 		w.Header().Set("Content-Type", "image/png")
 		_ = png.Encode(w, card.RenderPNG(sheet, req.Filling))
@@ -386,6 +403,8 @@ func handleCards(w http.ResponseWriter, r *http.Request, u *auth.User) {
 }
 
 // handleOMR 读卡:multipart 表单,字段 image=扫描件,layout=版式 JSON,threshold=otsu|adaptive。
+// impose=2(拼版)时 image 为 A3 拼版纸:先按角标聚类切回单卡,响应变为
+// {results: [...], failed: [...], notes: [...]}(缺省仍为单 Result,契约不变)。
 func handleOMR(w http.ResponseWriter, r *http.Request, u *auth.User) {
 	if err := r.ParseMultipartForm(256 << 20); err != nil {
 		httpError(w, http.StatusBadRequest, fmt.Errorf("解析 multipart 失败: %w", err))
@@ -402,12 +421,49 @@ func handleOMR(w http.ResponseWriter, r *http.Request, u *auth.User) {
 		httpError(w, http.StatusBadRequest, fmt.Errorf("图像解码失败: %w", err))
 		return
 	}
+	if v, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("impose"))); v == 2 {
+		results, failed, notes := readImposed(sheet, img, opt)
+		writeJSON(w, http.StatusOK, map[string]any{"results": results, "failed": failed, "notes": notes})
+		return
+	}
 	res, _, err := omr.Read(sheet, img, opt)
 	if err != nil {
 		httpError(w, http.StatusUnprocessableEntity, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// readImposed 拼版读卡:切分后逐半走 Read;切分 note 与逐半失败原样透传,
+// 空白半版已被 SplitImpose 剔除(不出现在 results/failed)。
+func readImposed(sheet *card.Sheet, img image.Image, opt omr.Options) (results []*omr.Result, failed []string, notes []string) {
+	halves := []struct {
+		img image.Image
+		tag string
+	}{}
+	l, r, spNotes := omr.SplitImpose(img)
+	notes = append(notes, spNotes...)
+	if l != nil {
+		halves = append(halves, struct {
+			img image.Image
+			tag string
+		}{l, "左半"})
+	}
+	if r != nil {
+		halves = append(halves, struct {
+			img image.Image
+			tag string
+		}{r, "右半"})
+	}
+	for _, h := range halves {
+		res, _, err := omr.Read(sheet, h.img, opt)
+		if err != nil {
+			failed = append(failed, h.tag+":"+err.Error())
+			continue
+		}
+		results = append(results, res)
+	}
+	return results, failed, notes
 }
 
 // formLayoutAndImage 从 multipart 表单提取图像文件与编译后的版式(单卷读卡用)。
@@ -458,7 +514,7 @@ func formLayout(r *http.Request) (*card.Sheet, omr.Options, error) {
 }
 
 // handleCreateExam 创建考试会话:multipart 字段 layout(版式 JSON)、key(客观题答案 JSON 数组)、
-// roster(可选名册)、threshold(可选 otsu|adaptive)、images(多张整卷扫描件)。
+// roster(可选名册)、threshold(可选 otsu|adaptive)、impose(可选 2 = A3 横放两拼)、images(多张整卷扫描件)。
 // 服务端逐卷 OMR 判读 + 主观题切片 + 整卷回溯图,返回会话 ID。
 func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank *BankStore, u *auth.User) {
 	if err := r.ParseMultipartForm(256 << 20); err != nil {
@@ -471,6 +527,10 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 			httpError(w, http.StatusBadRequest, fmt.Errorf("手工成绩考试没有答题卡,无法启用 AB 卷"))
 			return
 		}
+		if strings.TrimSpace(r.FormValue("impose")) != "" && strings.TrimSpace(r.FormValue("impose")) != "0" {
+			httpError(w, http.StatusBadRequest, fmt.Errorf("手工成绩考试没有答题卡,无法启用拼版"))
+			return
+		}
 		createManualExam(w, r, store, u)
 		return
 	}
@@ -478,6 +538,18 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
+	}
+
+	// 拼版(一卡多人):impose=2 = 一张 A3 横放印左右两份 A4 卡,上传件先切分再判读。
+	// 当前只支持 2 拼单页版式;多页版式每生多页,与拼版的逐纸双卡互斥。
+	imposition := 0
+	if v := strings.TrimSpace(r.FormValue("impose")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || (n != 0 && n != 2) {
+			httpError(w, http.StatusBadRequest, fmt.Errorf("impose 仅支持 0(普通)或 2(A3 横放两拼)"))
+			return
+		}
+		imposition = n
 	}
 
 	// 常规流程:建考=建档(版式+名册),参考答案与扫描件都可后补 ——
@@ -620,6 +692,10 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		}
 	}
 	pageCount := len(book)
+	if imposition == 2 && pageCount > 1 {
+		httpError(w, http.StatusBadRequest, fmt.Errorf("多页版式(%d 页)暂不支持拼版:拼版按纸双卡,多页按生多页,两者互斥", pageCount))
+		return
+	}
 	var imgs []image.Image
 	if r.MultipartForm != nil {
 		for i, fh := range r.MultipartForm.File["images"] {
@@ -639,7 +715,8 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 	}
 	// 按考号逐页归组入库:每页独立判读考号+页点页号+卷种,按考号分组合并。
 	// 不再要求总张数是页数的整数倍 —— 卡纸跳页只产生缺页告警,不再全局错位。
-	ing := ingestScanImages(imgs, book, opt, 0, ab)
+	// impose=2(拼版)时每张 A3 先按角标聚类切回单卡再判读。
+	ing := ingestScanImages(imgs, book, opt, 0, ab, imposition)
 	if len(imgs) > 0 && len(ing.results) == 0 && len(ing.keyCards) == 0 {
 		// 整批没有任何学生卷:仅答案卡(考号全 9)的建考批也合法(参考答案由卡录入)
 		httpError(w, http.StatusUnprocessableEntity,
@@ -667,6 +744,7 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 	ex, err := store.Create(NewExam{
 		Layout: sheet.Layout, Key: key, Results: results, Slices: slicesByStudent,
 		Pages: nil, PageGroups: pageGroups, Threshold: opt.Threshold, CreatedBy: u.Username, Subject: r.FormValue("subject"), Roster: st,
+		Imposition: imposition,
 		ExamDate:  strings.TrimSpace(r.FormValue("examDate")),
 		Term:      strings.TrimSpace(r.FormValue("term")),
 		ExamType:  strings.TrimSpace(r.FormValue("examType")),
@@ -707,6 +785,9 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		"roster":          len(st),
 		"stage":           stage.Stage,
 		"stageLabel":      stage.Label,
+	}
+	if imposition != 0 {
+		resp["imposition"] = imposition
 	}
 	if len(ing.failed) > 0 {
 		resp["failed"] = ing.failed

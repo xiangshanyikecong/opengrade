@@ -90,8 +90,9 @@ func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *
 	}
 	// 按考号逐页归组:每页独立判读考号+页点页号,不再要求张数是页数的整数倍;
 	// 单页判读失败只丢那一张,缺页只告警对应学生,不再连坐整批。
+	// 拼版考试(ex.Imposition=2)先按角标聚类切回单卡再判读,空白半版自动剔除。
 	oldBase := len(ex.Results)
-	ing := ingestScanImages(imgs, book, opt, oldBase, ab)
+	ing := ingestScanImages(imgs, book, opt, oldBase, ab, ex.Imposition)
 	applyKeyCards(store, ex.ID, &ing, u.Username) // 答案卡录入(在 notes 捕获前,反馈随响应返回)
 	results, slices, pageGroups, pageNos := ing.results, ing.slices, ing.pageGroups, ing.pageNos
 	failed = append(failed, ing.failed...)

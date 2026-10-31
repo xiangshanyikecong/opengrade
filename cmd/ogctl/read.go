@@ -24,6 +24,7 @@ func cmdRead(args []string) error {
 	gamma := fs.Float64("gamma", 0, "灰度伽马(<1 提亮阴影/褪色件;0=不启用)")
 	median := fs.Int("median", 0, "中值滤波窗口(3/5 去椒盐噪声;0=不启用)")
 	clahe := fs.Int("clahe", 0, "CLAHE 分块数(常用 8,弱光/低对比增墨;0=不启用)")
+	impose := fs.Int("impose", 0, "拼版:0=普通单卡 | 2 = A3 横放两拼(先按角标切分再逐半判读)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -48,6 +49,10 @@ func cmdRead(args []string) error {
 	img, err := loadImage(*imagePath)
 	if err != nil {
 		return err
+	}
+	if *impose == 2 {
+		return readImposedCLI(sheet, img, omr.Options{MarkThreshold: *th, Threshold: *mode,
+			Gamma: *gamma, Median: *median, CLAHE: *clahe}, *out)
 	}
 	res, dbg, err := omr.Read(sheet, img, omr.Options{MarkThreshold: *th, Threshold: *mode,
 		Gamma: *gamma, Median: *median, CLAHE: *clahe})
@@ -83,6 +88,40 @@ func cmdRead(args []string) error {
 	}
 	if *out != "" {
 		fmt.Println("结果文件:", *out)
+	}
+	return nil
+}
+
+// readImposedCLI 拼版读卡:切分后逐半 Read,结果输出为 JSON 数组(out 给定时写文件)。
+func readImposedCLI(sheet *card.Sheet, img image.Image, opt omr.Options, out string) error {
+	left, right, notes := omr.SplitImpose(img)
+	for _, n := range notes {
+		fmt.Println("note:", n)
+	}
+	var results []*omr.Result
+	for _, h := range []struct {
+		img image.Image
+		tag string
+	}{{left, "左半"}, {right, "右半"}} {
+		if h.img == nil {
+			continue // 空白半版已被切分器剔除
+		}
+		res, _, err := omr.Read(sheet, h.img, opt)
+		if err != nil {
+			return fmt.Errorf("%s判读失败: %w", h.tag, err)
+		}
+		results = append(results, res)
+		fmt.Printf("[%s] 考号: %s(有效=%v)\n", h.tag, res.RegNumber, res.RegValid)
+		fmt.Printf("[%s] 作答: %v\n", h.tag, res.Answers)
+		for _, w := range res.Warnings {
+			fmt.Println("  -", w)
+		}
+	}
+	if out != "" {
+		if err := writeJSON(out, results); err != nil {
+			return err
+		}
+		fmt.Println("结果文件:", out)
 	}
 	return nil
 }
