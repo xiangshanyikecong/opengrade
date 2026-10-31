@@ -132,7 +132,7 @@ struct TaskListPage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: 360, dragBar: true, title: { title: '工作台导航' }
+      height: 460, dragBar: true, title: { title: "工作台导航" }
     })
   }
 

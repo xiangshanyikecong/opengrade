@@ -13,6 +13,11 @@ interface CreateExamResp {
   id: string;
 }
 
+interface CreateParams {
+  presetLayout?: string; // 拍卷识别(LayoutScanPage)产出的版式 JSON,直接带入
+  presetSubject?: string;
+}
+
 @Entry
 @Component
 struct CreateExamPage {
@@ -35,6 +40,14 @@ struct CreateExamPage {
   @State busy: boolean = false;
 
   aboutToAppear(): void {
+    const p = router.getParams() as CreateParams | null;
+    if (p !== null && p.presetLayout !== undefined && p.presetLayout !== '') {
+      this.layoutText = p.presetLayout;
+      if (p.presetSubject !== undefined && p.presetSubject !== '') {
+        this.subject = p.presetSubject;
+      }
+      promptAction.showToast({ message: '已带入拍卷识别的版式,请核对分值后建考', duration: 3500 });
+    }
     this.load();
   }
 
@@ -279,10 +292,13 @@ struct CreateExamPage {
             // 版式(仅常规)
             if (!this.manualMode) {
               Column({ space: 8 }) {
-                SectionHeader({ text: '答题卡版式(JSON)', extra: '电脑端设计器产出' })
-                Text('答题卡请在电脑端设计器(index.html)制作并导出版式 JSON,通过「文件」导入;扫描件可建考后在手机拍照上传。')
+                SectionHeader({ text: '答题卡版式(JSON)', extra: '识别 / 设计器' })
+                Text('可「拍试卷识别」自动生成版式,或电脑端设计器(index.html)制作后经「文件」导入;扫描件可建考后在手机拍照上传。')
                   .fontSize(11).fontColor(OgC.INK_SUB)
                 Row({ space: 10 }) {
+                  PrimaryButton({ label: '📷 拍试卷识别', onTap: () => {
+                    router.pushUrl({ url: 'pages/teacher/LayoutScanPage' }).catch(() => {});
+                  } })
                   PrimaryButton({ label: '📂 导入版式文件', onTap: () => this.pickLayoutFile() })
                   GhostButton({ label: '清空', onTap: () => {
                     this.layoutText = '';

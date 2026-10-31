@@ -10,7 +10,7 @@ import { OgSession } from '../../common/OgSession';
 import { OgC, OgDim } from '../../common/OgTheme';
 import { OgFormat } from '../../common/OgFormat';
 import {
-  StaffStudentDetail, StudentAppealItem, StudentQuestion, SubjectiveState, Stroke
+  PartState, StaffStudentDetail, StudentAppealItem, StudentQuestion, SubjectiveState, Stroke
 } from '../../model/Api';
 import { ErrorView, KVRow, LoadingView, Pill, PrimaryButton, SectionHeader } from '../../components/Ui';
 import { OgImage } from '../../components/OgImage';
@@ -307,7 +307,7 @@ struct ReviewPage {
       }
       .width('100%')
       if (st.parts !== undefined && st.parts !== null && st.parts.length > 0) {
-        ForEach(st.parts, (pt: PartRow, idx: number) => {
+        ForEach(st.parts, (pt: PartState, idx: number) => {
           Row({ space: 8 }) {
             Text('(' + (idx + 1) + ') ' + OgFormat.score(pt.score) + ' 分')
               .fontSize(12).fontColor(OgC.INK_SUB).width(64)
@@ -318,7 +318,7 @@ struct ReviewPage {
             Text(pt.graded ? '已阅' : '未阅').fontSize(10).fontColor(pt.graded ? OgC.INK_SUB : OgC.WARN)
           }
           .width('100%')
-        }, (pt: PartRow, idx: number) => 'p' + idx + '-' + this.bufOf(st.question, idx + 1))
+        }, (pt: PartState, idx: number) => 'p' + idx + '-' + this.bufOf(st.question, idx + 1))
       } else {
         TextInput({ text: this.bufOf(st.question, 0), placeholder: '输入分数(满分 ' + OgFormat.score(st.max) + ')' })
           .type(InputType.NUMBER_DECIMAL)
@@ -385,16 +385,17 @@ struct ReviewPage {
       } else if (this.d !== null) {
         Scroll() {
           Column({ space: OgDim.GAP }) {
-            if (this.d.absent === true) {
-              Text('该生本场登记为缺考')
-                .fontSize(13).fontColor(OgC.WARN)
-                .width('100%')
-                .textAlign(TextAlign.Center)
-                .padding(12)
-                .backgroundColor(OgC.WARN_BG)
-                .borderRadius(OgDim.RADIUS)
-            } else {
-              // 成绩摘要
+      if (this.d.absent === true) {
+        Text('该生本场登记为缺考')
+          .fontSize(13).fontColor(OgC.WARN)
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .padding(12)
+          .backgroundColor(OgC.WARN_BG)
+          .borderRadius(OgDim.RADIUS)
+      } else {
+        Column({ space: OgDim.GAP }) {
+        // 成绩摘要
               Column({ space: 6 }) {
                 Row() {
                   Column({ space: 2 }) {
@@ -524,9 +525,10 @@ struct ReviewPage {
               .borderRadius(OgDim.RADIUS)
               .alignItems(HorizontalAlign.Start)
               Text('').height(24)
+              }
+              .padding(OgDim.PAD)
+              .width('100%')
             }
-            .padding(OgDim.PAD)
-            .width('100%')
           }
           .width('100%')
         }
@@ -587,7 +589,3 @@ struct ReviewPage {
   }
 }
 
-interface PartRow {
-  label?: string;
-  score: number;
-}

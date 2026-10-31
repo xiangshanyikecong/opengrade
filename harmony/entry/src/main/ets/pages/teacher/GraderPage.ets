@@ -3,7 +3,7 @@
 //   → 小问逐问打分自动汇总 → 选做组涂选展示 → 匿名卷隐藏考号 → 409 乐观锁拉取最新
 //   → 下一未评/待复核跳转。评分数据契约与 web 端完全一致(POST /api/v1/grades)。
 
-import { router } from '@kit.ArkUI';
+import { router, display } from '@kit.ArkUI';
 import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError, ImageCache } from '../../common/OgNet';
 import { OgSession } from '../../common/OgSession';
@@ -18,6 +18,16 @@ interface GraderParams {
   exam: string;
   q: string;
   student: string;
+}
+
+// 宽屏判定:平板/横屏(逻辑宽度 ≥620vp)切左卷右盘双栏。
+function graderIsWide(): boolean {
+  try {
+    const d = display.getDefaultDisplaySync();
+    return d.width / d.densityPixels >= 620;
+  } catch (e) {
+    return false;
+  }
 }
 
 @Entry
@@ -38,8 +48,10 @@ struct GraderPage {
   @State lastScore: number = NaN;
   @State saving: boolean = false;
   @State syncTick: number = 0; // 触发切片区域重渲染
+  @State wide: boolean = false; // 平板/横屏宽屏:左卷右盘双栏
 
   aboutToAppear(): void {
+    this.wide = graderIsWide();
     const p = router.getParams() as GraderParams | null;
     if (p === null || p.exam === undefined) {
       this.failed = true;
@@ -642,6 +654,41 @@ struct GraderPage {
         LoadingView()
       } else if (this.failed) {
         ErrorView({ msg: this.failMsg, onRetry: () => this.loadQuestion(this.qIndex, 0) })
+      } else if (this.wide) {
+        // 平板/横屏双栏:左卷右盘,互不挤占
+        Row() {
+          Scroll() {
+            Column() {
+              this.infoRow()
+              if (this.hasParts()) {
+                this.partChips()
+              }
+              SliceStage({
+                url: this.curUrl(),
+                strokes: this.curInk(),
+                inkOn: this.inkOn,
+                enhance: this.enhance,
+                missing: this.curMissing(),
+                onStrokeDone: (s: Stroke) => this.addStroke(s)
+              })
+              Text('').height(8)
+            }
+            .width('100%')
+          }
+          .layoutWeight(1.55)
+          .scrollBar(BarState.Off)
+          .align(Alignment.Top)
+          Scroll() {
+            Column() {
+              this.opsArea()
+            }
+            .width('100%')
+          }
+          .layoutWeight(1)
+          .scrollBar(BarState.Off)
+          .align(Alignment.Top)
+        }
+        .layoutWeight(1)
       } else {
         Scroll() {
           Column() {
@@ -664,68 +711,72 @@ struct GraderPage {
         .layoutWeight(1)
         .scrollBar(BarState.Off)
         .align(Alignment.Top)
-
-        // 操作区
-        Column({ space: 6 }) {
-          Row({ space: 10 }) {
-            Text('✓')
-              .fontSize(18).fontColor(OgC.GOOD).padding(6)
-              .onClick(() => this.toggleMark('check'))
-            Text('✗')
-              .fontSize(18).fontColor(OgC.BAD).padding(6)
-              .onClick(() => this.toggleMark('cross'))
-            Text('⚑')
-              .fontSize(18).fontColor(OgC.FLAG).padding(6)
-              .onClick(() => this.toggleMark('flag'))
-            Blank()
-            Text('清笔迹').fontSize(12).fontColor(OgC.INK_SUB).padding(6)
-              .onClick(() => this.clearInk())
-            Text('待复核 ›').fontSize(12).fontColor(OgC.FLAG).padding(6)
-              .onClick(() => this.jumpNextFlagged())
-            Text('下一未评 ›').fontSize(12).fontColor(OgC.BRAND).padding(6)
-              .onClick(() => this.jumpNextUngraded())
-          }
-          .width('100%')
-          .padding({ left: OgDim.PAD, right: OgDim.PAD })
-          ScorePad({
-            cap: this.cap(),
-            lastScore: this.lastScore,
-            onScore: (v: number): void => {
-              this.applyScore(v);
-            },
-            onNudge: (d: number): void => {
-              this.applyNudge(d);
-            },
-            onSame: (): void => {
-              this.applySame();
-            }
-          })
-          Row({ space: 10 }) {
-            Text('‹ 上一份')
-              .fontSize(13).fontColor(OgC.INK)
-              .padding({ left: 14, right: 14, top: 10, bottom: 10 })
-              .backgroundColor(OgC.CARD)
-              .borderRadius(8)
-              .onClick(() => this.prev())
-            Blank()
-            Text('下一份 ›')
-              .fontSize(13).fontColor(Color.White)
-              .padding({ left: 18, right: 18, top: 10, bottom: 10 })
-              .backgroundColor(OgC.BRAND)
-              .borderRadius(8)
-              .onClick(() => this.next())
-          }
-          .width('100%')
-          .padding({ left: OgDim.PAD, right: OgDim.PAD, bottom: 8 })
-        }
-        .width('100%')
-        .backgroundColor(OgC.BG)
-        .border({ width: { top: 1 }, color: OgC.LINE })
+        this.opsArea()
       }
     }
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
+  }
+
+  // 操作区(评分盘 + 标记 + 翻卷):窄屏沉底,宽屏右栏。
+  @Builder
+  opsArea() {
+    Column({ space: 6 }) {
+      Row({ space: 10 }) {
+        Text('✓')
+          .fontSize(18).fontColor(OgC.GOOD).padding(6)
+          .onClick(() => this.toggleMark('check'))
+        Text('✗')
+          .fontSize(18).fontColor(OgC.BAD).padding(6)
+          .onClick(() => this.toggleMark('cross'))
+        Text('⚑')
+          .fontSize(18).fontColor(OgC.FLAG).padding(6)
+          .onClick(() => this.toggleMark('flag'))
+        Blank()
+        Text('清笔迹').fontSize(12).fontColor(OgC.INK_SUB).padding(6)
+          .onClick(() => this.clearInk())
+        Text('待复核 ›').fontSize(12).fontColor(OgC.FLAG).padding(6)
+          .onClick(() => this.jumpNextFlagged())
+        Text('下一未评 ›').fontSize(12).fontColor(OgC.BRAND).padding(6)
+          .onClick(() => this.jumpNextUngraded())
+      }
+      .width('100%')
+      .padding({ left: OgDim.PAD, right: OgDim.PAD })
+      ScorePad({
+        cap: this.cap(),
+        lastScore: this.lastScore,
+        onScore: (v: number): void => {
+          this.applyScore(v);
+        },
+        onNudge: (d: number): void => {
+          this.applyNudge(d);
+        },
+        onSame: (): void => {
+          this.applySame();
+        }
+      })
+      Row({ space: 10 }) {
+        Text('‹ 上一份')
+          .fontSize(13).fontColor(OgC.INK)
+          .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+          .backgroundColor(OgC.CARD)
+          .borderRadius(8)
+          .onClick(() => this.prev())
+        Blank()
+        Text('下一份 ›')
+          .fontSize(13).fontColor(Color.White)
+          .padding({ left: 18, right: 18, top: 10, bottom: 10 })
+          .backgroundColor(OgC.BRAND)
+          .borderRadius(8)
+          .onClick(() => this.next())
+      }
+      .width('100%')
+      .padding({ left: OgDim.PAD, right: OgDim.PAD, bottom: 8 })
+    }
+    .width('100%')
+    .backgroundColor(OgC.BG)
+    .border({ width: { top: 1 }, color: OgC.LINE })
   }
 }
 

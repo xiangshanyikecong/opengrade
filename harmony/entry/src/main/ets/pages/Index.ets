@@ -1,9 +1,10 @@
-// 路由分发(启动页):初始化会话 → 按角色落地。
+// 路由分发(启动页):初始化会话 → 应用深色档位 → 应用锁门禁 → 按角色落地。
 //   未登录 → 登录页;强制改密 → 改密页;
-//   student/parent → 学生端;teacher → 我的任务;admin/leader → 考试列表。
+//   student/parent → 学生端;teacher → 工作台。
 
 import { router } from '@kit.ArkUI';
 import { OgSession } from '../common/OgSession';
+import { AppLock } from '../common/AppLock';
 import { OgC } from '../common/OgTheme';
 
 @Entry
@@ -27,21 +28,31 @@ struct Index {
 
   aboutToAppear(): void {
     OgSession.init(getContext(this))
-      .then(() => {
+      .then(async () => {
+        await AppLock.ensure(getContext(this));
+        // 深色档位:auto=跟随系统(EntryAbility 已同步系统值)
+        OgC.setMode(OgSession.themeMode());
+        // 目标页
+        let target = 'pages/teacher/HomePage';
         if (!OgSession.loggedIn()) {
-          router.replaceUrl({ url: 'pages/LoginPage' }).catch(() => {});
-          return;
-        }
-        const me = OgSession.me();
-        if (me !== null && me.mustChangePassword) {
-          router.replaceUrl({ url: 'pages/ForcePwdPage' }).catch(() => {});
-          return;
-        }
-        if (OgSession.isStudentish()) {
-          router.replaceUrl({ url: 'pages/student/StudentHomePage' }).catch(() => {});
+          target = 'pages/LoginPage';
         } else {
-          router.replaceUrl({ url: 'pages/teacher/HomePage' }).catch(() => {});
+          const me = OgSession.me();
+          if (me !== null && me.mustChangePassword) {
+            target = 'pages/ForcePwdPage';
+          } else if (OgSession.isStudentish()) {
+            target = 'pages/student/StudentHomePage';
+          }
         }
+        // 应用锁:开锁后直达目标页(避免过 splash 二跳)
+        if (target !== 'pages/LoginPage' && AppLock.enabled()) {
+          router.replaceUrl({
+            url: 'pages/common/LockPage',
+            params: { 'next': target } as Record<string, string>
+          }).catch(() => {});
+          return;
+        }
+        router.replaceUrl({ url: target }).catch(() => {});
       })
       .catch(() => {
         router.replaceUrl({ url: 'pages/LoginPage' }).catch(() => {});

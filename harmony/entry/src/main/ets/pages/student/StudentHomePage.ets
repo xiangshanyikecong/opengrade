@@ -4,6 +4,7 @@
 import { router } from '@kit.ArkUI';
 import { OgNet, OgError } from '../../common/OgNet';
 import { OgSession } from '../../common/OgSession';
+import { OgCache } from '../../common/OgCache';
 import { OgC, OgDim } from '../../common/OgTheme';
 import { OgFormat } from '../../common/OgFormat';
 import { StudentExamItem } from '../../model/Api';
@@ -22,6 +23,8 @@ struct StudentHomePage {
   @State failed: boolean = false;
   @State failMsg: string = '';
   @State refreshing: boolean = false;
+  @State offline: boolean = false; // 断网时展示缓存数据
+  @State newIds: Record<string, boolean> = {}; // 本机未读的新发布成绩
 
   aboutToAppear(): void {
     const me = OgSession.me();
@@ -41,15 +44,68 @@ struct StudentHomePage {
     return '';
   }
 
+  private cacheKey(): string {
+    return 'student_exams_' + (this.curChild === '' ? 'self' : this.curChild);
+  }
+
+  private async seenMap(): Promise<Record<string, boolean>> {
+    const raw = await OgSession.getJson('seenExams');
+    if (raw === '') {
+      return {};
+    }
+    try {
+      return JSON.parse(raw) as Record<string, boolean>;
+    } catch (e) {
+      return {};
+    }
+  }
+
+  private async markSeen(id: string): Promise<void> {
+    const m = await this.seenMap();
+    m[id] = true;
+    await OgSession.setJson('seenExams', JSON.stringify(m));
+    const next: Record<string, boolean> = {};
+    for (const k of Object.keys(this.newIds)) {
+      if (k !== id) {
+        next[k] = true;
+      }
+    }
+    this.newIds = next;
+  }
+
   private async load(): Promise<void> {
     this.loading = this.items.length === 0;
     this.failed = false;
+    this.offline = false;
     try {
       const resp = await OgNet.jget<Record<string, Object>>('/api/v1/student/exams' + this.childQ());
       const arr = resp['exams'] as StudentExamItem[];
       this.items = arr ?? [];
+      OgCache.save(this.cacheKey(), JSON.stringify(resp));
+      // 新发布角标:本机未见过的考试(仅首次浏览标记,进详情即消)
+      const seen = await this.seenMap();
+      const fresh: Record<string, boolean> = {};
+      for (const it of this.items) {
+        if (!it.absent && seen[it.id] !== true) {
+          fresh[it.id] = true;
+        }
+      }
+      this.newIds = fresh;
     } catch (e) {
-      if (!this.refreshing) {
+      // 断网兜底:展示最近一次成功拉取的列表(带「离线数据」提示)
+      const cached = OgCache.load(this.cacheKey());
+      if (cached !== '') {
+        try {
+          const resp = JSON.parse(cached) as Record<string, Object>;
+          this.items = (resp['exams'] as StudentExamItem[]) ?? [];
+          this.offline = true;
+        } catch (e2) {
+          if (!this.refreshing) {
+            this.failed = true;
+            this.failMsg = e instanceof OgError ? e.message : '加载失败';
+          }
+        }
+      } else if (!this.refreshing) {
         this.failed = true;
         this.failMsg = e instanceof OgError ? e.message : '加载失败';
       }
@@ -65,6 +121,9 @@ struct StudentHomePage {
         Text((it.subject !== undefined && it.subject !== '') ? it.subject : '未标学科')
           .fontSize(15).fontWeight(FontWeight.Bold).fontColor(OgC.INK).layoutWeight(1)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (this.newIds[it.id] === true) {
+          Pill({ text: '新成绩', color: OgC.BAD })
+        }
         if (it.absent) {
           Pill({ text: '缺考', color: OgC.WARN })
         }
@@ -103,6 +162,7 @@ struct StudentHomePage {
     .backgroundColor(OgC.CARD)
     .borderRadius(OgDim.RADIUS)
     .onClick(() => {
+      this.markSeen(it.id);
       router.pushUrl({
         url: 'pages/student/StudentExamDetailPage',
         params: { 'id': it.id, 'child': this.curChild } as Record<string, string>
@@ -184,7 +244,18 @@ struct StudentHomePage {
         .padding({ left: OgDim.PAD, right: OgDim.PAD, top: 8, bottom: 4 })
       }
       if (this.activeTab === 0) {
-        this.examTab()
+        Column() {
+          if (this.offline) {
+            Text('⚠ 当前离线,展示最近一次加载的成绩(联网后自动刷新)')
+              .fontSize(12).fontColor(OgC.WARN)
+              .width('100%')
+              .textAlign(TextAlign.Center)
+              .padding(8)
+              .backgroundColor(OgC.WARN_BG)
+          }
+          this.examTab()
+        }
+        .layoutWeight(1)
       } else if (this.activeTab === 1) {
         StudentTrendsView({ childOf: this.curChild })
       } else {

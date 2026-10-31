@@ -742,6 +742,22 @@ struct ExamHubPage {
   @Builder
   exportList() {
     Flex({ wrap: FlexWrap.Wrap }) {
+      Text('成绩条 PDF 预览')
+        .fontSize(12)
+        .fontColor(OgC.BLUE)
+        .border({ width: 1, color: OgC.BLUE, radius: 12 })
+        .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+        .margin({ right: 8, bottom: 8 })
+        .onClick(() => {
+          router.pushUrl({
+            url: 'pages/common/PdfViewerPage',
+            params: {
+              'url': '/api/v1/exams/' + this.examId + '/slips.pdf',
+              'title': '全班成绩条',
+              'fileName': 'opengrade-slips-' + this.examId + '.pdf'
+            } as Record<string, string>
+          }).catch(() => {});
+        })
       ForEach(this.exportItems(), (it: ExportItem) => {
         Text(it.label)
           .fontSize(12)

@@ -329,8 +329,32 @@
     (横向滚动表格,缺考/无卷标记,可见科目口径提示)、阅卷任务分配(按题/按班 + 截止)、
     题库只读列表(题干缩略图)、用户管理(列表/搜索/新建/重置密码/删除)
 - [x] 文档:docs/harmony-app.md(架构/契约/真机构建与冒烟清单/已知边界);README 鸿蒙一节
-- [ ] 真机验证项:@ohos.file.pdf 拆页启用、带笔迹的捏合缩放放大镜、知识点雷达图、
-    离线缓存、上架签名(AppGallery 企业内部分发)——依赖 DevEco 环境与设备
+- [x] **M-H2 体验扩展批(2026-10-31,第一/二梯队 + 应用锁,9 项)**:
+    **拍卷建考** `pages/teacher/LayoutScanPage`(拍照/相册 → `POST /api/v1/layout/analyze` 逐页累计 →
+    逐题人工确认(题型/选项/分值可改,题干截图/叠加标注图核对)→ 生成 v2 版式 JSON 带入建考
+    (CreateExam 接收 `presetLayout`/`presetSubject`)或批量导入题库(题干截图随题上传,部分失败不回滚));
+    **PDF 拆页** UploadScans「从 PDF 导入」:pdfService 拷沙箱 → loadDocument → 逐页 getAreaPixelMap
+    (长边 2200px≈265dpi)→ packToData JPEG 入待上传队列(PdfViewerPage 复用同管线);
+    **待办中心** `pages/teacher/TodoPage`(聚合 my/tasks + exams:阅卷任务/异常待裁决/⚑待复核/复核申请/待发布,
+    紧急置顶;reminderAgentManager 本地日历提醒=截止前 2 小时,PUBLISH_AGENT_REMINDER + requestEnableNotification,
+    零云依赖);**成绩单 PDF 预览与分享** `pages/common/PdfViewerPage`(逐页渲染 + 翻页 + systemShare 分享 +
+    另存为;学生端 report.pdf、ExamHub slips.pdf 双入口);
+    **阅卷放大镜**:ImageViewerPage 支持 `strokesJson`(图 + InkCanvas 同层 contain 适配,捏合缩放/拖动/
+    双击复位,笔迹随图缩放;SliceStage 全屏深链带笔迹);
+    **知识点雷达图** Charts.RadarChart(≤12 轴,Analytics 与学生详情掌握度区头部);
+    **离线缓存**:OgImageCodec 三级取数(内存→磁盘 filesDir/imgcache→网络,网络回写磁盘,LRU 400 张,
+    「清理缓存」显式清)+ OgCache JSON 落盘(学生端成绩列表/详情断网兜底 + 「离线数据」横幅)+
+    学生端「新成绩」角标(本机已读集合,进详情即消);
+    **深色模式**:OgC 静态 getter 派发(浅/深双调色板,auto=跟随系统 EntryAbility.onConfigurationUpdate 同步,
+    Me 页 auto/light/dark 手动档;驻留页下次进入刷新);
+    **平板双栏阅卷**:Grader ≥620vp(display)左卷右盘双栏(手机沉底布局不变);
+    **应用锁**:AppLock(PIN 4~6 位 SHA-256 本地存 + UserAuthKit 指纹/人脸 ATL1)+ LockPage(数字键盘/
+    生物自动拉起)+ Index 冷启动门禁 + EntryAbility 后台→前台锁定意图(单次消费防竞态)+
+    Me 页开关(开锁需验 PIN;权限 ACCESS_BIOMETRIC);
+    路由表 30 页,module.json5 增 PUBLISH_AGENT_REMINDER/ACCESS_BIOMETRIC
+- [ ] 真机验证项:pdfService 拆页/预览真机验证(PdfMatrix.rotate 取 0 若报错需回读文档)、
+    生物识别 ATL1 实机可用性、系统分享面板对沙箱文件 URI 的授权、深色模式下 Canvas 图表重绘时机、
+    上架签名(AppGallery 企业内部分发)——依赖 DevEco 环境与设备
 
 ## M4 商业企业版(EE,方案稿第 2~3 阶段商业支柱)
 

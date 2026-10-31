@@ -1,11 +1,17 @@
-// 补传扫描:相册多选 / 系统相机拍照 → 拷入沙箱 → 分批接力上传(每批 5 张,失败卷单独报告)。
-// 一期仅收 JPEG/PNG(OMR 服务端透视矫正对照片同样生效);PDF 拆页提示电脑端。
+// 补传扫描:相册多选 / 系统相机拍照 / 本地 PDF 拆页(pdfService 渲染逐页出 JPEG)
+// → 拷入沙箱 → 分批接力上传(每批 5 张,失败卷单独报告)。
+// OMR 服务端透视矫正对手机直拍同样生效。
 
 import { router } from '@kit.ArkUI';
 import { promptAction } from '@kit.ArkUI';
 import { camera, cameraPicker } from '@kit.CameraKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
+import { picker } from '@kit.CoreFileKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { image } from '@kit.ImageKit';
+import { pdfService } from '@kit.PDFKit';
 import { OgNet, OgError, UploadFile } from '../../common/OgNet';
+import { OgSession } from '../../common/OgSession';
 import { OgC, OgDim } from '../../common/OgTheme';
 import { ErrorView, PrimaryButton, SectionHeader, TitleBar } from '../../components/Ui';
 
@@ -82,6 +88,92 @@ struct UploadScansPage {
       }
     } catch (e) {
       // 用户取消
+    }
+  }
+
+  // PDF 拆页:选 PDF → 拷沙箱 → pdfService 逐页渲染(长边约 2200px ≈265dpi,保二维码可读)
+  // → 编码 JPEG 入待上传队列。服务端多页按页考号归组,卡纸跳页只告警对应学生。
+  private async importPdf(): Promise<void> {
+    const dp = new picker.DocumentViewPicker();
+    const opts: picker.DocumentSelectOptions = { maxSelectNumber: 1 };
+    let uri = '';
+    try {
+      const uris = await dp.select(opts);
+      if (uris.length === 0) {
+        return;
+      }
+      uri = uris[0];
+    } catch (e) {
+      return; // 用户取消
+    }
+    this.busy = true;
+    this.logLines.unshift('ℹ 正在拆分 PDF…');
+    let pdfPath = '';
+    try {
+      pdfPath = await OgNet.copyUriToCache(uri, 'pdf_' + Date.now() + '.pdf');
+      const doc = new pdfService.PdfDocument();
+      const loadResult = doc.loadDocument(pdfPath, '');
+      if (loadResult !== pdfService.ParseResult.PARSE_SUCCESS) {
+        throw new OgError(0, '无法解析该 PDF(可能已加密或损坏)');
+      }
+      const n = doc.getPageCount();
+      if (n <= 0) {
+        throw new OgError(0, 'PDF 没有页面');
+      }
+      const packer = image.createImagePacker();
+      for (let i = 0; i < n; i++) {
+        const page = doc.getPage(i);
+        let pm: image.PixelMap | null = null;
+        try {
+          const w = page.getWidth();
+          const h = page.getHeight();
+          const matrix: pdfService.PdfMatrix = { x: 0, y: 0, width: w, height: h, rotate: 0 };
+          const target = 2200;
+          const bw = w >= h ? target : Math.max(400, Math.round(target * w / h));
+          const bh = w >= h ? Math.max(400, Math.round(target * h / w)) : target;
+          pm = page.getAreaPixelMap(matrix, bw, bh, false, false);
+          const packing: image.PackingOption = { format: 'image/jpeg', quality: 88 };
+          const jpg = await packer.packToData(pm, packing);
+          const name = 'pdfpg_' + Date.now() + '_' + this.picked.length + '.jpg';
+          const outPath = OgSession.context().cacheDir + '/' + name;
+          const f = fs.openSync(outPath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+          try {
+            fs.writeSync(f.fd, jpg);
+          } finally {
+            fs.closeSync(f.fd);
+          }
+          this.picked.push(outPath);
+          this.logLines.unshift('✓ 第 ' + (i + 1) + '/' + n + ' 页已拆出');
+        } catch (e) {
+          this.logLines.unshift('✗ 第 ' + (i + 1) + ' 页渲染失败,已跳过');
+        } finally {
+          if (pm !== null) {
+            try {
+              pm.release();
+            } catch (e) {
+              // 忽略
+            }
+          }
+          try {
+            page.release();
+          } catch (e) {
+            // 忽略
+          }
+        }
+      }
+      doc.releaseDocument();
+      this.logLines.unshift('✓ 拆页完成,共待上传 ' + this.picked.length + ' 张');
+    } catch (e) {
+      this.logLines.unshift('✗ PDF 导入失败:' + (e instanceof OgError ? e.message : '文件不可读'));
+    } finally {
+      if (pdfPath !== '') {
+        try {
+          fs.unlinkSync(pdfPath);
+        } catch (e) {
+          // 忽略
+        }
+      }
+      this.busy = false;
     }
   }
 
@@ -167,7 +259,16 @@ struct UploadScansPage {
                 PrimaryButton({ label: '🖼 相册多选', fill: true, onTap: () => this.pickAlbum() })
               }
               .width('100%')
-              Text('整卷平放、光线均匀、四角完整;支持手机直拍(服务端自动透视矫正)。多页 PDF 请在电脑端导入。')
+              Row({ space: 10 }) {
+                PrimaryButton({
+                  label: '📄 从 PDF 导入(自动拆页)',
+                  full: true,
+                  usable: !this.busy,
+                  onTap: () => this.importPdf()
+                })
+              }
+              .width('100%')
+              Text('整卷平放、光线均匀、四角完整;支持手机直拍(服务端自动透视矫正)。扫描仪出的 PDF 文件选「从 PDF 导入」自动逐页拆分(加密 PDF 不支持)。')
                 .fontSize(11).fontColor(OgC.INK_SUB)
             }
             .width('100%')

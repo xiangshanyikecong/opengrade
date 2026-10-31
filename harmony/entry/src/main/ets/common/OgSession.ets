@@ -9,6 +9,7 @@ const KEY_BASE: string = 'baseUrl';
 const KEY_TOKEN: string = 'token';
 const KEY_ME: string = 'me';
 const KEY_LOW_DATA: string = 'lowData';
+const KEY_THEME: string = 'themeMode';
 
 export class OgSession {
   private static prefs: preferences.Preferences | null = null;
@@ -17,6 +18,7 @@ export class OgSession {
   private static meValue: Me | null = null;
   private static ctx: Context | null = null;
   private static lowDataValue: boolean = false;
+  private static themeModeValue: string = 'auto'; // auto | light | dark
 
   // 由首页/登录页在 aboutToAppear 时初始化(context 取 UIAbility 上下文)。
   static async init(context: Context): Promise<void> {
@@ -36,6 +38,36 @@ export class OgSession {
       }
     }
     OgSession.lowDataValue = (await OgSession.prefs.get(KEY_LOW_DATA, false)) as boolean;
+    OgSession.themeModeValue = (await OgSession.prefs.get(KEY_THEME, 'auto')) as string;
+  }
+
+  // 深色模式策略:auto=跟随系统 | light | dark(颜色经 OgC getter 派发)。
+  static themeMode(): string {
+    return OgSession.themeModeValue;
+  }
+
+  static setThemeMode(v: string): void {
+    OgSession.themeModeValue = v;
+    if (OgSession.prefs !== null) {
+      OgSession.prefs.putSync(KEY_THEME, v);
+      OgSession.prefs.flush();
+    }
+  }
+
+  // 通用 JSON 值存取(本地已读标记/提醒 id 列表等;与登录态同库,按设备隔离)。
+  static async getJson(key: string): Promise<string> {
+    if (OgSession.prefs === null) {
+      return '';
+    }
+    return (await OgSession.prefs.get(key, '')) as string;
+  }
+
+  static async setJson(key: string, value: string): Promise<void> {
+    if (OgSession.prefs === null) {
+      return;
+    }
+    await OgSession.prefs.put(key, value);
+    await OgSession.prefs.flush();
   }
 
   // 省流模式:图片解码上限降到 1200px 且关闭阅卷预加载(弱网/流量敏感场景)。

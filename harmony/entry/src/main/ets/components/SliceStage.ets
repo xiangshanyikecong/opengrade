@@ -108,9 +108,14 @@ export struct SliceStage {
     if (this.url === '') {
       return;
     }
+    const params: Record<string, string> = { 'url': this.url, 'title': '切片细看' };
+    // 带笔迹进查看器:放大镜模式(图 + 笔迹同层捏合缩放)
+    if (this.strokes.length > 0) {
+      params['strokesJson'] = JSON.stringify(this.strokes);
+    }
     router.pushUrl({
       url: 'pages/common/ImageViewerPage',
-      params: { 'url': this.url, 'title': '切片细看' } as Record<string, string>
+      params: params
     }).catch(() => {});
   }
 

@@ -8,7 +8,7 @@ import { OgC, OgDim } from '../../common/OgTheme';
 import { OgFormat } from '../../common/OgFormat';
 import { AnalyticsResp, ClassStat, QuestionStatView } from '../../model/Api';
 import { ErrorView, GhostButton, LoadingView, SectionHeader, TitleBar } from '../../components/Ui';
-import { BarChart, HBarList, HBarItem } from '../../components/Charts';
+import { BarChart, HBarList, HBarItem, RadarChart, RadarItem } from '../../components/Charts';
 
 interface AnalyticsParams {
   exam: string;
@@ -68,6 +68,17 @@ struct AnalyticsPage {
         rate: k.rate,
         extra: k.questions + '题 · ' + OgFormat.pct(k.rate) + ' · ' + k.answers + ' 样本'
       } as HBarItem);
+    }
+    return out;
+  }
+
+  private knowledgeRadar(): RadarItem[] {
+    if (this.d === null) {
+      return [];
+    }
+    const out: RadarItem[] = [];
+    for (const k of this.d.knowledge) {
+      out.push({ name: k.name, rate: k.rate } as RadarItem);
     }
     return out;
   }
@@ -164,6 +175,7 @@ struct AnalyticsPage {
             if (this.d.knowledge.length > 0) {
               Column({ space: 6 }) {
                 SectionHeader({ text: '知识点掌握度(薄弱排前)' })
+                RadarChart({ items: this.knowledgeRadar(), chartHeight: 230 })
                 HBarList({ items: this.knowledgeItems() })
               }
               .width('100%')

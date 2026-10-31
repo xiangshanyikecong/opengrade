@@ -16,7 +16,9 @@ interface QuickEntry {
 }
 
 const QUICK: QuickEntry[] = [
+  { label: '🔔 待办中心', url: 'pages/teacher/TodoPage' },
   { label: '📋 我的任务', url: 'pages/teacher/TaskListPage' },
+  { label: '📷 拍卷建考', url: 'pages/teacher/LayoutScanPage' },
   { label: '📝 考试列表', url: 'pages/teacher/ExamListPage' },
   { label: '➕ 新建考试', url: 'pages/teacher/CreateExamPage' },
   { label: '👥 任务分配', url: 'pages/teacher/AssignPage' },
@@ -271,7 +273,7 @@ struct HomePage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: 360, dragBar: true, title: { title: '工作台导航' }
+      height: 460, dragBar: true, title: { title: "工作台导航" }
     })
   }
 

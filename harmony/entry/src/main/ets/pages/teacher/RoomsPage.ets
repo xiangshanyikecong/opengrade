@@ -19,6 +19,16 @@ interface SeatRef {
   idx: number;
 }
 
+interface SwapBody {
+  a: SeatRef;
+  b: SeatRef;
+}
+
+interface ProctorBody {
+  room: string;
+  teacher: string;
+}
+
 @Entry
 @Component
 struct RoomsPage {
@@ -104,8 +114,9 @@ struct RoomsPage {
     }
     this.busy = true;
     try {
+      const swap: SwapBody = { a: a, b: b };
       await OgNet.jpatch<Record<string, Object>>('/api/v1/exams/' + this.examId + '/rooms', {
-        'swap': { 'a': a, 'b': b }
+        'swap': swap
       } as Record<string, Object>);
       promptAction.showToast({ message: '已对调' });
       this.selA = null;
@@ -124,8 +135,9 @@ struct RoomsPage {
     }
     this.busy = true;
     try {
+      const proctor: ProctorBody = { room: room, teacher: teacher };
       await OgNet.jpatch<Record<string, Object>>('/api/v1/exams/' + this.examId + '/rooms', {
-        'proctor': { 'room': room, 'teacher': teacher }
+        'proctor': proctor
       } as Record<string, Object>);
       await this.load();
     } catch (e) {
@@ -376,7 +388,9 @@ struct RoomsPage {
               this.roomCard(room)
             }
           }, (room: RoomRow) => room.name + '-' + this.roomSig(room))
-          Text('').height(20)
+          ListItem() {
+            Text('').height(20)
+          }
         }
         .layoutWeight(1)
         .width('100%')
@@ -406,7 +420,7 @@ struct RoomsPage {
         Column({ space: 3 }) {
           Text('每场人数(5~200)').fontSize(11).fontColor(OgC.INK_SUB).width('100%')
           TextInput({ text: this.genSize, placeholder: '30' })
-            .type(InputType.NUMBER)
+            .type(InputType.Number)
             .fontSize(14).height(40).width('100%')
             .onChange((v: string) => {
               this.genSize = v;

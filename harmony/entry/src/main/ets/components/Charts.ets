@@ -1,4 +1,4 @@
-// Canvas 自绘图表:折线(趋势)、柱状(分数段)、横条(知识点掌握度)。
+// Canvas 自绘图表:折线(趋势)、柱状(分数段)、横条(知识点掌握度)、雷达(知识点概览)。
 // 绘制口径对齐 web/common.js 的 chartLine:左侧留白 46、底部留白 30、空值断线。
 
 import { OgC } from '../common/OgTheme';
@@ -320,5 +320,130 @@ export struct HBarList {
       }, (it: HBarItem) => it.name)
     }
     .width('100%')
+  }
+}
+
+export interface RadarItem {
+  name: string;
+  rate: number; // 0~1
+}
+
+// 知识点掌握度雷达图(概览形态;细节数值看下方横条)。
+// 轴数超过 12 时截取前 12 个(雷达图轴过多不可读,横条看全量)。
+@Component
+export struct RadarChart {
+  @Prop @Watch('redraw') items: RadarItem[] = [];
+  @Prop chartHeight: number = 240;
+  private settings: RenderingContextSettings = new RenderingContextSettings(true);
+  private ctx: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.settings);
+  private ready: boolean = false;
+
+  redraw(): void {
+    if (this.ready) {
+      this.draw();
+    }
+  }
+
+  private draw(): void {
+    const ctx = this.ctx;
+    const W = ctx.width;
+    const H = ctx.height;
+    ctx.clearRect(0, 0, W, H);
+    const n = Math.min(12, this.items.length);
+    if (n < 3) {
+      ctx.fillStyle = OgC.INK_SUB;
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      if (this.items.length > 0) {
+        ctx.fillText('知识点不足 3 个,请看下方横条', W / 2, H / 2);
+      }
+      return;
+    }
+    const padT = 26;
+    const cx = W / 2;
+    const cy = padT + (H - padT - 10) / 2;
+    const R = Math.min(W / 2 - 46, H - padT - 24);
+    if (R <= 30) {
+      return;
+    }
+    // 网格环(4 档)
+    ctx.strokeStyle = OgC.LINE;
+    ctx.fillStyle = OgC.INK_SUB;
+    ctx.lineWidth = 1;
+    for (let ring = 1; ring <= 4; ring++) {
+      ctx.beginPath();
+      for (let i = 0; i < n; i++) {
+        const ang = -Math.PI / 2 + (Math.PI * 2 * i) / n;
+        const r = (R * ring) / 4;
+        const x = cx + r * Math.cos(ang);
+        const y = cy + r * Math.sin(ang);
+        if (i === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+      ctx.closePath();
+      ctx.stroke();
+    }
+    // 轴线 + 标签
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'center';
+    for (let i = 0; i < n; i++) {
+      const ang = -Math.PI / 2 + (Math.PI * 2 * i) / n;
+      const x = cx + R * Math.cos(ang);
+      const y = cy + R * Math.sin(ang);
+      ctx.strokeStyle = OgC.LINE;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+      const lx = cx + (R + 14) * Math.cos(ang);
+      const ly = cy + (R + 14) * Math.sin(ang);
+      let label = this.items[i].name;
+      if (label.length > 5) {
+        label = label.substring(0, 5);
+      }
+      ctx.fillStyle = OgC.INK_SUB;
+      ctx.fillText(label, lx, ly + 4);
+    }
+    // 数据多边形
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const ang = -Math.PI / 2 + (Math.PI * 2 * i) / n;
+      const r = R * Math.max(0.04, Math.min(1, this.items[i].rate));
+      const x = cx + r * Math.cos(ang);
+      const y = cy + r * Math.sin(ang);
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.closePath();
+    ctx.fillStyle = OgC.BRAND + '40';
+    ctx.fill();
+    ctx.strokeStyle = OgC.BRAND;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // 顶点
+    for (let i = 0; i < n; i++) {
+      const ang = -Math.PI / 2 + (Math.PI * 2 * i) / n;
+      const r = R * Math.max(0.04, Math.min(1, this.items[i].rate));
+      ctx.beginPath();
+      ctx.fillStyle = OgC.BRAND;
+      ctx.arc(cx + r * Math.cos(ang), cy + r * Math.sin(ang), 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  build() {
+    Canvas(this.ctx)
+      .width('100%')
+      .height(this.chartHeight)
+      .onReady(() => {
+        this.ready = true;
+        this.draw();
+      })
   }
 }

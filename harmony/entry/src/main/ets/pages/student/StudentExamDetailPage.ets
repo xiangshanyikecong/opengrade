@@ -5,13 +5,14 @@ import { router } from '@kit.ArkUI';
 import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError } from '../../common/OgNet';
 import { OgSession } from '../../common/OgSession';
+import { OgCache } from '../../common/OgCache';
 import { OgC, OgDim } from '../../common/OgTheme';
 import { OgFormat } from '../../common/OgFormat';
 import {
   StudentAppealItem, StudentExamDetail, StudentQuestion, StudentSliceRef
 } from '../../model/Api';
 import { ErrorView, KVRow, LoadingView, Pill, SectionHeader } from '../../components/Ui';
-import { HBarList, HBarItem } from '../../components/Charts';
+import { HBarList, HBarItem, RadarChart, RadarItem } from '../../components/Charts';
 import { OgImage } from '../../components/OgImage';
 
 interface DetailParams {
@@ -32,6 +33,7 @@ struct StudentExamDetailPage {
   @State appealText: string = '';
   @State appealBusy: boolean = false;
   @State pageUrls: string[] = [];
+  @State offline: boolean = false;
 
   aboutToAppear(): void {
     const p = router.getParams() as DetailParams | null;
@@ -49,19 +51,54 @@ struct StudentExamDetailPage {
     return '';
   }
 
+  private cacheKey(): string {
+    return 'student_detail_' + this.examId + (this.child === '' ? '' : '_' + this.child);
+  }
+
   private async load(): Promise<void> {
     this.loading = this.d === null;
     try {
-      this.d = await OgNet.jget<StudentExamDetail>('/api/v1/student/exams/' + this.examId + this.childQ());
+      const resp = await OgNet.jget<StudentExamDetail>('/api/v1/student/exams/' + this.examId + this.childQ());
+      this.d = resp;
       this.failed = false;
+      this.offline = false;
+      OgCache.save(this.cacheKey(), JSON.stringify(resp));
       if (this.d !== null && this.d.pageURL !== undefined && this.pageUrls.length === 0) {
         this.pageUrls = [this.d.pageURL];
       }
     } catch (e) {
-      this.failed = true;
-      this.failMsg = e instanceof OgError ? e.message : '加载失败';
+      // 断网兜底:最近一次成功拉取的详情
+      const cached = OgCache.load(this.cacheKey());
+      if (cached !== '') {
+        try {
+          this.d = JSON.parse(cached) as StudentExamDetail;
+          this.offline = true;
+          this.failed = false;
+          if (this.d !== null && this.d.pageURL !== undefined && this.pageUrls.length === 0) {
+            this.pageUrls = [this.d.pageURL];
+          }
+        } catch (e2) {
+          this.failed = true;
+          this.failMsg = e instanceof OgError ? e.message : '加载失败';
+        }
+      } else {
+        this.failed = true;
+        this.failMsg = e instanceof OgError ? e.message : '加载失败';
+      }
     }
     this.loading = false;
+  }
+
+  // 成绩单 PDF:应用内预览(可分享/另存)。
+  private openReportPdf(): void {
+    router.pushUrl({
+      url: 'pages/common/PdfViewerPage',
+      params: {
+        'url': '/api/v1/student/exams/' + this.examId + '/report.pdf' + this.childQ(),
+        'title': '成绩单',
+        'fileName': '成绩单-' + this.examId + '.pdf'
+      } as Record<string, string>
+    }).catch(() => {});
   }
 
   private shownQuestions(): StudentQuestion[] {
@@ -87,6 +124,17 @@ struct StudentExamDetailPage {
     const out: HBarItem[] = [];
     for (const k of this.d.knowledge) {
       out.push({ name: k.name, rate: k.rate, extra: k.questions + '题 · ' + OgFormat.pct(k.rate) } as HBarItem);
+    }
+    return out;
+  }
+
+  private knowledgeRadar(): RadarItem[] {
+    if (this.d === null) {
+      return [];
+    }
+    const out: RadarItem[] = [];
+    for (const k of this.d.knowledge) {
+      out.push({ name: k.name, rate: k.rate } as RadarItem);
     }
     return out;
   }
@@ -208,6 +256,15 @@ struct StudentExamDetailPage {
       .padding(12)
       .backgroundColor(OgC.CARD)
 
+      if (this.offline) {
+        Text('⚠ 当前离线,展示缓存的成绩明细(联网后自动刷新)')
+          .fontSize(12).fontColor(OgC.WARN)
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .padding(8)
+          .backgroundColor(OgC.WARN_BG)
+      }
+
       if (this.loading) {
         LoadingView()
       } else if (this.failed) {
@@ -281,6 +338,7 @@ struct StudentExamDetailPage {
               if (this.d.knowledge.length > 0) {
                 Column({ space: 8 }) {
                   SectionHeader({ text: '我的知识点掌握度(薄弱排前)' })
+                  RadarChart({ items: this.knowledgeRadar(), chartHeight: 220 })
                   HBarList({ items: this.knowledgeItems() })
                 }
                 .width('100%')
@@ -378,16 +436,21 @@ struct StudentExamDetailPage {
               .borderRadius(OgDim.RADIUS)
               .alignItems(HorizontalAlign.Start)
 
-              if (this.d.absent !== true) {
-                Button('下载成绩单 PDF')
-                  .width('100%')
-                  .height(42)
-                  .fontSize(14)
-                  .backgroundColor(OgC.CARD)
-                  .fontColor(OgC.BRAND)
-                  .border({ width: 1, color: OgC.BRAND, radius: 10 })
-                  .onClick(() => this.saveReportPdf())
-              }
+              // 非缺考分支内(absent 已窄化为非 true),成绩单按钮恒显示
+              Button('预览成绩单 PDF(可分享/打印)')
+                .width('100%')
+                .height(44)
+                .fontSize(14)
+                .backgroundColor(OgC.BRAND)
+                .onClick(() => this.openReportPdf())
+              Button('另存成绩单 PDF')
+                .width('100%')
+                .height(42)
+                .fontSize(14)
+                .backgroundColor(OgC.CARD)
+                .fontColor(OgC.BRAND)
+                .border({ width: 1, color: OgC.BRAND, radius: 10 })
+                .onClick(() => this.saveReportPdf())
 
               if (this.d.wrongQuestions.length > 0) {
                 Button('生成错题重练卡(' + this.d.wrongQuestions.length + ' 题)')

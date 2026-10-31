@@ -15,9 +15,11 @@ export interface NavItem {
 
 export const STAFF_NAV: NavItem[] = [
   { key: 'home', label: '总览', url: 'pages/teacher/HomePage', adminOnly: false },
+  { key: 'todo', label: '待办中心', url: 'pages/teacher/TodoPage', adminOnly: false },
   { key: 'tasks', label: '我的任务', url: 'pages/teacher/TaskListPage', adminOnly: false },
   { key: 'exams', label: '考试列表', url: 'pages/teacher/ExamListPage', adminOnly: false },
   { key: 'create', label: '新建考试', url: 'pages/teacher/CreateExamPage', adminOnly: false },
+  { key: 'scanbuild', label: '拍卷建考', url: 'pages/teacher/LayoutScanPage', adminOnly: false },
   { key: 'assign', label: '任务分配', url: 'pages/teacher/AssignPage', adminOnly: false, managerOnly: true },
   { key: 'trends', label: '纵向趋势', url: 'pages/teacher/StaffTrendsPage', adminOnly: false },
   { key: 'aggregate', label: '年级总表', url: 'pages/teacher/AggregatePage', adminOnly: false },
@@ -78,6 +80,5 @@ export struct StaffNavGrid {
     .rowsGap(8)
     .width('100%')
     .height(Math.ceil(STAFF_NAV.length / 3) * 62)
-    .padding(OgDim.PAD)
-  }
+    .padding(OgDim.PAD)  }
 }

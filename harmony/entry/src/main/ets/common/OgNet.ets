@@ -373,7 +373,7 @@ export class OgNet {
     return uris[0];
   }
 
-  // 清理应用沙箱缓存目录(扫描上传的临时拷贝等)+ 内存位图缓存。
+  // 清理应用沙箱缓存目录(扫描上传的临时拷贝等)+ 内存/磁盘位图缓存。
   static clearAppCache(): void {
     try {
       const ctx = OgSession.context();
@@ -389,6 +389,7 @@ export class OgNet {
       // 目录不可列举时仅清内存缓存
     }
     ImageCache.clear();
+    ImageCache.clearDisk();
   }
 
   // 测速:GET /healthz 往返毫秒;-1 = 不可达。
@@ -422,11 +423,13 @@ export class OgNet {
   }
 }
 
-// 鉴权位图内存缓存:OgImage 组件与 Grader 预加载共用;FIFO 淘汰。
+// 鉴权位图缓存:OgImage 组件与 Grader 预加载共用;内存 FIFO 淘汰 + 磁盘持久层。
+// 磁盘层存原始字节(应用 filesDir/imgcache,清理缓存不掉,离线/弱网可复用)。
 export class ImageCache {
   private static map: Map<string, image.PixelMap> = new Map();
   private static order: string[] = [];
   static readonly CAP: number = 80;
+  static readonly DISK_CAP: number = 400; // 磁盘文件数上限(超出淘汰最旧)
 
   static get(key: string): image.PixelMap | null {
     return ImageCache.map.get(key) ?? null;
@@ -455,6 +458,126 @@ export class ImageCache {
     ImageCache.order.splice(0, ImageCache.order.length);
   }
 
+  // 磁盘缓存目录(应用 filesDir 下,清「清理缓存」除外仍保留)。
+  private static diskDir(): string {
+    try {
+      return OgSession.context().filesDir + '/imgcache';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  private static diskName(url: string): string {
+    let h = 5381;
+    for (let i = 0; i < url.length; i++) {
+      h = ((h * 33) + url.charCodeAt(i)) & 0x7FFFFFFF;
+    }
+    return 'i' + h.toString(36) + '.img';
+  }
+
+  static diskPath(url: string): string {
+    const dir = ImageCache.diskDir();
+    if (dir === '') {
+      return '';
+    }
+    return dir + '/' + ImageCache.diskName(url);
+  }
+
+  // 落盘(尽力而为;写入失败不影响显示)。listSync 偶发才做一次淘汰,摊平开销。
+  static saveDisk(url: string, buf: ArrayBuffer): void {
+    const path = ImageCache.diskPath(url);
+    if (path === '') {
+      return;
+    }
+    try {
+      const dir = ImageCache.diskDir();
+      try {
+        fs.mkdirSync(dir);
+      } catch (e) {
+        // 已存在
+      }
+      const f = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      try {
+        fs.writeSync(f.fd, buf);
+      } finally {
+        fs.closeSync(f.fd);
+      }
+      if (Math.random() < 0.05) {
+        ImageCache.evictDisk(dir);
+      }
+    } catch (e) {
+      // 磁盘缓存失败静默
+    }
+  }
+
+  private static evictDisk(dir: string): void {
+    try {
+      const names: string[] = fs.listFileSync(dir);
+      if (names.length <= ImageCache.DISK_CAP) {
+        return;
+      }
+      const items: DiskFile[] = [];
+      for (const n of names) {
+        try {
+          const st = fs.statSync(dir + '/' + n);
+          items.push({ name: n, mtime: st.mtime } as DiskFile);
+        } catch (e) {
+          // 忽略
+        }
+      }
+      items.sort((a, b) => a.mtime - b.mtime);
+      const over = items.length - ImageCache.DISK_CAP;
+      for (let i = 0; i < over && i < items.length; i++) {
+        try {
+          fs.unlinkSync(dir + '/' + items[i].name);
+        } catch (e) {
+          // 忽略
+        }
+      }
+    } catch (e) {
+      // 忽略
+    }
+  }
+
+  static readDisk(url: string): ArrayBuffer | null {
+    const path = ImageCache.diskPath(url);
+    if (path === '') {
+      return null;
+    }
+    try {
+      const st = fs.statSync(path);
+      if (st.size <= 0) {
+        return null;
+      }
+      const buf = new ArrayBuffer(st.size);
+      const f = fs.openSync(path, fs.OpenMode.READ_ONLY);
+      try {
+        fs.readSync(f.fd, buf);
+      } finally {
+        fs.closeSync(f.fd);
+      }
+      return buf;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  static clearDisk(): void {
+    try {
+      const dir = ImageCache.diskDir();
+      const names: string[] = fs.listFileSync(dir);
+      for (const n of names) {
+        try {
+          fs.unlinkSync(dir + '/' + n);
+        } catch (e) {
+          // 忽略
+        }
+      }
+    } catch (e) {
+      // 目录不存在
+    }
+  }
+
   // 预取:下载 + 解码入缓存(失败静默,交由正式加载重试)。
   static async prefetch(url: string, maxDim: number): Promise<void> {
     if (ImageCache.map.has(url)) {
@@ -467,6 +590,11 @@ export class ImageCache {
       // 静默:预加载失败不打扰用户
     }
   }
+}
+
+interface DiskFile {
+  name: string;
+  mtime: number;
 }
 
 // 下载并解码为 PixelMap(可选降采样上限,防止大图占满内存)。
@@ -488,8 +616,18 @@ export class OgImageCodec {
     }
   }
 
+  // 取数顺序:内存(调用方自检)→ 磁盘 → 网络;网络成功后回写磁盘。
   static async decodeUrl(url: string, maxDim: number): Promise<image.PixelMap> {
+    const disk = ImageCache.readDisk(url);
+    if (disk !== null) {
+      try {
+        return await OgImageCodec.decodeBuf(disk, maxDim);
+      } catch (e) {
+        // 缓存文件损坏:走网络重取
+      }
+    }
     const buf = await OgNet.getBytes(url);
+    ImageCache.saveDisk(url, buf);
     return await OgImageCodec.decodeBuf(buf, maxDim);
   }
 }

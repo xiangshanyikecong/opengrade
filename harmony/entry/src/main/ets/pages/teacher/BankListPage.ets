@@ -196,7 +196,14 @@ struct BankListPage {
       return;
     }
     await OgNet.upload('/api/v1/bank/' + id + '/stem', {}, files);
-    OgNet.clearAppCache();
+    // 只清理本次 stem 临时拷贝(不动全局图片缓存)
+    for (const f of files) {
+      try {
+        fs.unlinkSync(f.filePath);
+      } catch (e) {
+        // 忽略
+      }
+    }
   }
 
   private confirmDelete(it: BankQuestion): void {
@@ -341,7 +348,7 @@ struct BankListPage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: 380, dragBar: true, title: { title: '工作台导航' }
+      height: 460, dragBar: true, title: { title: "工作台导航" }
     })
     .bindSheet($$this.formOpen, this.formBuilder(), {
       height: SheetSize.FIT_CONTENT, dragBar: true, title: { title: this.editId === '' ? '录入新题' : '编辑题目' }
@@ -399,7 +406,7 @@ struct BankListPage {
         .width('100%')
         if (this.fKind === 'choice' || this.fKind === 'multiple') {
           TextInput({ text: this.fOptions, placeholder: '选项数(2~6)' })
-            .type(InputType.NUMBER)
+            .type(InputType.Number)
             .fontSize(14).height(38).width('100%')
             .onChange((v: string) => {
               this.fOptions = v;

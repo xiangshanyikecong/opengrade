@@ -5,10 +5,12 @@ import { router } from '@kit.ArkUI';
 import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError, OgStats } from '../common/OgNet';
 import { OgSession } from '../common/OgSession';
+import { AppLock } from '../common/AppLock';
+import { OgCache } from '../common/OgCache';
 import { OgC, OgDim } from '../common/OgTheme';
 import { OgFormat } from '../common/OgFormat';
 import { Me } from '../model/Api';
-import { KVRow, SectionHeader } from '../components/Ui';
+import { GhostButton, KVRow, Pill, PrimaryButton, SectionHeader } from '../components/Ui';
 
 @Component
 export struct MeView {
@@ -24,13 +26,86 @@ export struct MeView {
   @State pinging: boolean = false;
   @State statsTick: number = 0;
   @State lowData: boolean = false;
+  // 深色模式
+  @State themeMode: string = 'auto';
+  // 应用锁
+  @State lockOn: boolean = false;
+  @State lockBio: boolean = false;
+  @State lockCanBio: boolean = false;
+  @State lockSetup: boolean = false; // 展开设置 PIN 表单
+  @State lockPin1: string = '';
+  @State lockPin2: string = '';
+  @State lockVerify: string = ''; // 关闭锁时验证
+  @State lockMsg: string = '';
+  @State lockBusy: boolean = false;
 
   aboutToAppear(): void {
     this.me = OgSession.me();
     this.lowData = OgSession.lowData();
+    this.themeMode = OgSession.themeMode();
+    this.refreshLock();
     OgSession.servers().then((list) => {
       this.servers = list;
     });
+  }
+
+  private refreshLock(): void {
+    this.lockOn = AppLock.enabled();
+    this.lockBio = AppLock.biometricOn();
+    this.lockCanBio = AppLock.canBiometric();
+  }
+
+  private setTheme(mode: string): void {
+    this.themeMode = mode;
+    OgSession.setThemeMode(mode);
+    OgC.setMode(mode);
+    promptAction.showToast({ message: '深色模式已切换,页面刷新后全部生效' });
+  }
+
+  private async enableLock(): Promise<void> {
+    const p1 = this.lockPin1.trim();
+    const p2 = this.lockPin2.trim();
+    if (!(p1.length >= 4 && p1.length <= 6) || !/^[0-9]+$/.test(p1)) {
+      this.lockMsg = 'PIN 须为 4~6 位数字';
+      return;
+    }
+    if (p1 !== p2) {
+      this.lockMsg = '两次输入的 PIN 不一致';
+      return;
+    }
+    this.lockBusy = true;
+    await AppLock.ensure(OgSession.context());
+    await AppLock.setPin(p1);
+    if (this.lockCanBio) {
+      await AppLock.setBiometric(this.lockBio);
+    }
+    this.lockBusy = false;
+    this.lockSetup = false;
+    this.lockPin1 = '';
+    this.lockPin2 = '';
+    this.lockMsg = '';
+    this.refreshLock();
+    promptAction.showToast({ message: '应用锁已开启,退到后台再回来需要解锁' });
+  }
+
+  private async disableLock(): Promise<void> {
+    if (this.lockVerify.trim() === '') {
+      this.lockMsg = '请输入当前 PIN 确认关闭';
+      return;
+    }
+    this.lockBusy = true;
+    const ok = await AppLock.verify(this.lockVerify.trim());
+    if (!ok) {
+      this.lockBusy = false;
+      this.lockMsg = 'PIN 不正确';
+      return;
+    }
+    await AppLock.clearPin();
+    this.lockBusy = false;
+    this.lockVerify = '';
+    this.lockMsg = '';
+    this.refreshLock();
+    promptAction.showToast({ message: '应用锁已关闭' });
   }
 
   private async doChangePwd(): Promise<void> {
@@ -147,7 +222,8 @@ export struct MeView {
 
   private async doClearCache(): Promise<void> {
     OgNet.clearAppCache();
-    promptAction.showToast({ message: '缓存已清理(图片内存缓存 + 沙箱临时文件)' });
+    OgCache.clear();
+    promptAction.showToast({ message: '缓存已清理(图片内存/磁盘缓存 + 离线数据 + 沙箱临时文件)' });
   }
 
   private toggleLowData(on: boolean): void {
@@ -278,6 +354,129 @@ export struct MeView {
             .backgroundColor(OgC.BG)
             .fontColor(OgC.INK)
             .onClick(() => this.doClearCache())
+        }
+        .width('100%')
+        .padding(14)
+        .backgroundColor(OgC.CARD)
+        .borderRadius(OgDim.RADIUS)
+        .alignItems(HorizontalAlign.Start)
+
+        // 深色模式
+        Column({ space: 8 }) {
+          SectionHeader({ text: '深色模式' })
+          Row({ space: 8 }) {
+            ForEach(['auto', 'light', 'dark'], (m: string) => {
+              Text(m === 'auto' ? '跟随系统' : (m === 'light' ? '浅色' : '深色'))
+                .fontSize(12)
+                .fontColor(this.themeMode === m ? Color.White : OgC.INK)
+                .backgroundColor(this.themeMode === m ? OgC.BRAND : OgC.BG)
+                .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+                .borderRadius(12)
+                .onClick(() => this.setTheme(m))
+            }, (m: string) => m + this.themeMode)
+            Blank()
+          }
+          .width('100%')
+          Text('跟随系统时,系统切换深色后新打开的页面即变深色;已停留页面的配色在下次进入时刷新。')
+            .fontSize(11).fontColor(OgC.INK_SUB)
+        }
+        .width('100%')
+        .padding(14)
+        .backgroundColor(OgC.CARD)
+        .borderRadius(OgDim.RADIUS)
+        .alignItems(HorizontalAlign.Start)
+
+        // 应用锁
+        Column({ space: 8 }) {
+          SectionHeader({ text: '应用锁', extra: '本机 PIN / 生物识别' })
+          Row({ space: 8 }) {
+            Text('打开应用时需要解锁').fontSize(13).fontColor(OgC.INK).layoutWeight(1)
+            Pill({ text: this.lockOn ? '已开启' : '未开启', color: this.lockOn ? OgC.GOOD : OgC.INK_SUB })
+          }
+          .width('100%')
+          if (!this.lockOn && !this.lockSetup) {
+            Text('开启应用锁(设置 4~6 位 PIN)')
+              .fontSize(13)
+              .fontColor(OgC.BRAND)
+              .onClick(() => {
+                this.lockSetup = true;
+                this.lockMsg = '';
+              })
+          }
+          if (this.lockSetup) {
+            TextInput({ text: this.lockPin1, placeholder: 'PIN(4~6 位数字)' })
+              .type(InputType.Number)
+              .fontSize(14).height(40)
+              .onChange((v: string) => {
+                this.lockPin1 = v;
+              })
+            TextInput({ text: this.lockPin2, placeholder: '确认 PIN' })
+              .type(InputType.Number)
+              .fontSize(14).height(40)
+              .onChange((v: string) => {
+                this.lockPin2 = v;
+              })
+            if (this.lockCanBio) {
+              Row({ space: 8 }) {
+                Text('同时允许指纹/人脸解锁').fontSize(13).fontColor(OgC.INK).layoutWeight(1)
+                Toggle({ type: ToggleType.Switch, isOn: this.lockBio })
+                  .selectedColor(OgC.BRAND)
+                  .onChange((on: boolean) => {
+                    this.lockBio = on;
+                  })
+              }
+              .width('100%')
+            } else {
+              Text('本机未检测到可用指纹/人脸,仅 PIN 解锁。')
+                .fontSize(11).fontColor(OgC.INK_SUB)
+            }
+            Row({ space: 10 }) {
+              PrimaryButton({
+                label: this.lockBusy ? '开启中…' : '确认开启',
+                fill: true,
+                usable: !this.lockBusy,
+                onTap: () => this.enableLock()
+              })
+              GhostButton({ label: '取消', onTap: () => {
+                this.lockSetup = false;
+                this.lockPin1 = '';
+                this.lockPin2 = '';
+                this.lockMsg = '';
+              } })
+            }
+            .width('100%')
+          }
+          if (this.lockOn) {
+            if (this.lockCanBio) {
+              Row({ space: 8 }) {
+                Text('生物识别解锁(指纹/人脸)').fontSize(13).fontColor(OgC.INK).layoutWeight(1)
+                Toggle({ type: ToggleType.Switch, isOn: this.lockBio })
+                  .selectedColor(OgC.BRAND)
+                  .onChange((on: boolean) => {
+                    AppLock.setBiometric(on);
+                    this.lockBio = on;
+                  })
+              }
+              .width('100%')
+            }
+            TextInput({ text: this.lockVerify, placeholder: '输入当前 PIN 关闭应用锁' })
+              .type(InputType.Number)
+              .fontSize(14).height(40)
+              .onChange((v: string) => {
+                this.lockVerify = v;
+              })
+            PrimaryButton({
+              label: this.lockBusy ? '处理中…' : '关闭应用锁',
+              full: true,
+              usable: !this.lockBusy,
+              onTap: () => this.disableLock()
+            })
+          }
+          if (this.lockMsg !== '') {
+            Text(this.lockMsg).fontSize(12).fontColor(OgC.BAD)
+          }
+          Text('PIN 仅保存在本机(SHA-256 后存储),生物识别走系统认证,不上传任何数据。')
+            .fontSize(11).fontColor(OgC.INK_SUB)
         }
         .width('100%')
         .padding(14)
