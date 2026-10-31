@@ -83,7 +83,7 @@ struct ReviewPage {
     if (this.d === null || this.d.subjectives === undefined) {
       return null;
     }
-    for (const st of this.d.subjectives) {
+    for (const st of (this.d.subjectives ?? [])) {
       if (st.question === q) {
         return st;
       }
@@ -99,7 +99,7 @@ struct ReviewPage {
     }
     this.saving = true;
     try {
-      if (st.parts !== undefined && st.parts !== null && st.parts.length > 0) {
+      if ((st.parts ?? []).length > 0) {
         for (let i = 0; i < st.parts.length; i++) {
           const v = this.parseBuf(q, i + 1);
           if (v < 0) {
@@ -177,7 +177,7 @@ struct ReviewPage {
     const nextMark = st.mark === mark ? '' : mark;
     try {
       const ink: Stroke[] = st.ink !== undefined ? st.ink : [];
-      if (st.parts !== undefined && st.parts !== null && st.parts.length > 0) {
+      if ((st.parts ?? []).length > 0) {
         for (let i = 0; i < st.parts.length; i++) {
           const body: Record<string, Object> = {
             'examId': this.examId,
@@ -306,8 +306,8 @@ struct ReviewPage {
           .fontColor(st.graded ? OgC.INK_SUB : OgC.WARN)
       }
       .width('100%')
-      if (st.parts !== undefined && st.parts !== null && st.parts.length > 0) {
-        ForEach(st.parts, (pt: PartState, idx: number) => {
+      if ((st.parts ?? []).length > 0) {
+        ForEach((st.parts ?? []), (pt: PartState, idx: number) => {
           Row({ space: 8 }) {
             Text('(' + (idx + 1) + ') ' + OgFormat.score(pt.score) + ' 分')
               .fontSize(12).fontColor(OgC.INK_SUB).width(64)
@@ -367,7 +367,7 @@ struct ReviewPage {
         Column({ space: 1 }) {
           Text(this.d !== null && this.d.name !== undefined && this.d.name !== '' ? this.d.name : this.reg)
             .fontSize(16).fontWeight(FontWeight.Bold).fontColor(OgC.INK)
-          Text('考号 ' + this.reg + (this.d !== null && this.d.classes !== undefined && this.d.classes.length > 0
+          Text('考号 ' + this.reg + (this.d !== null && (this.d.classes ?? []).length > 0
             ? ' · ' + this.d.classes.join('/') : ''))
             .fontSize(11).fontColor(OgC.INK_SUB)
         }
@@ -431,7 +431,7 @@ struct ReviewPage {
               // 逐题明细(客观只读 + 主观可改)
               Column({ space: 6 }) {
                 SectionHeader({ text: '逐题明细' })
-                ForEach(this.d.questions !== undefined ? this.d.questions : [], (q: StudentQuestion) => {
+                ForEach((this.d.questions ?? []), (q: StudentQuestion) => {
                   this.questionRow(q)
                 }, (q: StudentQuestion) => 'q' + q.index + String(q.myScore))
               }
@@ -442,7 +442,7 @@ struct ReviewPage {
               .alignItems(HorizontalAlign.Start)
 
               // 主观题改分
-              ForEach(this.d.subjectives !== undefined ? this.d.subjectives : [], (st: SubjectiveState) => {
+              ForEach((this.d.subjectives ?? []), (st: SubjectiveState) => {
                 this.subjectiveCard(st)
               }, (st: SubjectiveState) => 's' + st.question + '-' + String(st.score) + '-' + String(st.mark))
 
@@ -481,10 +481,10 @@ struct ReviewPage {
               // 复核申请
               Column({ space: 8 }) {
                 SectionHeader({ text: '复核申请' })
-                if (this.d.appeals === undefined || this.d.appeals.length === 0) {
+                if ((this.d.appeals ?? []).length === 0) {
                   Text('该生本场暂无复核申请').fontSize(12).fontColor(OgC.INK_SUB)
                 }
-                ForEach(this.d.appeals !== undefined ? this.d.appeals : [], (a: StudentAppealItem, idx: number) => {
+                ForEach((this.d.appeals ?? []), (a: StudentAppealItem, idx: number) => {
                   Column({ space: 4 }) {
                     Row({ space: 6 }) {
                       Pill({
@@ -565,9 +565,10 @@ struct ReviewPage {
               return;
             }
             let no = 0;
-            if (this.d !== null && this.d.appeals !== undefined) {
-              for (let i = 0; i < this.d.appeals.length; i++) {
-                if (this.d.appeals[i].status !== 'resolved') {
+            if (this.d !== null) {
+              const aps: StudentAppealItem[] = this.d.appeals ?? [];
+              for (let i = 0; i < aps.length; i++) {
+                if (aps[i].status !== 'resolved') {
                   no = i + 1;
                   break;
                 }

@@ -82,10 +82,10 @@ struct AssignPage {
           } as AssignRow);
         }
       } else {
-        for (const prog of this.d.progress) {
+        for (const prog of (this.d.progress ?? [])) {
           rows.push({
             key: 'q' + prog.question,
-            label: '第 ' + (this.d.objective.length + prog.question) + ' 题(满分 ' + OgFormat.score(prog.max)
+            label: '第 ' + ((this.d.objective ?? []).length + prog.question) + ' 题(满分 ' + OgFormat.score(prog.max)
               + (prog.elective !== undefined && prog.elective !== '' ? ' · 选做' : '') + ')',
             max: prog.max,
             teacher: prog.teacher ?? '',
@@ -135,7 +135,7 @@ struct AssignPage {
       return [];
     }
     const out: string[] = [];
-    for (const s of this.d.staff) {
+    for (const s of (this.d.staff ?? [])) {
       out.push(s.username);
     }
     return out;
@@ -145,7 +145,7 @@ struct AssignPage {
     if (this.d === null) {
       return username;
     }
-    for (const s of this.d.staff) {
+    for (const s of (this.d.staff ?? [])) {
       if (s.username === username) {
         return s.displayName;
       }

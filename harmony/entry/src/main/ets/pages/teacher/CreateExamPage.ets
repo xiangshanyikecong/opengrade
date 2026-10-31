@@ -53,10 +53,10 @@ struct CreateExamPage {
 
   private async load(): Promise<void> {
     try {
-      this.students = await OgNet.jget<StudentRow[]>('/api/v1/students');
+      this.students = (await OgNet.jget<StudentRow[]>('/api/v1/students')) ?? [];
       const set: Record<string, boolean> = {};
       for (const s of this.students) {
-        for (const c of s.classes) {
+        for (const c of (s.classes ?? [])) {
           set[c] = true;
         }
       }
@@ -88,7 +88,7 @@ struct CreateExamPage {
     const picked = this.pickedClassList();
     let n = 0;
     for (const s of this.students) {
-      for (const c of s.classes) {
+      for (const c of (s.classes ?? [])) {
         if (picked.indexOf(c) >= 0) {
           n++;
           break;
@@ -102,7 +102,7 @@ struct CreateExamPage {
     const picked = this.pickedClassList();
     const rows: Record<string, string>[] = [];
     for (const s of this.students) {
-      for (const c of s.classes) {
+      for (const c of (s.classes ?? [])) {
         if (picked.indexOf(c) >= 0) {
           const row: Record<string, string> = { 'reg': s.reg, 'name': s.name, 'class': c };
           rows.push(row);

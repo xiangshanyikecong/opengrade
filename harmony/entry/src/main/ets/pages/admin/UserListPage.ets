@@ -43,7 +43,7 @@ struct UserListPage {
     this.loading = this.items.length === 0;
     this.failed = false;
     try {
-      this.items = await OgNet.jget<PublicUser[]>('/api/v1/users');
+      this.items = (await OgNet.jget<PublicUser[]>('/api/v1/users')) ?? [];
     } catch (e) {
       this.failed = true;
       this.failMsg = e instanceof OgError ? e.message : '加载失败';

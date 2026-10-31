@@ -72,13 +72,13 @@ struct GraderPage {
       this.loading = false;
       return;
     }
-    if (this.meta === null || this.meta.subjective.length === 0) {
+    if (this.meta === null || (this.meta.subjective ?? []).length === 0) {
       this.failed = true;
       this.failMsg = '该考试没有主观题';
       this.loading = false;
       return;
     }
-    const q = deepQ >= 1 && deepQ <= this.meta.subjective.length ? deepQ : 1;
+    const q = deepQ >= 1 && deepQ <= (this.meta.subjective ?? []).length ? deepQ : 1;
     await this.loadQuestion(q, 0);
     if (deepStudent > 0) {
       for (let i = 0; i < this.slices.length; i++) {
@@ -91,10 +91,10 @@ struct GraderPage {
   }
 
   private spec(): SubjectiveSpec0 | null {
-    if (this.meta === null || this.qIndex < 1 || this.qIndex > this.meta.subjective.length) {
+    if (this.meta === null || this.qIndex < 1 || this.qIndex > (this.meta.subjective ?? []).length) {
       return null;
     }
-    return this.meta.subjective[this.qIndex - 1];
+    return (this.meta.subjective ?? [])[this.qIndex - 1];
   }
 
   private hasParts(): boolean {
@@ -592,7 +592,7 @@ struct GraderPage {
         Text('‹').fontSize(26).fontColor(OgC.BRAND).width(34).height(36).textAlign(TextAlign.Center)
           .onClick(() => router.back())
         Column({ space: 1 }) {
-          Text('第 ' + (this.meta !== null ? this.meta.objective.length + this.qIndex : this.qIndex)
+          Text('第 ' + (this.meta !== null ? (this.meta.objective ?? []).length + this.qIndex : this.qIndex)
             + ' 题(满分 ' + OgFormat.score(this.cap()) + (this.hasParts() ? ' · 拆小问' : '') + ')')
             .fontSize(15).fontWeight(FontWeight.Bold).fontColor(OgC.INK)
           Text('已阅 ' + this.gradedCount() + '/' + this.slices.length
@@ -637,12 +637,12 @@ struct GraderPage {
             }
           })
         Blank()
-        Text('本题 ' + this.qIndex + '/' + (this.meta !== null ? this.meta.subjective.length : 0))
+        Text('本题 ' + this.qIndex + '/' + (this.meta !== null ? (this.meta.subjective ?? []).length : 0))
           .fontSize(12).fontColor(OgC.INK)
         Blank()
         Text('下一题 ›').fontSize(12).fontColor(OgC.INK_SUB)
           .onClick(() => {
-            if (this.meta !== null && this.qIndex < this.meta.subjective.length) {
+            if (this.meta !== null && this.qIndex < (this.meta.subjective ?? []).length) {
               this.loadQuestion(this.qIndex + 1, 0);
             }
           })

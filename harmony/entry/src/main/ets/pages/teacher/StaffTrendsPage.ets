@@ -40,7 +40,7 @@ struct StaffTrendsPage {
   }
 
   private latestPoint(st: TrendStudentView): TrendPoint | null {
-    for (let i = st.points.length - 1; i >= 0; i--) {
+    for (let i = (st.points ?? []).length - 1; i >= 0; i--) {
       if (!st.points[i].absent) {
         return st.points[i];
       }
@@ -50,7 +50,7 @@ struct StaffTrendsPage {
 
   private prevPoint(st: TrendStudentView): TrendPoint | null {
     let seen = 0;
-    for (let i = st.points.length - 1; i >= 0; i--) {
+    for (let i = (st.points ?? []).length - 1; i >= 0; i--) {
       if (!st.points[i].absent) {
         seen++;
         if (seen === 2) {
@@ -90,7 +90,7 @@ struct StaffTrendsPage {
       return [];
     }
     const out: string[] = [];
-    for (const e of this.resp.exams) {
+    for (const e of (this.resp.exams ?? [])) {
       const sub = e.subject !== undefined && e.subject !== '' ? e.subject : '未标学科';
       if (out.indexOf(sub) < 0) {
         out.push(sub);
@@ -104,7 +104,7 @@ struct StaffTrendsPage {
       return [];
     }
     const out: string[] = [];
-    for (const e of this.resp.exams) {
+    for (const e of (this.resp.exams ?? [])) {
       // 全科视图下同一天可能有多科考试:标签带学科短名,避免曲线错位误读
       const sub = this.selSubject === '' && e.subject !== undefined && e.subject !== '' ? e.subject + ' ' : '';
       out.push(sub + e.date);
@@ -117,7 +117,7 @@ struct StaffTrendsPage {
       return [];
     }
     const out: number[] = [];
-    for (const e of this.resp.exams) {
+    for (const e of (this.resp.exams ?? [])) {
       out.push(e.mean);
     }
     return out;
@@ -128,7 +128,7 @@ struct StaffTrendsPage {
       return [];
     }
     const out: number[] = [];
-    for (const e of this.resp.exams) {
+    for (const e of (this.resp.exams ?? [])) {
       out.push(e.classMean);
     }
     return out;
@@ -162,7 +162,7 @@ struct StaffTrendsPage {
       }
       .width('100%')
       if (this.expanded === st.reg) {
-        ForEach(st.points, (p: TrendPoint) => {
+        ForEach((st.points ?? []), (p: TrendPoint) => {
           Row({ space: 8 }) {
             Text(p.date).fontSize(11).fontColor(OgC.INK_SUB).width(84)
             Text(p.subject !== undefined ? p.subject : '-').fontSize(11).fontColor(OgC.INK_SUB).width(50)
@@ -266,7 +266,7 @@ struct StaffTrendsPage {
       } else if (this.resp !== null) {
         Scroll() {
           Column({ space: OgDim.GAP }) {
-            if (this.resp.exams.length === 0) {
+            if ((this.resp.exams ?? []).length === 0) {
               EmptyView({ text: '暂无可比考试' })
             } else {
               Column({ space: 6 }) {
@@ -297,8 +297,8 @@ struct StaffTrendsPage {
               .alignItems(HorizontalAlign.Start)
 
               Column({ space: 6 }) {
-                SectionHeader({ text: '逐生跨考对齐', extra: this.resp.students.length + ' 人 · 点行展开' })
-                ForEach(this.resp.students, (st: TrendStudentView) => {
+                SectionHeader({ text: '逐生跨考对齐', extra: (this.resp.students ?? []).length + ' 人 · 点行展开' })
+                ForEach((this.resp.students ?? []), (st: TrendStudentView) => {
                   this.studentRow(st)
                 }, (st: TrendStudentView) => st.reg + '-' + (this.expanded === st.reg ? 'x' : 'y'))
               }

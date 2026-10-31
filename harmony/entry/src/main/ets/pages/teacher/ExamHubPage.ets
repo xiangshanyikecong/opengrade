@@ -838,7 +838,7 @@ struct ExamHubPage {
   private async loadAudit(): Promise<void> {
     this.auditLoading = true;
     try {
-      this.audit = await OgNet.jget<AuditEntry[]>('/api/v1/exams/' + this.examId + '/audit');
+      this.audit = (await OgNet.jget<AuditEntry[]>('/api/v1/exams/' + this.examId + '/audit')) ?? [];
     } catch (e) {
       this.audit = [];
       promptAction.showToast({ message: e instanceof OgError ? e.message : '审计加载失败' });

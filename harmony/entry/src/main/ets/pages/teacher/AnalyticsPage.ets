@@ -62,7 +62,7 @@ struct AnalyticsPage {
       return [];
     }
     const out: HBarItem[] = [];
-    for (const k of this.d.knowledge) {
+    for (const k of (this.d.knowledge ?? [])) {
       out.push({
         name: k.name,
         rate: k.rate,
@@ -77,7 +77,7 @@ struct AnalyticsPage {
       return [];
     }
     const out: RadarItem[] = [];
-    for (const k of this.d.knowledge) {
+    for (const k of (this.d.knowledge ?? [])) {
       out.push({ name: k.name, rate: k.rate } as RadarItem);
     }
     return out;
@@ -88,7 +88,7 @@ struct AnalyticsPage {
       return [];
     }
     const out: string[] = [];
-    for (const s of this.d.stats.segments) {
+    for (const s of (this.d.stats.segments ?? [])) {
       out.push(OgFormat.score(s.low) + '-' + OgFormat.score(s.high));
     }
     return out;
@@ -99,7 +99,7 @@ struct AnalyticsPage {
       return [];
     }
     const out: number[] = [];
-    for (const s of this.d.stats.segments) {
+    for (const s of (this.d.stats.segments ?? [])) {
       out.push(s.count);
     }
     return out;
@@ -218,7 +218,7 @@ struct AnalyticsPage {
             if (this.d.byClass.length > 0) {
               Column({ space: 6 }) {
                 SectionHeader({ text: '班级对比' })
-                ForEach(this.d.byClass, (c: ClassStat) => {
+                ForEach((this.d.byClass ?? []), (c: ClassStat) => {
                   Row({ space: 8 }) {
                     Text(c.class).fontSize(13).fontColor(OgC.INK).layoutWeight(1)
                     Text(c.count + ' 人').fontSize(11).fontColor(OgC.INK_SUB)
@@ -274,7 +274,7 @@ struct AnalyticsPage {
       return [];
     }
     const arr: QuestionStatView[] = [];
-    for (const q of this.d.questions) {
+    for (const q of (this.d.questions ?? [])) {
       arr.push(q);
     }
     arr.sort((a, b) => a.rate - b.rate);

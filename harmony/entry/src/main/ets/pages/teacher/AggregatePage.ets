@@ -37,14 +37,14 @@ struct AggregatePage {
   }
 
   private exams(): AggregateExam[] {
-    return this.d === null ? [] : this.d.exams;
+    return this.d === null ? [] : (this.d.exams ?? []);
   }
 
   private cellScore(st: AggregateStudent, ci: number): string {
-    if (st.cells.length <= ci) {
+    if ((st.cells ?? []).length <= ci) {
       return '-';
     }
-    const c = st.cells[ci];
+    const c = (st.cells ?? [])[ci];
     if (!c.found) {
       return '—';
     }
@@ -78,14 +78,14 @@ struct AggregatePage {
       } else {
         Scroll() {
           Column({ space: OgDim.GAP }) {
-            if (this.d.exams.length === 0) {
+            if ((this.d.exams ?? []).length === 0) {
               EmptyView({ text: '该分组下没有可见考试' })
             } else {
               Column({ space: 6 }) {
                 SectionHeader({
-                  text: '分组 ' + this.d.group + ' · ' + this.d.exams.length + ' 科',
-                  extra: this.d.totalExams !== this.d.exams.length
-                    ? '总分仅按可见 ' + this.d.exams.length + '/' + this.d.totalExams + ' 科'
+                  text: '分组 ' + this.d.group + ' · ' + (this.d.exams ?? []).length + ' 科',
+                  extra: this.d.totalExams !== (this.d.exams ?? []).length
+                    ? '总分仅按可见 ' + (this.d.exams ?? []).length + '/' + this.d.totalExams + ' 科'
                     : ''
                 })
               }
@@ -107,7 +107,7 @@ struct AggregatePage {
                     this.headCell('班', 44)
                   }
                   .border({ width: { bottom: 1 }, color: OgC.LINE })
-                  ForEach(this.d.students, (st: AggregateStudent) => {
+                  ForEach((this.d.students ?? []), (st: AggregateStudent) => {
                     Row({ space: 0 }) {
                       this.bodyCell(st.class !== undefined ? st.class : '-', 64, OgC.INK_SUB)
                       this.bodyCell(st.name !== undefined ? st.name : '-', 72, OgC.INK)
@@ -143,10 +143,10 @@ struct AggregatePage {
   }
 
   private cellColor(st: AggregateStudent, ci: number): string {
-    if (st.cells.length <= ci) {
+    if ((st.cells ?? []).length <= ci) {
       return OgC.INK_SUB;
     }
-    const c = st.cells[ci];
+    const c = (st.cells ?? [])[ci];
     if (c.absent === true) {
       return OgC.WARN;
     }

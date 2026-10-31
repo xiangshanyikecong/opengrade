@@ -27,7 +27,7 @@ struct TaskListPage {
     this.loading = this.items.length === 0;
     this.failed = false;
     try {
-      this.items = await OgNet.jget<TaskItem[]>('/api/v1/my/tasks');
+      this.items = (await OgNet.jget<TaskItem[]>('/api/v1/my/tasks')) ?? [];
     } catch (e) {
       this.failed = true;
       this.failMsg = e instanceof OgError ? e.message : '加载失败';

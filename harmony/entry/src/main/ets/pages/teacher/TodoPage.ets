@@ -49,11 +49,11 @@ struct TodoPage {
       let tasks: TaskItem[] = [];
       let exams: ExamSummary[] = [];
       try {
-        tasks = await OgNet.jget<TaskItem[]>('/api/v1/my/tasks');
+        tasks = (await OgNet.jget<TaskItem[]>('/api/v1/my/tasks')) ?? [];
       } catch (e) {
         tasks = []; // 兜底角色(纯管理员)无任务接口
       }
-      exams = await OgNet.jget<ExamSummary[]>('/api/v1/exams');
+      exams = (await OgNet.jget<ExamSummary[]>('/api/v1/exams')) ?? [];
       this.items = this.aggregate(tasks, exams);
     } catch (e) {
       this.failed = true;

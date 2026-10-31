@@ -25,7 +25,7 @@ struct WorkloadPage {
     this.loading = this.items.length === 0;
     this.failed = false;
     try {
-      this.items = await OgNet.jget<WorkloadRow[]>('/api/v1/workload');
+      this.items = (await OgNet.jget<WorkloadRow[]>('/api/v1/workload')) ?? [];
     } catch (e) {
       this.failed = true;
       this.failMsg = e instanceof OgError ? e.message : '加载失败';

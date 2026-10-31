@@ -46,9 +46,9 @@ struct HomePage {
     this.loading = this.exams.length === 0 && this.tasks.length === 0;
     this.failed = false;
     try {
-      this.exams = await OgNet.jget<ExamSummary[]>('/api/v1/exams');
+      this.exams = (await OgNet.jget<ExamSummary[]>('/api/v1/exams')) ?? [];
       try {
-        this.tasks = await OgNet.jget<TaskItem[]>('/api/v1/my/tasks');
+        this.tasks = (await OgNet.jget<TaskItem[]>('/api/v1/my/tasks')) ?? [];
       } catch (e) {
         this.tasks = []; // 任务接口对学生角色不可达,总览容忍
       }

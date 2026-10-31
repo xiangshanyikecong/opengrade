@@ -54,9 +54,9 @@ struct BankListPage {
     this.loading = this.items.length === 0;
     this.failed = false;
     try {
-      this.items = await OgNet.jget<BankQuestion[]>('/api/v1/bank' + OgNet.qs({
+      this.items = (await OgNet.jget<BankQuestion[]>('/api/v1/bank' + OgNet.qs({
         'subject': '', 'kind': '', 'q': this.q.trim()
-      }));
+      }))) ?? [];
     } catch (e) {
       this.failed = true;
       this.failMsg = e instanceof OgError ? e.message : '加载失败';

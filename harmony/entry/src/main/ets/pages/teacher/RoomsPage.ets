@@ -162,7 +162,7 @@ struct RoomsPage {
     if (this.d === null) {
       return username;
     }
-    for (const s of this.d.staff) {
+    for (const s of (this.d.staff ?? [])) {
       if (s.username === username) {
         return s.displayName;
       }

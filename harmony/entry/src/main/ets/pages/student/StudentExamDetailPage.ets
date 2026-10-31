@@ -106,10 +106,10 @@ struct StudentExamDetailPage {
       return [];
     }
     if (!this.onlyWrong) {
-      return this.d.questions;
+      return this.d.questions ?? [];
     }
     const out: StudentQuestion[] = [];
-    for (const q of this.d.questions) {
+    for (const q of (this.d.questions ?? [])) {
       if (q.wrong || q.pending === true) {
         out.push(q);
       }
@@ -122,7 +122,7 @@ struct StudentExamDetailPage {
       return [];
     }
     const out: HBarItem[] = [];
-    for (const k of this.d.knowledge) {
+    for (const k of (this.d.knowledge ?? [])) {
       out.push({ name: k.name, rate: k.rate, extra: k.questions + '题 · ' + OgFormat.pct(k.rate) } as HBarItem);
     }
     return out;
@@ -133,7 +133,7 @@ struct StudentExamDetailPage {
       return [];
     }
     const out: RadarItem[] = [];
-    for (const k of this.d.knowledge) {
+    for (const k of (this.d.knowledge ?? [])) {
       out.push({ name: k.name, rate: k.rate } as RadarItem);
     }
     return out;
@@ -335,7 +335,7 @@ struct StudentExamDetailPage {
               .borderRadius(OgDim.RADIUS)
               .alignItems(HorizontalAlign.Start)
 
-              if (this.d.knowledge.length > 0) {
+              if ((this.d.knowledge ?? []).length > 0) {
                 Column({ space: 8 }) {
                   SectionHeader({ text: '我的知识点掌握度(薄弱排前)' })
                   RadarChart({ items: this.knowledgeRadar(), chartHeight: 220 })
@@ -348,10 +348,10 @@ struct StudentExamDetailPage {
                 .alignItems(HorizontalAlign.Start)
               }
 
-              if (this.d.slices !== undefined && this.d.slices.length > 0) {
+              if ((this.d.slices ?? []).length > 0) {
                 Column({ space: 8 }) {
                   SectionHeader({ text: '我的主观题作答' })
-                  ForEach(this.d.slices, (s: StudentSliceRef) => {
+                  ForEach((this.d.slices ?? []), (s: StudentSliceRef) => {
                     Column({ space: 4 }) {
                       Text('第 ' + s.question + ' 题').fontSize(12).fontColor(OgC.INK_SUB)
                       OgImage({ url: s.url, maxDim: 1600 })
@@ -396,8 +396,8 @@ struct StudentExamDetailPage {
 
               Column({ space: 8 }) {
                 SectionHeader({ text: '成绩复核' })
-                if (this.d.appeals !== undefined && this.d.appeals.length > 0) {
-                  ForEach(this.d.appeals, (a: StudentAppealItem) => {
+                if ((this.d.appeals ?? []).length > 0) {
+                  ForEach((this.d.appeals ?? []), (a: StudentAppealItem) => {
                     Column({ space: 4 }) {
                       Row({ space: 6 }) {
                         Pill({ text: a.status === 'resolved' ? '已回复' : '处理中',
