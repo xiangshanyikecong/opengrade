@@ -9,11 +9,13 @@ import { camera, cameraPicker } from '@kit.CameraKit';
 import { OgNet, OgError, UploadFile } from '../../common/OgNet';
 import { OgSession } from '../../common/OgSession';
 import { OgC, OgDim } from '../../common/OgTheme';
+import { OgBreakpoint } from '../../common/OgBreakpoint';
+
 import { OgFormat } from '../../common/OgFormat';
 import { BankQuestion } from '../../model/Api';
 import { EmptyView, ErrorView, LoadingView, Pill, PrimaryButton, SectionHeader, TitleBar } from '../../components/Ui';
 import { OgImage } from '../../components/OgImage';
-import { NAV_SHEET_HEIGHT, StaffNavGrid } from '../../components/StaffNav';
+import { StaffNavGrid, navSheetHeight, navSheetWidth } from '../../components/StaffNav';
 
 const KINDS: string[] = ['choice', 'judge', 'multiple', 'fillblank', 'subjective'];
 const DIFFS: string[] = ['容易', '中等', '较难', '难'];
@@ -339,6 +341,7 @@ struct BankListPage {
         }
         .padding(OgDim.PAD)
         .width('100%')
+        .constraintSize({ maxWidth: OgDim.MAXW })
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off)
@@ -348,10 +351,11 @@ struct BankListPage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: NAV_SHEET_HEIGHT, dragBar: true, title: { title: '工作台导航' }
+      height: navSheetHeight(OgBreakpoint.now()), width: navSheetWidth(OgBreakpoint.now()),
+      dragBar: true, title: { title: '工作台导航' }
     })
     .bindSheet($$this.formOpen, this.formBuilder(), {
-      height: SheetSize.FIT_CONTENT, dragBar: true, title: { title: this.editId === '' ? '录入新题' : '编辑题目' }
+      height: SheetSize.FIT_CONTENT, width: navSheetWidth(OgBreakpoint.now()), dragBar: true, title: { title: this.editId === '' ? '录入新题' : '编辑题目' }
     })
   }
 

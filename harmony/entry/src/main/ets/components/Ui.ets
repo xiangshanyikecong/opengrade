@@ -16,28 +16,34 @@ export struct TitleBar {
   @BuilderParam actions: () => void = emptyBuilder;
 
   build() {
-    Row({ space: 8 }) {
-      if (this.showBack) {
-        Text('‹')
-          .fontSize(26)
-          .fontColor(OgC.BRAND)
-          .width(36)
-          .height(36)
-          .textAlign(TextAlign.Center)
-          .onClick(() => this.onBack())
-      }
-      Column({ space: 1 }) {
-        Text(this.title).fontSize(17).fontWeight(FontWeight.Bold).fontColor(OgC.INK)
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        if (this.subtitle !== '') {
-          Text(this.subtitle).fontSize(12).fontColor(OgC.INK_SUB)
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+    // 外层拉满底色,内层收口居中:宽屏上标题与内容列(OgDim.MAXW)对齐
+    Row() {
+      Row({ space: 8 }) {
+        if (this.showBack) {
+          Text('‹')
+            .fontSize(26)
+            .fontColor(OgC.BRAND)
+            .width(36)
+            .height(36)
+            .textAlign(TextAlign.Center)
+            .onClick(() => this.onBack())
         }
-      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      this.actions()
+        Column({ space: 1 }) {
+          Text(this.title).fontSize(17).fontWeight(FontWeight.Bold).fontColor(OgC.INK)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          if (this.subtitle !== '') {
+            Text(this.subtitle).fontSize(12).fontColor(OgC.INK_SUB)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        this.actions()
+      }
+      .width('100%')
+      .constraintSize({ maxWidth: OgDim.MAXW })
+      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
     }
     .width('100%')
-    .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+    .justifyContent(FlexAlign.Center)
     .backgroundColor(OgC.CARD)
   }
 }

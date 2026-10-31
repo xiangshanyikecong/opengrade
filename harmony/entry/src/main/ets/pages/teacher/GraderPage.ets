@@ -3,7 +3,7 @@
 //   → 小问逐问打分自动汇总 → 选做组涂选展示 → 匿名卷隐藏考号 → 409 乐观锁拉取最新
 //   → 下一未评/待复核跳转。评分数据契约与 web 端完全一致(POST /api/v1/grades)。
 
-import { router, display } from '@kit.ArkUI';
+import { router } from '@kit.ArkUI';
 import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError, ImageCache } from '../../common/OgNet';
 import { OgSession } from '../../common/OgSession';
@@ -18,16 +18,6 @@ interface GraderParams {
   exam: string;
   q: string;
   student: string;
-}
-
-// 宽屏判定:平板/横屏(逻辑宽度 ≥620vp)切左卷右盘双栏。
-function graderIsWide(): boolean {
-  try {
-    const d = display.getDefaultDisplaySync();
-    return d.width / d.densityPixels >= 620;
-  } catch (e) {
-    return false;
-  }
 }
 
 @Entry
@@ -48,10 +38,10 @@ struct GraderPage {
   @State lastScore: number = NaN;
   @State saving: boolean = false;
   @State syncTick: number = 0; // 触发切片区域重渲染
-  @State wide: boolean = false; // 平板/横屏宽屏:左卷右盘双栏
+  // 宽屏(md/lg:平板/横屏/折叠屏内屏)左卷右盘双栏;断点实时跟随,折叠展开中自动切换
+  @StorageProp('ogBp') bp: string = 'sm';
 
   aboutToAppear(): void {
-    this.wide = graderIsWide();
     const p = router.getParams() as GraderParams | null;
     if (p === null || p === undefined || p.exam === undefined) {
       this.failed = true;
@@ -654,7 +644,7 @@ struct GraderPage {
         LoadingView()
       } else if (this.failed) {
         ErrorView({ msg: this.failMsg, onRetry: () => this.loadQuestion(this.qIndex, 0) })
-      } else if (this.wide) {
+      } else if (this.bp !== 'sm') {
         // 平板/横屏双栏:左卷右盘,互不挤占
         Row() {
           Scroll() {

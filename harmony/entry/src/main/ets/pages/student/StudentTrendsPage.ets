@@ -153,6 +153,7 @@ export struct StudentTrendsView {
       }
       .padding(OgDim.PAD)
       .width('100%')
+      .constraintSize({ maxWidth: OgDim.MAXW })
     }
     .width('100%')
     .height('100%')

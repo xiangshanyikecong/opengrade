@@ -5,10 +5,12 @@ import { router } from '@kit.ArkUI';
 import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError } from '../../common/OgNet';
 import { OgC, OgDim } from '../../common/OgTheme';
+import { OgBreakpoint } from '../../common/OgBreakpoint';
+
 import { OgFormat } from '../../common/OgFormat';
 import { TaskItem } from '../../model/Api';
 import { EmptyView, ErrorView, LoadingView, Pill, TitleBar } from '../../components/Ui';
-import { NAV_SHEET_HEIGHT, StaffNavGrid } from '../../components/StaffNav';
+import { StaffNavGrid, navSheetHeight, navSheetWidth } from '../../components/StaffNav';
 
 @Entry
 @Component
@@ -18,6 +20,7 @@ struct TaskListPage {
   @State failed: boolean = false;
   @State failMsg: string = '';
   @State navOpen: boolean = false;
+  @StorageProp('ogBp') bp: string = 'sm'; // md/lg 宽屏切双列卡片
 
   aboutToAppear(): void {
     this.load();
@@ -37,6 +40,15 @@ struct TaskListPage {
 
   private isDone(it: TaskItem): boolean {
     return it.total > 0 && it.graded >= it.total;
+  }
+
+  // 宽屏(md/lg)双列:任务卡对半分行,内屏/横屏上缩短扫视距离
+  private cardRows(): TaskItem[][] {
+    const rows: TaskItem[][] = [];
+    for (let i = 0; i < this.items.length; i += 2) {
+      rows.push(this.items.slice(i, i + 2));
+    }
+    return rows;
   }
 
   private openTask(it: TaskItem): void {
@@ -116,13 +128,29 @@ struct TaskListPage {
           } else if (this.items.length === 0) {
             EmptyView({ text: '暂无阅卷任务。被分配任务或自建考试后会出现在这里。' })
           }
-          ForEach(this.items, (it: TaskItem) => {
-            this.taskCard(it)
-          }, (it: TaskItem) => it.exam + '-' + it.kind + '-' + (it.question ?? 0))
+          if (this.bp !== 'sm') {
+            ForEach(this.cardRows(), (row: TaskItem[], ri: number) => {
+              Row({ space: OgDim.GAP }) {
+                ForEach(row, (it: TaskItem) => {
+                  Column() {
+                    this.taskCard(it)
+                  }
+                  .layoutWeight(1)
+                }, (it: TaskItem) => it.exam + '-' + it.kind + '-' + (it.question ?? 0))
+              }
+              .width('100%')
+              .alignItems(ItemAlign.Top)
+            }, (row: TaskItem[], ri: number) => 'r' + ri + (row.length > 0 ? row[0].exam + row[0].kind : ''))
+          } else {
+            ForEach(this.items, (it: TaskItem) => {
+              this.taskCard(it)
+            }, (it: TaskItem) => it.exam + '-' + it.kind + '-' + (it.question ?? 0))
+          }
           Text('').height(20)
         }
         .padding(OgDim.PAD)
         .width('100%')
+        .constraintSize({ maxWidth: OgDim.MAXW })
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off)
@@ -132,7 +160,8 @@ struct TaskListPage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: NAV_SHEET_HEIGHT, dragBar: true, title: { title: '工作台导航' }
+      height: navSheetHeight(OgBreakpoint.now()), width: navSheetWidth(OgBreakpoint.now()),
+      dragBar: true, title: { title: '工作台导航' }
     })
   }
 

@@ -30,14 +30,30 @@ export const STAFF_NAV: NavItem[] = [
   { key: 'me', label: '账号设置', url: 'pages/MePage', adminOnly: false }
 ];
 
-// 工作台导航弹层统一高度:网格 ceil(项数/3)*62=310 + 上下 PAD 32,再加标题栏/拖条留量。
-// 各页 bindSheet 必须引用本常量(混合弹层在 nav 分支也用它),否则同一弹层各页高度不一。
+// 工作台导航弹层统一高度(sm 3 列网格 ceil(项数/3)*62=310 + 上下 PAD 32,再加标题栏/拖条留量):
+// 各页 bindSheet 必须经 navSheetHeight()/navSheetWidth() 引用(混合弹层在 nav 分支同样适用),
+// 否则同一弹层各页高度不一;md/lg 切 4 列网格更矮,定宽避免铺满内屏。
 export const NAV_SHEET_HEIGHT: number = 460;
+
+// 弹层宽度:手机全宽;md 收 72%;lg 定宽(内屏/平板上弹层居中不铺满)。
+export function navSheetWidth(bp: string): Length {
+  return bp === 'sm' ? '100%' : (bp === 'md' ? '72%' : 520);
+}
+
+// 弹层高度:sm 维持原 460;md/lg 4 列 4 行网格(ceil(14/4)*62=248)+ 标题栏/拖条留量。
+export function navSheetHeight(bp: string): number {
+  return bp === 'sm' ? NAV_SHEET_HEIGHT : 400;
+}
 
 @Component
 export struct StaffNavGrid {
   current: string = '';
   onClose: () => void = () => {};
+  @StorageProp('ogBp') bp: string = 'sm';
+
+  private cols(): number {
+    return this.bp === 'sm' ? 3 : 4; // 宽屏弹层有富余宽度,4 列少翻屏
+  }
 
   private locked(item: NavItem): boolean {
     if (item.adminOnly && !OgSession.isAdmin()) {
@@ -79,10 +95,11 @@ export struct StaffNavGrid {
         }
       }, (item: NavItem) => item.key)
     }
-    .columnsTemplate('1fr 1fr 1fr')
+    .columnsTemplate(this.bp === 'sm' ? '1fr 1fr 1fr' : '1fr 1fr 1fr 1fr')
     .columnsGap(8)
     .rowsGap(8)
     .width('100%')
-    .height(Math.ceil(STAFF_NAV.length / 3) * 62)
-    .padding(OgDim.PAD)  }
+    .height(Math.ceil(STAFF_NAV.length / this.cols()) * 62)
+    .padding(OgDim.PAD)
+  }
 }

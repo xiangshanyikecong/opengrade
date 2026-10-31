@@ -4,9 +4,11 @@
 import { router } from '@kit.ArkUI';
 import { OgNet, OgError } from '../../common/OgNet';
 import { OgC, OgDim } from '../../common/OgTheme';
+import { OgBreakpoint } from '../../common/OgBreakpoint';
+
 import { WorkloadRow } from '../../model/Api';
 import { EmptyView, ErrorView, LoadingView, SectionHeader, TitleBar } from '../../components/Ui';
-import { NAV_SHEET_HEIGHT, StaffNavGrid } from '../../components/StaffNav';
+import { StaffNavGrid, navSheetHeight, navSheetWidth } from '../../components/StaffNav';
 
 @Entry
 @Component
@@ -118,6 +120,7 @@ struct WorkloadPage {
         }
         .padding(OgDim.PAD)
         .width('100%')
+        .constraintSize({ maxWidth: OgDim.MAXW })
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off)
@@ -127,7 +130,8 @@ struct WorkloadPage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: NAV_SHEET_HEIGHT, dragBar: true, title: { title: '工作台导航' }
+      height: navSheetHeight(OgBreakpoint.now()), width: navSheetWidth(OgBreakpoint.now()),
+      dragBar: true, title: { title: '工作台导航' }
     })
   }
 

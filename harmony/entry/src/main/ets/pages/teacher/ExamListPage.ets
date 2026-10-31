@@ -5,10 +5,12 @@ import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError } from '../../common/OgNet';
 import { OgSession } from '../../common/OgSession';
 import { OgC, OgDim } from '../../common/OgTheme';
+import { OgBreakpoint } from '../../common/OgBreakpoint';
+
 import { OgFormat } from '../../common/OgFormat';
 import { ExamSummary } from '../../model/Api';
 import { EmptyView, ErrorView, GhostButton, LoadingView, Pill, PrimaryButton, TitleBar } from '../../components/Ui';
-import { NAV_SHEET_HEIGHT, StaffNavGrid } from '../../components/StaffNav';
+import { StaffNavGrid, navSheetHeight, navSheetWidth } from '../../components/StaffNav';
 
 const STAGE_FILTERS: string[] = ['', 'awaiting_scan', 'scanning', 'anomalies', 'grading', 'ready', 'published'];
 const STAGE_NAMES: Record<string, string> = {
@@ -27,6 +29,7 @@ struct ExamListPage {
   @State stage: string = '';
   @State navOpen: boolean = false;
   @State publishing: string = '';
+  @StorageProp('ogBp') bp: string = 'sm'; // md/lg 宽屏切双列卡片
 
   aboutToAppear(): void {
     this.load();
@@ -79,6 +82,16 @@ struct ExamListPage {
   private canEditExam(it: ExamSummary): boolean {
     const me = OgSession.me();
     return me !== null && (me.role === 'admin' || me.role === 'leader' || it.mine);
+  }
+
+  // 宽屏(md/lg)双列:卡片对半分行,内屏/横屏上缩短扫视距离
+  private cardRows(): ExamSummary[][] {
+    const list = this.filtered();
+    const rows: ExamSummary[][] = [];
+    for (let i = 0; i < list.length; i += 2) {
+      rows.push(list.slice(i, i + 2));
+    }
+    return rows;
   }
 
   // 主操作文案:与 primaryAction 的分支一致;返回「详情」时主按钮不渲染(与 Ghost 详情去重)
@@ -213,6 +226,7 @@ struct ExamListPage {
         .width('100%')
       }
       .width('100%')
+      .constraintSize({ maxWidth: OgDim.MAXW })
       .padding({ left: OgDim.PAD, right: OgDim.PAD, top: 8, bottom: 4 })
 
       Scroll() {
@@ -224,13 +238,29 @@ struct ExamListPage {
           } else if (this.filtered().length === 0) {
             EmptyView({ text: '没有匹配的考试' })
           }
-          ForEach(this.filtered(), (it: ExamSummary) => {
-            this.examCard(it)
-          }, (it: ExamSummary) => it.id + it.stage + String(it.published))
+          if (this.bp !== 'sm') {
+            ForEach(this.cardRows(), (row: ExamSummary[], ri: number) => {
+              Row({ space: OgDim.GAP }) {
+                ForEach(row, (it: ExamSummary) => {
+                  Column() {
+                    this.examCard(it)
+                  }
+                  .layoutWeight(1)
+                }, (it: ExamSummary) => it.id + it.stage + String(it.published))
+              }
+              .width('100%')
+              .alignItems(ItemAlign.Top)
+            }, (row: ExamSummary[], ri: number) => 'r' + ri + (row.length > 0 ? row[0].id : ''))
+          } else {
+            ForEach(this.filtered(), (it: ExamSummary) => {
+              this.examCard(it)
+            }, (it: ExamSummary) => it.id + it.stage + String(it.published))
+          }
           Text('').height(20)
         }
         .padding({ left: OgDim.PAD, right: OgDim.PAD, bottom: 20 })
         .width('100%')
+        .constraintSize({ maxWidth: OgDim.MAXW })
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off)
@@ -240,7 +270,8 @@ struct ExamListPage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: NAV_SHEET_HEIGHT, dragBar: true, title: { title: '工作台导航' }
+      height: navSheetHeight(OgBreakpoint.now()), width: navSheetWidth(OgBreakpoint.now()),
+      dragBar: true, title: { title: '工作台导航' }
     })
   }
 }

@@ -5,6 +5,7 @@
 import { AbilityConstant, UIAbility, Want, ConfigurationConstant, Configuration } from '@kit.AbilityKit';
 import { window, router } from '@kit.ArkUI';
 import { OgC } from '../common/OgTheme';
+import { OgBreakpoint } from '../common/OgBreakpoint';
 import { AppLock } from '../common/AppLock';
 
 export default class EntryAbility extends UIAbility {
@@ -17,6 +18,8 @@ export default class EntryAbility extends UIAbility {
       if (err.code) {
         console.error('loadContent failed: ' + JSON.stringify(err));
       }
+      // 断点监听(折叠屏展开/合上、旋转、分屏均体现为窗口宽度变化)
+      OgBreakpoint.watch();
     });
   }
 

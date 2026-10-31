@@ -5,10 +5,12 @@ import { router } from '@kit.ArkUI';
 import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError } from '../../common/OgNet';
 import { OgC, OgDim } from '../../common/OgTheme';
+import { OgBreakpoint } from '../../common/OgBreakpoint';
+
 import { OgFormat } from '../../common/OgFormat';
 import { PublicUser } from '../../model/Api';
 import { EmptyView, ErrorView, LoadingView, Pill, PrimaryButton, TitleBar } from '../../components/Ui';
-import { NAV_SHEET_HEIGHT, StaffNavGrid } from '../../components/StaffNav';
+import { StaffNavGrid, navSheetHeight, navSheetWidth } from '../../components/StaffNav';
 
 const ROLES: string[] = ['admin', 'leader', 'teacher', 'student', 'parent'];
 
@@ -260,6 +262,7 @@ struct UserListPage {
         }
         .padding(OgDim.PAD)
         .width('100%')
+        .constraintSize({ maxWidth: OgDim.MAXW })
       }
       .layoutWeight(1)
       .scrollBar(BarState.Off)
@@ -270,7 +273,8 @@ struct UserListPage {
     .backgroundColor(OgC.BG)
     .bindSheet($$this.sheetOpen, this.anySheetBuilder(), {
       // 导航分支与其他页同高;建号/改密表单分支自适应
-      height: this.sheetKind === 'nav' ? NAV_SHEET_HEIGHT : SheetSize.FIT_CONTENT,
+      height: this.sheetKind === 'nav' ? navSheetHeight(OgBreakpoint.now()) : SheetSize.FIT_CONTENT,
+      width: navSheetWidth(OgBreakpoint.now()),
       dragBar: true
     })
   }

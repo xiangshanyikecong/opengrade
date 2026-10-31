@@ -8,6 +8,8 @@ import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError } from '../../common/OgNet';
 import { OgSession } from '../../common/OgSession';
 import { OgC, OgDim } from '../../common/OgTheme';
+import { OgBreakpoint } from '../../common/OgBreakpoint';
+import { navSheetWidth } from '../../components/StaffNav';
 import { OgFormat } from '../../common/OgFormat';
 import {
   PartState, StaffStudentDetail, StudentAppealItem, StudentQuestion, SubjectiveState, Stroke
@@ -533,6 +535,7 @@ struct ReviewPage {
             }
           }
           .width('100%')
+          .constraintSize({ maxWidth: OgDim.MAXW })
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
@@ -543,7 +546,7 @@ struct ReviewPage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.sheetOpen, this.anySheetBuilder(), {
-      height: SheetSize.FIT_CONTENT, dragBar: true
+      height: SheetSize.FIT_CONTENT, width: navSheetWidth(OgBreakpoint.now()), dragBar: true
     })
   }
 

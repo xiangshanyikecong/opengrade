@@ -5,10 +5,12 @@ import { router } from '@kit.ArkUI';
 import { OgNet, OgError } from '../../common/OgNet';
 import { OgSession } from '../../common/OgSession';
 import { OgC, OgDim } from '../../common/OgTheme';
+import { OgBreakpoint } from '../../common/OgBreakpoint';
+
 import { OgFormat } from '../../common/OgFormat';
 import { ExamSummary, TaskItem } from '../../model/Api';
 import { EmptyView, ErrorView, LoadingView, Pill, TitleBar } from '../../components/Ui';
-import { NAV_SHEET_HEIGHT, StaffNavGrid } from '../../components/StaffNav';
+import { StaffNavGrid, navSheetHeight, navSheetWidth } from '../../components/StaffNav';
 
 interface QuickEntry {
   label: string;
@@ -259,6 +261,7 @@ struct HomePage {
           }
           .padding(OgDim.PAD)
           .width('100%')
+          .constraintSize({ maxWidth: OgDim.MAXW })
         }
         .scrollBar(BarState.Off)
         .align(Alignment.Top)
@@ -273,7 +276,8 @@ struct HomePage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: NAV_SHEET_HEIGHT, dragBar: true, title: { title: '工作台导航' }
+      height: navSheetHeight(OgBreakpoint.now()), width: navSheetWidth(OgBreakpoint.now()),
+      dragBar: true, title: { title: '工作台导航' }
     })
   }
 

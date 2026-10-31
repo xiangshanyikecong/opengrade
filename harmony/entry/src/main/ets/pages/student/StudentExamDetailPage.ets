@@ -471,6 +471,8 @@ struct StudentExamDetailPage {
               .width('100%')
             }
           }
+          .width('100%')
+          .constraintSize({ maxWidth: OgDim.MAXW })
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)

@@ -5,6 +5,8 @@ import { router } from '@kit.ArkUI';
 import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError } from '../../common/OgNet';
 import { OgC, OgDim } from '../../common/OgTheme';
+import { OgBreakpoint } from '../../common/OgBreakpoint';
+import { navSheetWidth } from '../../components/StaffNav';
 import { OgFormat } from '../../common/OgFormat';
 import { ExamDetail, ExamSummary, RoomsResp, Seat } from '../../model/Api';
 import { OgSession } from '../../common/OgSession';
@@ -244,6 +246,7 @@ struct RoomsPage {
     }
     .padding(OgDim.PAD)
     .width('100%')
+    .constraintSize({ maxWidth: OgDim.MAXW })
   }
 
   @Builder
@@ -402,7 +405,7 @@ struct RoomsPage {
     .height('100%')
     .backgroundColor(OgC.BG)
     .bindSheet($$this.genOpen, this.genBuilder(), {
-      height: SheetSize.FIT_CONTENT, dragBar: true, title: { title: '生成分场方案' }
+      height: SheetSize.FIT_CONTENT, width: navSheetWidth(OgBreakpoint.now()), dragBar: true, title: { title: '生成分场方案' }
     })
   }
 

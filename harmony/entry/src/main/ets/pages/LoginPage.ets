@@ -177,6 +177,7 @@ struct LoginPage {
       }
       .padding({ left: 24, right: 24 })
       .width('100%')
+      .constraintSize({ maxWidth: 520 })
     }
     .width('100%')
     .height('100%')

@@ -192,6 +192,7 @@ struct StudentHomePage {
         }
       }
       .width('100%')
+      .constraintSize({ maxWidth: OgDim.MAXW })
       .height('100%')
       .scrollBar(BarState.Off)
     }
@@ -200,6 +201,7 @@ struct StudentHomePage {
       this.load();
     })
     .width('100%')
+    .constraintSize({ maxWidth: OgDim.MAXW })
     .height('100%')
   }
 

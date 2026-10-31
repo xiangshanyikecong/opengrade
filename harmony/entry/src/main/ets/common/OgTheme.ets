@@ -155,4 +155,6 @@ export class OgDim {
   static readonly BODY: number = 15;
   static readonly SUB: number = 13;
   static readonly SMALL: number = 12;
+  // 宽屏(lg)内容列最大宽度:折叠屏内屏/平板上收口并居中,窄屏无副作用(视口更窄)
+  static readonly MAXW: number = 800;
 }
