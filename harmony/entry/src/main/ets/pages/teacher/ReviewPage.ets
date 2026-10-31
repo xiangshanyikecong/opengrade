@@ -99,14 +99,15 @@ struct ReviewPage {
     }
     this.saving = true;
     try {
-      if ((st.parts ?? []).length > 0) {
-        for (let i = 0; i < st.parts.length; i++) {
+      const parts: PartState[] = st.parts ?? [];
+      if (parts.length > 0) {
+        for (let i = 0; i < parts.length; i++) {
           const v = this.parseBuf(q, i + 1);
           if (v < 0) {
             continue; // 该问未输入,跳过
           }
-          if (v > st.parts[i].score) {
-            promptAction.showToast({ message: '第 ' + (i + 1) + ' 问 ' + v + ' 超过满分 ' + st.parts[i].score });
+          if (v > parts[i].score) {
+            promptAction.showToast({ message: '第 ' + (i + 1) + ' 问 ' + v + ' 超过满分 ' + parts[i].score });
             this.saving = false;
             return;
           }
@@ -119,12 +120,12 @@ struct ReviewPage {
             'mark': st.mark ?? '',
             'graded': true,
             'ink': st.ink !== undefined ? st.ink : [],
-            'ver': st.parts[i].ver ?? 0
+            'ver': parts[i].ver ?? 0
           };
           const resp = await OgNet.jpost<Record<string, Object>>('/api/v1/grades', body);
-          st.parts[i].ver = resp['ver'] as number;
-          st.parts[i].score = v;
-          st.parts[i].graded = true;
+          parts[i].ver = resp['ver'] as number;
+          parts[i].score = v;
+          parts[i].graded = true;
         }
       } else {
         const v = this.parseBuf(q, 0);
@@ -177,21 +178,22 @@ struct ReviewPage {
     const nextMark = st.mark === mark ? '' : mark;
     try {
       const ink: Stroke[] = st.ink !== undefined ? st.ink : [];
-      if ((st.parts ?? []).length > 0) {
-        for (let i = 0; i < st.parts.length; i++) {
+      const parts: PartState[] = st.parts ?? [];
+      if (parts.length > 0) {
+        for (let i = 0; i < parts.length; i++) {
           const body: Record<string, Object> = {
             'examId': this.examId,
             'student': this.d !== null ? this.d.student : 0,
             'question': q,
             'part': i + 1,
-            'score': st.parts[i].score,
+            'score': parts[i].score,
             'mark': nextMark,
-            'graded': st.parts[i].graded,
+            'graded': parts[i].graded,
             'ink': ink,
-            'ver': st.parts[i].ver ?? 0
+            'ver': parts[i].ver ?? 0
           };
           const resp = await OgNet.jpost<Record<string, Object>>('/api/v1/grades', body);
-          st.parts[i].ver = resp['ver'] as number;
+          parts[i].ver = resp['ver'] as number;
         }
       } else {
         const body: Record<string, Object> = {
@@ -367,7 +369,7 @@ struct ReviewPage {
         Column({ space: 1 }) {
           Text(this.d !== null && this.d.name !== undefined && this.d.name !== '' ? this.d.name : this.reg)
             .fontSize(16).fontWeight(FontWeight.Bold).fontColor(OgC.INK)
-          Text('考号 ' + this.reg + (this.d !== null && (this.d.classes ?? []).length > 0
+          Text('考号 ' + this.reg + (this.d !== null && this.d.classes !== undefined && this.d.classes.length > 0
             ? ' · ' + this.d.classes.join('/') : ''))
             .fontSize(11).fontColor(OgC.INK_SUB)
         }

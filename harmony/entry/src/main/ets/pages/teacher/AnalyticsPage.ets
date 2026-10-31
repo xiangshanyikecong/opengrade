@@ -215,7 +215,7 @@ struct AnalyticsPage {
             .alignItems(HorizontalAlign.Start)
 
             // 班级对比
-            if (this.d.byClass.length > 0) {
+            if ((this.d.byClass ?? []).length > 0) {
               Column({ space: 6 }) {
                 SectionHeader({ text: '班级对比' })
                 ForEach((this.d.byClass ?? []), (c: ClassStat) => {
