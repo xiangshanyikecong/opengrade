@@ -87,6 +87,11 @@ struct ExamHubPage {
       (me.role === 'admin' || me.role === 'leader' || me.username === this.d.createdBy);
   }
 
+  // 该题是否已全部阅完(与任务列表 isDone 同口径):阅完点「阅本题」只提示不进入
+  private qDone(p: ProgressRow): boolean {
+    return p.total > 0 && p.graded >= p.total;
+  }
+
   private openSheet(kind: string): void {
     this.sheetKind = kind;
     this.sheetOpen = true;
@@ -435,8 +440,21 @@ struct ExamHubPage {
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
-        Text('阅本题 ›').fontSize(12).fontColor(OgC.BRAND)
+        Text(this.qDone(p) ? '已阅完' : '阅本题 ›')
+          .fontSize(12)
+          .fontColor(this.qDone(p) ? OgC.INK_SUB : OgC.BRAND)
           .onClick(() => {
+            if (p.total <= 0) {
+              promptAction.showToast({ message: '该题没有待阅试卷(全部缺考或已作废)' });
+              return;
+            }
+            if (this.qDone(p)) {
+              promptAction.showToast({
+                message: '该题已全部阅完(' + p.graded + '/' + p.total
+                  + ');个别改分请走「复核 ›」或「查看答卷并改分」', duration: 3200
+              });
+              return;
+            }
             router.pushUrl({
               url: 'pages/teacher/GraderPage',
               params: { 'exam': this.examId, 'q': String(p.question) } as Record<string, Object>
@@ -447,7 +465,7 @@ struct ExamHubPage {
       .padding({ top: 6, bottom: 6 })
       .border({ width: { bottom: 1 }, color: OgC.LINE })
     }, (p: ProgressRow) => 'q' + p.question + '-' + p.graded)
-    if (this.d !== null && this.d.progress.length === 0) {
+    if (this.d !== null && (this.d.progress ?? []).length === 0) {
       Text('无主观题(纯客观卷)').fontSize(12).fontColor(OgC.INK_SUB)
     }
   }
@@ -1012,9 +1030,9 @@ struct ExamHubPage {
         label: '保存并重统',
         onTap: () => {
           const arr: string[] = this.keyBuf.trim().split(/\s+/).filter((s: string) => s !== '');
-          if (this.d !== null && arr.length !== this.d.key.length) {
+          if (this.d !== null && arr.length !== (this.d.key ?? []).length) {
             promptAction.showToast({
-              message: '答案数 ' + arr.length + ' 与客观题数 ' + this.d.key.length + ' 不一致'
+              message: '答案数 ' + arr.length + ' 与客观题数 ' + (this.d.key ?? []).length + ' 不一致'
             });
             return;
           }

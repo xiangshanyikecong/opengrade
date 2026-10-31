@@ -172,7 +172,7 @@ struct AnalyticsPage {
             .alignItems(HorizontalAlign.Start)
 
             // 知识点掌握度
-            if (this.d.knowledge.length > 0) {
+            if ((this.d.knowledge ?? []).length > 0) {
               Column({ space: 6 }) {
                 SectionHeader({ text: '知识点掌握度(薄弱排前)' })
                 RadarChart({ items: this.knowledgeRadar(), chartHeight: 230 })
