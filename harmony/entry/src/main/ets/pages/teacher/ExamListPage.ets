@@ -10,7 +10,7 @@ import { OgBreakpoint } from '../../common/OgBreakpoint';
 import { OgFormat } from '../../common/OgFormat';
 import { ExamSummary } from '../../model/Api';
 import { EmptyView, ErrorView, GhostButton, LoadingView, Pill, PrimaryButton, TitleBar } from '../../components/Ui';
-import { StaffNavGrid, navSheetHeight, navSheetWidth } from '../../components/StaffNav';
+import { StaffNavGrid, navSheetOptions } from '../../components/StaffNav';
 
 const STAGE_FILTERS: string[] = ['', 'awaiting_scan', 'scanning', 'anomalies', 'grading', 'ready', 'published'];
 const STAGE_NAMES: Record<string, string> = {
@@ -249,7 +249,7 @@ struct ExamListPage {
                 }, (it: ExamSummary) => it.id + it.stage + String(it.published))
               }
               .width('100%')
-              .alignItems(ItemAlign.Top)
+              .alignItems(ItemAlign.Start)
             }, (row: ExamSummary[], ri: number) => 'r' + ri + (row.length > 0 ? row[0].id : ''))
           } else {
             ForEach(this.filtered(), (it: ExamSummary) => {
@@ -269,9 +269,6 @@ struct ExamListPage {
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
-    .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: navSheetHeight(OgBreakpoint.now()), width: navSheetWidth(OgBreakpoint.now()),
-      dragBar: true, title: { title: '工作台导航' }
-    })
+    .bindSheet($$this.navOpen, this.sheetBuilder(), navSheetOptions(OgBreakpoint.now(), '工作台导航'))
   }
 }

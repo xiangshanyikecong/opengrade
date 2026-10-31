@@ -4,6 +4,7 @@
 import { router } from '@kit.ArkUI';
 import { OgSession } from '../common/OgSession';
 import { OgC, OgDim } from '../common/OgTheme';
+import { OgBreakpoint } from '../common/OgBreakpoint';
 
 export interface NavItem {
   key: string;
@@ -30,14 +31,32 @@ export const STAFF_NAV: NavItem[] = [
   { key: 'me', label: '账号设置', url: 'pages/MePage', adminOnly: false }
 ];
 
-// 工作台导航弹层统一高度(sm 3 列网格 ceil(项数/3)*62=310 + 上下 PAD 32,再加标题栏/拖条留量):
-// 各页 bindSheet 必须经 navSheetHeight()/navSheetWidth() 引用(混合弹层在 nav 分支同样适用),
-// 否则同一弹层各页高度不一;md/lg 切 4 列网格更矮,定宽避免铺满内屏。
+// 工作台弹层统一配置:各页 bindSheet 一律经 navSheetOptions()/formSheetOptions() 取参,
+// 避免多处复制配置漂移;md/lg 网格 4 列更矮,并定宽收口不铺满内屏。
+// 注意:本 SDK 的 SheetOptions.width 类型是 Dimension(仅 number/Resource),
+// '72%'/'100%' 字符串编译不过 → 宽度只能定宽数值,手机档(sm)不传 width 走默认全宽。
 export const NAV_SHEET_HEIGHT: number = 460;
+export const NAV_SHEET_WIDE: number = 520;
 
-// 弹层宽度:手机全宽;md 收 72%;lg 定宽(内屏/平板上弹层居中不铺满)。
-export function navSheetWidth(bp: string): Length {
-  return bp === 'sm' ? '100%' : (bp === 'md' ? '72%' : 520);
+// 导航弹层:sm 全宽原高;md/lg 定宽收口。title 传 '' 不设 title(ExamHub/UserList 混合弹层用)。
+export function navSheetOptions(bp: string, title: string): SheetOptions {
+  if (bp === 'sm') {
+    return title === '' ? { height: NAV_SHEET_HEIGHT, dragBar: true }
+      : { height: NAV_SHEET_HEIGHT, dragBar: true, title: { title: title } };
+  }
+  return title === '' ? { height: navSheetHeight(bp), width: NAV_SHEET_WIDE, dragBar: true }
+    : { height: navSheetHeight(bp), width: NAV_SHEET_WIDE, dragBar: true, title: { title: title } };
+}
+
+// 表单类弹层(FIT_CONTENT 高度自适应):宽屏定宽收口,手机档默认全宽。
+export function formSheetOptions(title: string): SheetOptions {
+  const bp = OgBreakpoint.now();
+  if (bp === 'sm') {
+    return title === '' ? { height: SheetSize.FIT_CONTENT, dragBar: true }
+      : { height: SheetSize.FIT_CONTENT, dragBar: true, title: { title: title } };
+  }
+  return title === '' ? { height: SheetSize.FIT_CONTENT, width: NAV_SHEET_WIDE, dragBar: true }
+    : { height: SheetSize.FIT_CONTENT, width: NAV_SHEET_WIDE, dragBar: true, title: { title: title } };
 }
 
 // 弹层高度:sm 维持原 460;md/lg 4 列 4 行网格(ceil(14/4)*62=248)+ 标题栏/拖条留量。

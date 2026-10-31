@@ -9,8 +9,8 @@
 import { mediaquery } from '@kit.ArkUI';
 
 export class OgBreakpoint {
-  private static mdL: mediaquery.MediaQueryList | null = null;
-  private static lgL: mediaquery.MediaQueryList | null = null;
+  private static mdL: mediaquery.MediaQueryListener | null = null;
+  private static lgL: mediaquery.MediaQueryListener | null = null;
 
   static watch(): void {
     if (OgBreakpoint.mdL !== null) {

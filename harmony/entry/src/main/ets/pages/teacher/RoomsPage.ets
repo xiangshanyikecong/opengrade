@@ -6,7 +6,7 @@ import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError } from '../../common/OgNet';
 import { OgC, OgDim } from '../../common/OgTheme';
 import { OgBreakpoint } from '../../common/OgBreakpoint';
-import { navSheetWidth } from '../../components/StaffNav';
+import { formSheetOptions } from '../../components/StaffNav';
 import { OgFormat } from '../../common/OgFormat';
 import { ExamDetail, ExamSummary, RoomsResp, Seat } from '../../model/Api';
 import { OgSession } from '../../common/OgSession';
@@ -404,9 +404,7 @@ struct RoomsPage {
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
-    .bindSheet($$this.genOpen, this.genBuilder(), {
-      height: SheetSize.FIT_CONTENT, width: navSheetWidth(OgBreakpoint.now()), dragBar: true, title: { title: '生成分场方案' }
-    })
+    .bindSheet($$this.genOpen, this.genBuilder(), formSheetOptions('生成分场方案'))
   }
 
   private roomSig(room: RoomRow): string {

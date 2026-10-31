@@ -10,7 +10,7 @@ import { OgBreakpoint } from '../../common/OgBreakpoint';
 import { OgFormat } from '../../common/OgFormat';
 import { PublicUser } from '../../model/Api';
 import { EmptyView, ErrorView, LoadingView, Pill, PrimaryButton, TitleBar } from '../../components/Ui';
-import { StaffNavGrid, navSheetHeight, navSheetWidth } from '../../components/StaffNav';
+import { StaffNavGrid, navSheetOptions, formSheetOptions } from '../../components/StaffNav';
 
 const ROLES: string[] = ['admin', 'leader', 'teacher', 'student', 'parent'];
 
@@ -217,6 +217,13 @@ struct UserListPage {
     .borderRadius(OgDim.RADIUS)
   }
 
+  // 弹层配置:nav 分支走统一导航弹层;表单分支自适应高度,宽屏定宽收口
+  private userSheetOpts(): SheetOptions {
+    return this.sheetKind === 'nav'
+      ? navSheetOptions(OgBreakpoint.now(), '')
+      : formSheetOptions('');
+  }
+
   build() {
     Column() {
       TitleBar({
@@ -271,12 +278,7 @@ struct UserListPage {
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
-    .bindSheet($$this.sheetOpen, this.anySheetBuilder(), {
-      // 导航分支与其他页同高;建号/改密表单分支自适应
-      height: this.sheetKind === 'nav' ? navSheetHeight(OgBreakpoint.now()) : SheetSize.FIT_CONTENT,
-      width: navSheetWidth(OgBreakpoint.now()),
-      dragBar: true
-    })
+    .bindSheet($$this.sheetOpen, this.anySheetBuilder(), this.userSheetOpts())
   }
 
   @Builder

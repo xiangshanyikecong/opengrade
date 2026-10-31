@@ -10,7 +10,7 @@ import { OgBreakpoint } from '../../common/OgBreakpoint';
 import { OgFormat } from '../../common/OgFormat';
 import { ExamSummary, TaskItem } from '../../model/Api';
 import { EmptyView, ErrorView, LoadingView, Pill, TitleBar } from '../../components/Ui';
-import { StaffNavGrid, navSheetHeight, navSheetWidth } from '../../components/StaffNav';
+import { StaffNavGrid, navSheetOptions } from '../../components/StaffNav';
 
 interface QuickEntry {
   label: string;
@@ -275,10 +275,7 @@ struct HomePage {
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
-    .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: navSheetHeight(OgBreakpoint.now()), width: navSheetWidth(OgBreakpoint.now()),
-      dragBar: true, title: { title: '工作台导航' }
-    })
+    .bindSheet($$this.navOpen, this.sheetBuilder(), navSheetOptions(OgBreakpoint.now(), '工作台导航'))
   }
 
   @State refreshingFlag: boolean = false;

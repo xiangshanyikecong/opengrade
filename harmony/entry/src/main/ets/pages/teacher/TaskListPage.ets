@@ -10,7 +10,7 @@ import { OgBreakpoint } from '../../common/OgBreakpoint';
 import { OgFormat } from '../../common/OgFormat';
 import { TaskItem } from '../../model/Api';
 import { EmptyView, ErrorView, LoadingView, Pill, TitleBar } from '../../components/Ui';
-import { StaffNavGrid, navSheetHeight, navSheetWidth } from '../../components/StaffNav';
+import { StaffNavGrid, navSheetOptions } from '../../components/StaffNav';
 
 @Entry
 @Component
@@ -139,7 +139,7 @@ struct TaskListPage {
                 }, (it: TaskItem) => it.exam + '-' + it.kind + '-' + (it.question ?? 0))
               }
               .width('100%')
-              .alignItems(ItemAlign.Top)
+              .alignItems(ItemAlign.Start)
             }, (row: TaskItem[], ri: number) => 'r' + ri + (row.length > 0 ? row[0].exam + row[0].kind : ''))
           } else {
             ForEach(this.items, (it: TaskItem) => {
@@ -159,10 +159,7 @@ struct TaskListPage {
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
-    .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: navSheetHeight(OgBreakpoint.now()), width: navSheetWidth(OgBreakpoint.now()),
-      dragBar: true, title: { title: '工作台导航' }
-    })
+    .bindSheet($$this.navOpen, this.sheetBuilder(), navSheetOptions(OgBreakpoint.now(), '工作台导航'))
   }
 
   @Builder

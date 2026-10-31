@@ -17,7 +17,7 @@ import {
 import {
   EmptyView, ErrorView, LoadingView, Pill, PrimaryButton, GhostButton, SectionHeader, TitleBar
 } from '../../components/Ui';
-import { StaffNavGrid, navSheetHeight, navSheetWidth } from '../../components/StaffNav';
+import { StaffNavGrid, navSheetOptions, formSheetOptions } from '../../components/StaffNav';
 
 interface HubParams {
   exam: string;
@@ -792,6 +792,18 @@ struct ExamHubPage {
     .width('100%')
   }
 
+  // 弹层配置:nav 分支走统一导航弹层;表单分支自适应高度、宽屏定宽收口;关闭时联动收起审计视图
+  private hubSheetOpts(): SheetOptions {
+    const opts: SheetOptions = this.sheetKind === 'nav'
+      ? navSheetOptions(OgBreakpoint.now(), '')
+      : formSheetOptions('');
+    opts.onWillDisappear = (): void => {
+      this.closeSheet();
+      this.auditOpen = false;
+    };
+    return opts;
+  }
+
   build() {
     Column() {
       TitleBar({
@@ -845,16 +857,7 @@ struct ExamHubPage {
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
-    .bindSheet($$this.sheetOpen, this.anySheetBuilder(), {
-      // 导航分支与其他页同高;其余表单分支自适应
-      height: this.sheetKind === 'nav' ? navSheetHeight(OgBreakpoint.now()) : SheetSize.FIT_CONTENT,
-      width: navSheetWidth(OgBreakpoint.now()),
-      dragBar: true,
-      onWillDisappear: () => {
-        this.closeSheet();
-        this.auditOpen = false;
-      }
-    })
+    .bindSheet($$this.sheetOpen, this.anySheetBuilder(), this.hubSheetOpts())
   }
 
   private async loadAudit(): Promise<void> {

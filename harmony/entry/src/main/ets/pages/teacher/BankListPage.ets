@@ -15,7 +15,7 @@ import { OgFormat } from '../../common/OgFormat';
 import { BankQuestion } from '../../model/Api';
 import { EmptyView, ErrorView, LoadingView, Pill, PrimaryButton, SectionHeader, TitleBar } from '../../components/Ui';
 import { OgImage } from '../../components/OgImage';
-import { StaffNavGrid, navSheetHeight, navSheetWidth } from '../../components/StaffNav';
+import { StaffNavGrid, navSheetOptions, formSheetOptions } from '../../components/StaffNav';
 
 const KINDS: string[] = ['choice', 'judge', 'multiple', 'fillblank', 'subjective'];
 const DIFFS: string[] = ['容易', '中等', '较难', '难'];
@@ -350,13 +350,8 @@ struct BankListPage {
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
-    .bindSheet($$this.navOpen, this.sheetBuilder(), {
-      height: navSheetHeight(OgBreakpoint.now()), width: navSheetWidth(OgBreakpoint.now()),
-      dragBar: true, title: { title: '工作台导航' }
-    })
-    .bindSheet($$this.formOpen, this.formBuilder(), {
-      height: SheetSize.FIT_CONTENT, width: navSheetWidth(OgBreakpoint.now()), dragBar: true, title: { title: this.editId === '' ? '录入新题' : '编辑题目' }
-    })
+    .bindSheet($$this.navOpen, this.sheetBuilder(), navSheetOptions(OgBreakpoint.now(), '工作台导航'))
+    .bindSheet($$this.formOpen, this.formBuilder(), formSheetOptions(this.editId === '' ? '录入新题' : '编辑题目'))
   }
 
   @Builder
