@@ -56,59 +56,74 @@ func overlaps(a, b []string) bool {
 	return false
 }
 
-// teacherSees 判定教师能否看到该考试(列表/打开)。常规产品的三口径:
+// examIdentity 是可见性判定所需的最小考试视图:全量考试与轻量摘要(ExamSummary)
+// 共用同一套口径,列表/任务页得以在「只看摘要」的前提下完成权限粗筛。
+type examIdentity struct {
+	CreatedBy string
+	Subject   string
+	Classes   []string // 名册班级并集
+}
+
+func examIdent(ex *Exam) examIdentity {
+	return examIdentity{CreatedBy: ex.CreatedBy, Subject: ex.Subject, Classes: examClasses(ex)}
+}
+
+// teacherSeesView 判定教师能否看到该考试(列表/打开)。常规产品的三口径:
 //   - 学科组长(SubjectLead 命中考试学科):本学科跨班全看,支撑同科多师协作;
 //   - 班主任(HeadClasses 与考试班级有交集):本班全学科可见,不受任教学科限制;
 //   - 任课教师:学科匹配 ∧ 班级匹配(原有规则)。
-func teacherSees(u *auth.User, ex *Exam) bool {
-	if ex.CreatedBy == u.Username {
+func teacherSeesView(u *auth.User, v examIdentity) bool {
+	if v.CreatedBy == u.Username {
 		return true
 	}
-	if ex.Subject != "" && containsStr(u.SubjectLead, ex.Subject) {
+	if v.Subject != "" && containsStr(u.SubjectLead, v.Subject) {
 		return true // 学科组长:本学科跨班
 	}
-	if overlaps(u.HeadClasses, examClasses(ex)) {
+	if overlaps(u.HeadClasses, v.Classes) {
 		return true // 班主任:本班全科
 	}
 	myClasses := u.AllClasses()
 	if len(u.Subjects) == 0 && len(myClasses) == 0 {
 		return false // 未配置任教信息的教师:仅本人创建的考试
 	}
-	subjectOK := ex.Subject == "" || len(u.Subjects) == 0 || containsStr(u.Subjects, ex.Subject)
-	classes := examClasses(ex)
-	classOK := len(classes) == 0 || overlaps(myClasses, classes)
+	subjectOK := v.Subject == "" || len(u.Subjects) == 0 || containsStr(u.Subjects, v.Subject)
+	classOK := len(v.Classes) == 0 || overlaps(myClasses, v.Classes)
 	return subjectOK && classOK
 }
 
-// canOpenExam 统一入口:管理员全看;年级组长按组织架构年级收敛
+// canOpenExamView 统一入口(摘要视图版):管理员全看;年级组长按组织架构年级收敛
 // (未配置管辖年级、或学校未维护年级归属时保持全看,兼容小校);
-// 教师按 teacherSees;其余角色不可。
-func canOpenExam(u *auth.User, ex *Exam, sch *School) bool {
+// 教师按 teacherSeesView;其余角色不可。
+func canOpenExamView(u *auth.User, v examIdentity, sch *School) bool {
 	switch u.Role {
 	case auth.RoleAdmin:
 		return true
 	case auth.RoleLeader:
-		if ex.CreatedBy == u.Username || len(u.Grades) == 0 {
+		if v.CreatedBy == u.Username || len(u.Grades) == 0 {
 			return true
 		}
 		if sch == nil || len(sch.Snapshot()) == 0 {
 			return true // 组织架构未配置:组长保持全看(老行为)
 		}
-		classes := examClasses(ex)
-		if len(classes) == 0 {
+		if len(v.Classes) == 0 {
 			return true // 校级卷(无名册班级)不设防
 		}
-		for _, g := range sch.GradesOfClasses(classes) {
+		for _, g := range sch.GradesOfClasses(v.Classes) {
 			if containsStr(u.Grades, g) {
 				return true
 			}
 		}
 		return false
 	case auth.RoleTeacher:
-		return teacherSees(u, ex)
+		return teacherSeesView(u, v)
 	default:
 		return false
 	}
+}
+
+// canOpenExam 统一入口(全量考试版):委托 examIdentity 视图判定。
+func canOpenExam(u *auth.User, ex *Exam, sch *School) bool {
+	return canOpenExamView(u, examIdent(ex), sch)
 }
 
 // scopeExamForTeacher 返回按任教班级过滤后的考试视图

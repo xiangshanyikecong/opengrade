@@ -31,9 +31,11 @@ func handleWorkload(w http.ResponseWriter, r *http.Request, store *Store, authSt
 	for _, su := range authStore.List() {
 		display[su.Username] = su.DisplayName
 	}
-	for _, ex := range store.List() {
+	// 全量流式(VisitExams):工作量必须看每场考试的全部评分记录,无法摘要粗筛;
+	// 低频管理页,内存 O(单场),时延 O(考试总数)。
+	store.VisitExams(func(ex *Exam) bool {
 		if !canOpenExam(u, ex, store.School) {
-			continue
+			return true
 		}
 		for _, g := range ex.Grades {
 			if !g.Graded {
@@ -50,7 +52,8 @@ func handleWorkload(w http.ResponseWriter, r *http.Request, store *Store, authSt
 				row.Flagged++
 			}
 		}
-	}
+		return true
+	})
 	out := []row{}
 	for name, row := range byUser {
 		row.DisplayName = display[name]

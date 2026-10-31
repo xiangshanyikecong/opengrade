@@ -51,22 +51,29 @@ func handleAggregate(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		httpError(w, http.StatusBadRequest, fmt.Errorf("缺少 group 参数(同场分组标签)"))
 		return
 	}
+	// 摘要粗筛:同场分组/发布状态/可见性全在轻量索引里,命中的科目才按需加载
 	var exams []*Exam
 	totalExams := 0   // 该分组的全部考试数(不论当前账号是否可见;前端据此提示口径)
 	pendingExams := 0 // 其中未发布/发布后有变更的科目数:不进总分排名,未收敛前排名会失真
-	for _, ex := range store.List() {
-		if ex.ExamGroup != group {
-			continue
+	var ids []string
+	store.VisitSummaries(func(sm *ExamSummary) {
+		if sm.ExamGroup != group {
+			return
 		}
 		totalExams++
-		if !ex.Published {
+		if !sm.Published {
 			pendingExams++
-			continue // 未发布科目不进总分:阅卷中/扫描中的列会把总分排名拉错,且无「口径未收敛」可言
+			return // 未发布科目不进总分:阅卷中/扫描中的列会把总分排名拉错,且无「口径未收敛」可言
 		}
-		if ex.Dirty {
+		if sm.Stage.Dirty {
 			pendingExams++ // 发布后又有变更:数字可用但提示需重新发布收口
 		}
-		if canOpenExam(u, ex, store.School) {
+		if canOpenExamView(u, sm.identity(), store.School) {
+			ids = append(ids, sm.ID)
+		}
+	})
+	for _, id := range ids {
+		if ex, ok := store.Get(id); ok {
 			exams = append(exams, ex)
 		}
 	}

@@ -150,9 +150,23 @@ func computeProctorConflicts(store *Store, ex *Exam) []proctorConflict {
 	if ex.Rooms == nil || ex.ExamDate == "" || ex.Session == "" {
 		return out
 	}
-	for _, other := range store.List() {
-		if other.ID == ex.ID || other.Rooms == nil || other.Session == "" ||
-			other.ExamDate != ex.ExamDate || other.Session != ex.Session {
+	// 摘要粗筛(全量轻量索引,零全量扫描):同日同场次且监考集与本校考试有重合的才加载。
+	var ids []string
+	store.VisitSummaries(func(sm *ExamSummary) {
+		if sm.ID == ex.ID || len(sm.Proctors) == 0 || sm.Session == "" ||
+			sm.ExamDate != ex.ExamDate || sm.Session != ex.Session {
+			return
+		}
+		for _, rm := range ex.Rooms.Rooms {
+			if rm.Proctor != "" && containsStr(sm.Proctors, rm.Proctor) {
+				ids = append(ids, sm.ID)
+				return
+			}
+		}
+	})
+	for _, id := range ids {
+		other, ok := store.Get(id)
+		if !ok || other.Rooms == nil {
 			continue
 		}
 		for _, rm := range ex.Rooms.Rooms {
@@ -167,6 +181,22 @@ func computeProctorConflicts(store *Store, ex *Exam) []proctorConflict {
 					})
 				}
 			}
+		}
+	}
+	return out
+}
+
+// examProctors 返回考场监考并集(去重,摘要粗筛用)。
+func examProctors(ex *Exam) []string {
+	if ex.Rooms == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, rm := range ex.Rooms.Rooms {
+		if rm.Proctor != "" && !seen[rm.Proctor] {
+			seen[rm.Proctor] = true
+			out = append(out, rm.Proctor)
 		}
 	}
 	return out

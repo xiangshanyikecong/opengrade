@@ -168,33 +168,138 @@ func (ex *Exam) AssignedReg(student int) string {
 }
 
 // Store 是考试会话的文件存储(目录 + JSON,零外部依赖)。
-// 写路径分两档:关键操作(建考/删除/补传/发布/改答案等)同步原子落盘;
-// 评分类热路径(SetGrade/SetGradePart 等)只改内存并标记脏,由后台 flusher
-// 去抖合并落盘(缺省 1s)——把「每笔评分全量重写 exam.json」的写放大摊平,
-// 全局锁内只剩内存变更。崩溃丢失窗口 = 一个去抖周期内的评分类改动(可重录)。
-// SQLite 迁移经 2026-10 依赖评审否决:工作集本就全内存,SQLite 不改内存模型,
-// 纯 Go 驱动引入数十个间接依赖违反零依赖红线(结论见 roadmap M-Store)。
+// 内存模型 = 全量轻量摘要 + 按需加载的全量考试缓存:
+//   - summaries 启动时全量载入(data/<id>/summary.json,每场约 1~10KB),支撑
+//     考试列表/我的任务/学生端列表/年级总表的粗筛与展示 —— 内存不随考试总数线性增长,
+//     上千场考试也可正常启动与列表;
+//   - exams 是全量考试的 LRU 缓存(驻留上限 cacheMax),首次访问按需从 exam.json 加载;
+//     脏考试(待落盘)钉住不逐,仅逐干净缓存(盘上状态与内存一致,逐出零损失);
+//   - 写路径分两档:关键操作(建考/删除/补传/发布/改答案等)同步原子落盘;
+//     评分类热路径(SetGrade/SetGradePart 等)只改内存并标记脏,由后台 flusher
+//     去抖合并落盘(缺省 1s)。崩溃丢失窗口 = 一个去抖周期内的评分类改动(可重录)。
+// SQLite 迁移经 2026-10 依赖评审否决:纯 Go 驱动引入数十个间接依赖违反零依赖红线,
+// mattn 需 cgo(Windows 构建不可行),而瓶颈已由去抖落盘 + 摘要索引消解(roadmap M-Store)。
 type Store struct {
 	mu       sync.Mutex
 	dir      string
-	exams    map[string]*Exam
-	shortSeq int     // 考试短号发号器(1000 起,重启后按存量去重续发)
-	School   *School // 组织架构(年级↔班级),newServer 装配;nil=未配置(权限判定按全看兜底)
+	exams    map[string]*Exam // 全量考试 LRU 缓存(非全量集合;全量以 summaries 为准)
+	shortSeq int              // 考试短号发号器(1000 起,重启后按存量去重续发)
+	School   *School          // 组织架构(年级↔班级),newServer 装配;nil=未配置(权限判定按全看兜底)
 
-	dirty      map[string]*Exam // 待落盘考试(去抖合并;nil = flusher 未启动,markDirty 退回同步)
+	summaries map[string]*ExamSummary // 全量轻量索引(启动全量载入)
+	dirty     map[string]*Exam        // 待落盘考试(去抖合并;nil = flusher 未启动,markDirty 退回同步)
+	rev       map[string]uint64       // 每考试变更版本号:flusher 校验克隆是否已被更新的同步写取代
+	access    map[string]uint64       // LRU 访问代(仅缓存中的考试)
+	accessSeq uint64
+	cacheMax  int
+
 	flushEvery time.Duration
 	stopFlush  chan struct{}
 	stopDone   chan struct{}
 }
 
-// defaultFlushEvery 评分类变更的去抖落盘周期。
-const defaultFlushEvery = time.Second
+// defaultFlushEvery 评分类变更的去抖落盘周期;defaultCacheMax 全量考试驻留上限。
+const (
+	defaultFlushEvery = time.Second
+	defaultCacheMax   = 64
+)
+
+// ExamSummary 是一场考试的轻量索引(data/<id>/summary.json,开放数据格式的一部分):
+// 列表/我的任务/学生端列表/年级总表只看它即可工作,全量考试数据按需加载。
+// 每次考试状态变更(同步 save 或去抖 flush)随 exam.json 一并原子重写。
+type ExamSummary struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"createdAt"`
+	CreatedBy string    `json:"createdBy,omitempty"`
+	Subject   string    `json:"subject,omitempty"`
+	ExamDate  string    `json:"examDate,omitempty"`
+	Term      string    `json:"term,omitempty"`
+	ExamType  string    `json:"examType,omitempty"`
+	ExamGroup string    `json:"examGroup,omitempty"`
+	Session   string    `json:"session,omitempty"`
+	ManualFull float64  `json:"manualFull,omitempty"`
+	Published bool      `json:"published,omitempty"`
+	ShortID   string    `json:"shortId,omitempty"`
+
+	Students   int `json:"students"`            // 已扫卷数(含缺考占位)
+	Objective  int `json:"objective"`           // 客观题数
+	Subjective int `json:"subjective"`          // 主观题数
+	PendingAppeals int `json:"pendingAppeals,omitempty"` // 待处理复核申请数(列表角标)
+
+	Classes   []string `json:"classes,omitempty"`   // 名册班级并集(可见性判定)
+	Proctors  []string `json:"proctors,omitempty"`  // 考场监考并集(跨考试监考冲突粗筛)
+	// Regs 是未作废卷的最终考号(人工指派优先,findIndex 同口径):学生端定位"哪些考试有我"。
+	Regs []string `json:"regs,omitempty"`
+
+	Tasks      map[string]string `json:"tasks,omitempty"`      // 按题任务:"q{n}" → 教师
+	ClassTasks map[string]string `json:"classTasks,omitempty"` // 按班任务:班级 → 教师
+	TaskDue    map[string]string `json:"taskDue,omitempty"`    // 截止时间
+	TaskMode   string            `json:"taskMode,omitempty"`
+
+	Stage stageView `json:"stage"` // 阶段机看板数字(examStage 派生结果的持久化)
+}
+
+// identity 返回可见性判定所需的最小视图(与全量考试同口径,见 scope.go)。
+func (sm *ExamSummary) identity() examIdentity {
+	return examIdentity{CreatedBy: sm.CreatedBy, Subject: sm.Subject, Classes: sm.Classes}
+}
+
+// computeSummary 从全量考试派生轻量摘要(纯函数;调用方持锁或持有快照)。
+func computeSummary(ex *Exam) *ExamSummary {
+	sm := &ExamSummary{
+		ID: ex.ID, CreatedAt: ex.CreatedAt, CreatedBy: ex.CreatedBy,
+		Subject: ex.Subject, ExamDate: ex.ExamDate, Term: ex.Term, ExamType: ex.ExamType,
+		ExamGroup: ex.ExamGroup, Session: ex.Session, ManualFull: ex.ManualFull,
+		Published: ex.Published, ShortID: ex.ShortID,
+		Students:   len(ex.Results),
+		Objective:  len(ex.Layout.Questions),
+		Subjective: len(ex.Layout.Subjectives),
+		Classes:    examClasses(ex),
+		Proctors:   examProctors(ex),
+		Tasks:      ex.Tasks, ClassTasks: ex.ClassTasks, TaskDue: ex.TaskDue, TaskMode: ex.TaskMode,
+		Stage: examStage(ex),
+	}
+	for _, a := range ex.Appeals {
+		if a.Status == "open" {
+			sm.PendingAppeals++
+		}
+	}
+	for i := range ex.Results {
+		res := ex.Results[i]
+		if res == nil || res.Voided {
+			continue
+		}
+		if reg := ex.AssignedReg(i + 1); reg != "" {
+			sm.Regs = append(sm.Regs, reg)
+		}
+	}
+	return sm
+}
+
+// writeSummaryFile 原子落盘摘要(与 exam.json 同目录)。
+func writeSummaryFile(dir string, sm *ExamSummary) error {
+	b, err := json.MarshalIndent(sm, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(dir, "summary.json"), b, 0o644)
+}
+
+// bumpRevLocked 递增考试变更版本号(flusher 旧克隆检测;调用方持锁)。
+func (s *Store) bumpRevLocked(id string) {
+	if s.rev == nil {
+		return
+	}
+	s.rev[id]++
+}
 
 func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, exams: map[string]*Exam{}, dirty: map[string]*Exam{},
+	s := &Store{dir: dir, exams: map[string]*Exam{}, summaries: map[string]*ExamSummary{},
+		dirty: map[string]*Exam{}, rev: map[string]uint64{}, access: map[string]uint64{},
+		cacheMax: defaultCacheMax,
 		flushEvery: defaultFlushEvery, stopFlush: make(chan struct{}), stopDone: make(chan struct{})}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -204,8 +309,27 @@ func NewStore(dir string) (*Store, error) {
 		if !e.IsDir() {
 			continue
 		}
-		p := filepath.Join(dir, e.Name(), "exam.json")
-		b, err := os.ReadFile(p)
+		id := e.Name()
+		examPath := filepath.Join(dir, id, "exam.json")
+		sumPath := filepath.Join(dir, id, "summary.json")
+		examSt, err := os.Stat(examPath)
+		if err != nil {
+			continue // 无 exam.json(半建目录/外来文件)不阻塞启动
+		}
+		// 摘要存在且不旧于 exam.json → 只读摘要(轻量启动的主路径)。
+		// 摘要缺失或更旧(写 exam 后写 summary 前断电)→ 全量载入重建一次,不驻留内存。
+		sumSt, sumErr := os.Stat(sumPath)
+		if sumErr == nil && !examSt.ModTime().After(sumSt.ModTime()) {
+			b, err := os.ReadFile(sumPath)
+			if err == nil {
+				var sm ExamSummary
+				if json.Unmarshal(b, &sm) == nil && sm.ID != "" {
+					s.summaries[sm.ID] = &sm
+					continue
+				}
+			}
+		}
+		b, err := os.ReadFile(examPath)
 		if err != nil {
 			continue
 		}
@@ -213,21 +337,34 @@ func NewStore(dir string) (*Store, error) {
 		if err := json.Unmarshal(b, &ex); err != nil {
 			continue // 损坏的会话不阻塞启动
 		}
+		if ex.ID == "" {
+			ex.ID = id
+		}
 		migrateExam(&ex)
-		s.exams[ex.ID] = &ex
+		sm := computeSummary(&ex)
+		if err := writeSummaryFile(filepath.Join(dir, id), sm); err != nil {
+			log.Printf("重建考试 %s 摘要失败: %v", id, err)
+		}
+		s.summaries[ex.ID] = sm
+		// 全量考试不进缓存:启动内存 O(考试总数×摘要),首次访问再懒加载
 	}
 	go s.flushLoop()
 	return s, nil
 }
 
 // markDirtyAsync 把评分类变更标记为待落盘,由后台 flusher 去抖合并落盘。
-// 调用方持锁。flusher 未启动(零值 Store 的边缘用法)时退回同步落盘保语义。
+// 调用方持锁。同时刷新内存摘要(列表页即时可见)并递增 rev(旧克隆检测)。
+// flusher 未启动(零值 Store 的边缘用法)时退回同步落盘保语义。
 func (s *Store) markDirtyAsync(ex *Exam) {
 	if s.dirty == nil {
 		_ = s.save(ex)
 		return
 	}
 	s.dirty[ex.ID] = ex
+	s.bumpRevLocked(ex.ID)
+	if s.summaries != nil {
+		s.summaries[ex.ID] = computeSummary(ex)
+	}
 }
 
 // flushLoop 周期性把脏考试合并落盘;关停时冲刷一次再退出。
@@ -246,13 +383,17 @@ func (s *Store) flushLoop() {
 	}
 }
 
-// FlushAll 把当前所有脏考试合并落盘:快照锁内取(冻结一致状态),
+// FlushAll 把当前所有脏考试合并落盘:快照与版本号锁内取(冻结一致状态,快照随任务携带),
 // 序列化与写盘锁外做(2MB 级 exam.json 的 marshal+rename 不再霸占全局锁)。
-// 写盘期间被删除的考试,写完复核后清理目录,不留复活物。
+// rev 校验堵住「旧克隆覆盖新同步写」:克隆之后若有新变更发生(rev 已变),本克隆作废留待下轮
+// —— 否则旧状态会把刚落盘的新状态顶回去。脏标记保持到写盘成功才摘除(脏考试被
+// evictLocked 钉住,不存在「摘脏后被驱逐」的窗口);写盘期间被删除的考试,写完复核后清理目录。
 func (s *Store) FlushAll() {
 	type job struct {
-		id  string
-		buf []byte
+		id    string
+		snap  *Exam
+		sm    *ExamSummary
+		revAt uint64
 	}
 	s.mu.Lock()
 	if len(s.dirty) == 0 {
@@ -265,32 +406,42 @@ func (s *Store) FlushAll() {
 			delete(s.dirty, id) // 已删除:丢弃,不再写盘
 			continue
 		}
-		b, err := json.MarshalIndent(ex.snapshot(), "", "  ")
-		if err != nil {
-			log.Printf("序列化考试 %s 失败(下轮重试): %v", id, err)
-			continue
-		}
-		jobs = append(jobs, job{id: id, buf: b})
+		snap := ex.snapshot()
+		jobs = append(jobs, job{id: id, snap: snap, sm: computeSummary(snap), revAt: s.rev[id]})
 	}
 	s.mu.Unlock()
 	for _, j := range jobs {
+		// 序列化锁外(慢);写盘前复核 rev —— 克隆后若有新变更,旧克隆作废,下轮用新状态重写
+		s.mu.Lock()
+		stale := s.rev[j.id] != j.revAt
+		s.mu.Unlock()
+		if stale {
+			continue // 脏标记仍在,下轮重试
+		}
+		buf, err := json.MarshalIndent(j.snap, "", "  ")
+		if err != nil {
+			log.Printf("序列化考试 %s 失败(下轮重试): %v", j.id, err)
+			continue // 脏标记仍在
+		}
 		dir := filepath.Join(s.dir, j.id)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			log.Printf("创建考试目录 %s 失败(下轮重试): %v", dir, err)
-			continue // 保留脏标记,下轮重试
+			continue
 		}
-		err := writeFileAtomic(filepath.Join(dir, "exam.json"), j.buf, 0o644)
+		werr := writeFileAtomic(filepath.Join(dir, "exam.json"), buf, 0o644)
+		if werr == nil {
+			werr = writeSummaryFile(dir, j.sm)
+		}
 		s.mu.Lock()
-		if _, ok := s.exams[j.id]; ok {
-			if err != nil {
-				log.Printf("落盘考试 %s 失败(下轮重试): %v", j.id, err)
-			} else {
-				delete(s.dirty, j.id)
-			}
-		} else {
-			delete(s.dirty, j.id)
+		if _, alive := s.summaries[j.id]; !alive {
 			_ = os.RemoveAll(dir) // 写盘期间被删除:清掉本写盘复活的目录
+		} else if werr != nil {
+			log.Printf("落盘考试 %s 失败(下轮重试): %v", j.id, werr) // 脏标记仍在,下轮重试
+		} else if s.rev[j.id] == j.revAt {
+			delete(s.dirty, j.id) // 落盘成功且期间无新变更:摘除脏标记
 		}
+		// rev 已变(写盘期间又有新变更):保持脏标记,下轮用新状态重写;盘上是稍旧状态,
+		// 与去抖语义同窗口,一个周期内自愈
 		s.mu.Unlock()
 	}
 }
@@ -304,6 +455,93 @@ func (s *Store) Stop() {
 	}
 	close(s.stopFlush)
 	<-s.stopDone
+}
+
+// getLocked 取全量考试:缓存命中直接用,未加载则从盘上懒加载(调用方持锁)。
+// 首次访问的磁盘读发生在锁内(毫秒级,仅冷数据第一触),此后走缓存。
+func (s *Store) getLocked(id string) (*Exam, bool) {
+	if ex, ok := s.exams[id]; ok {
+		s.touchLocked(id)
+		return ex, true
+	}
+	return s.loadLocked(id)
+}
+
+func (s *Store) loadLocked(id string) (*Exam, bool) {
+	b, err := os.ReadFile(filepath.Join(s.dir, id, "exam.json"))
+	if err != nil {
+		return nil, false
+	}
+	var ex Exam
+	if err := json.Unmarshal(b, &ex); err != nil {
+		return nil, false
+	}
+	if ex.ID == "" {
+		ex.ID = id
+	}
+	migrateExam(&ex)
+	s.exams[id] = &ex
+	s.touchLocked(id)
+	s.evictLocked()
+	return &ex, true
+}
+
+func (s *Store) touchLocked(id string) {
+	s.accessSeq++
+	s.access[id] = s.accessSeq
+}
+
+// evictLocked 驻留上限:仅逐「干净」考试(不在脏表 = 盘上状态与内存一致,逐出零损失);
+// 脏考试钉住直到 flusher 落盘。逐出只放弃缓存,数据在盘上,下次访问懒加载。
+func (s *Store) evictLocked() {
+	if s.cacheMax <= 0 || len(s.exams) <= s.cacheMax {
+		return
+	}
+	type cand struct {
+		id  string
+		gen uint64
+	}
+	cs := make([]cand, 0, len(s.exams))
+	for id := range s.exams {
+		if s.dirty[id] != nil {
+			continue // 钉住:待落盘
+		}
+		cs = append(cs, cand{id, s.access[id]})
+	}
+	sort.Slice(cs, func(i, j int) bool { return cs[i].gen < cs[j].gen })
+	for _, c := range cs {
+		if len(s.exams) <= s.cacheMax {
+			return
+		}
+		delete(s.exams, c.id)
+		delete(s.access, c.id)
+	}
+}
+
+// sortedSummaryIDsLocked 按创建时间新→旧返回全量考试 ID(调用方持锁)。
+func (s *Store) sortedSummaryIDsLocked() []string {
+	type row struct {
+		id  string
+		at  time.Time
+		idx int
+	}
+	i := 0
+	rows := make([]row, 0, len(s.summaries))
+	for id, sm := range s.summaries {
+		rows = append(rows, row{id, sm.CreatedAt, i})
+		i++
+	}
+	sort.Slice(rows, func(a, b int) bool {
+		if !rows[a].at.Equal(rows[b].at) {
+			return rows[a].at.After(rows[b].at)
+		}
+		return rows[a].idx < rows[b].idx // 同刻按 map 序稳定(与旧行为一致:map 遍历序)
+	})
+	out := make([]string, len(rows))
+	for k, r := range rows {
+		out[k] = r.id
+	}
+	return out
 }
 
 // migrateExam 旧版本数据升级(内存态,下次落盘自然固化):
@@ -417,31 +655,23 @@ func (s *Store) Create(ne NewExam) (*Exam, error) {
 		return nil, err
 	}
 	s.exams[id] = ex
+	s.touchLocked(id)
+	s.evictLocked()
 	return ex, nil
 }
 
 // Get 返回考试会话的快照(深拷贝):读路径锁外遍历与锁内写路径并发安全
 // (此前返回内部指针,锁外读 map 一旦撞上写入就是进程级致命错误,见 snapshot.go)。
-// 写入必须走 Store 的变更方法;对快照的修改不会落盘。
+// 未加载的考试按需从盘上懒加载(首次访问毫秒级)。写入必须走 Store 的变更方法;
+// 对快照的修改不会落盘。
 func (s *Store) Get(id string) (*Exam, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return nil, false
 	}
 	return ex.snapshot(), true
-}
-
-func (s *Store) List() []*Exam {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*Exam, 0, len(s.exams))
-	for _, ex := range s.exams {
-		out = append(out, ex.snapshot())
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
-	return out
 }
 
 // ConflictError 报告乐观锁冲突:请求携带的版本号与服务器当前不一致。
@@ -479,7 +709,7 @@ func markDirtyLocked(ex *Exam) {
 func (s *Store) SetGrade(id string, student, question int, g score.Grade, by string, ver int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return 0, fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -524,7 +754,7 @@ func (s *Store) SetGrade(id string, student, question int, g score.Grade, by str
 func (s *Store) SetGradePart(id string, student, question, part int, g score.Grade, by string, ver int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return 0, fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -576,7 +806,7 @@ func (s *Store) SetGradePart(id string, student, question, part int, g score.Gra
 func (s *Store) SetObjectiveKey(id string, key []string, by string, variant string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -613,7 +843,7 @@ func (s *Store) SetObjectiveKey(id string, key []string, by string, variant stri
 func (s *Store) SetPublished(id string, pub bool, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -652,7 +882,7 @@ func (ex *Exam) log(by, action, detail string) {
 func (s *Store) SetAssignment(id string, student int, reg string, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -702,30 +932,65 @@ func (s *Store) SetAssignment(id string, student int, reg string, by string) err
 func (s *Store) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.exams[id]; !ok {
+	if _, ok := s.summaries[id]; !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
 	if err := os.RemoveAll(filepath.Join(s.dir, id)); err != nil {
 		return fmt.Errorf("删除考试数据失败(文件被其它程序占用?): %w", err)
 	}
 	delete(s.exams, id)
-	delete(s.dirty, id) // 挂起的去抖落盘一并撤销(在途写盘由 FlushAll 写后复核兜底)
+	delete(s.summaries, id)
+	delete(s.dirty, id)  // 挂起的去抖落盘一并撤销(在途写盘由 FlushAll 写后复核兜底)
+	delete(s.access, id)
+	delete(s.rev, id)
 	return nil
 }
 
-// VisitAll 在锁内逐场考试调用 fn(按创建时间新→旧):供列表类只读聚合使用,
-// 免去整场深拷贝快照 —— 千人校列表页原先每请求深拷贝全部考试,是最大的读路径成本。
-// fn 只能读 *Exam、不得保留指针,也不得再进入会拿 s.mu 的 Store 方法。
-func (s *Store) VisitAll(fn func(*Exam)) {
+// VisitSummaries 锁内只读遍历全量摘要(创建时间新→旧):考试列表/我的任务/学生端列表/
+// 年级总表的粗筛主路径 —— 不触发任何全量加载,内存口径 = 全量摘要。
+// fn 只能读 *ExamSummary、不得保留指针,也不得再进入会拿 s.mu 的 Store 方法。
+func (s *Store) VisitSummaries(fn func(*ExamSummary)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sorted := make([]*Exam, 0, len(s.exams))
-	for _, ex := range s.exams {
-		sorted = append(sorted, ex)
+	for _, id := range s.sortedSummaryIDsLocked() {
+		if sm := s.summaries[id]; sm != nil {
+			fn(sm)
+		}
 	}
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].CreatedAt.After(sorted[j].CreatedAt) })
-	for _, ex := range sorted {
-		fn(ex)
+}
+
+// VisitExams 全量流式遍历(创建时间新→旧):缓存命中取快照,未加载的逐场从盘读、
+// 用完即弃(不进缓存,不污染工作集)。供工作量统计这类必须看全量评分的低频页;
+// 内存 O(单场),时延 O(考试总数 × 单场读取)。fn 返回 false 提前终止。
+func (s *Store) VisitExams(fn func(*Exam) bool) {
+	s.mu.Lock()
+	ids := s.sortedSummaryIDsLocked()
+	s.mu.Unlock()
+	for _, id := range ids {
+		s.mu.Lock()
+		var snap *Exam
+		if live, ok := s.exams[id]; ok {
+			snap = live.snapshot()
+		} else {
+			b, err := os.ReadFile(filepath.Join(s.dir, id, "exam.json"))
+			if err == nil {
+				var ex Exam
+				if json.Unmarshal(b, &ex) == nil {
+					if ex.ID == "" {
+						ex.ID = id
+					}
+					migrateExam(&ex)
+					snap = (&ex).snapshot()
+				}
+			}
+		}
+		s.mu.Unlock()
+		if snap == nil {
+			continue // 盘上缺失/损坏:跳过,与启动口径一致
+		}
+		if !fn(snap) {
+			return
+		}
 	}
 }
 
@@ -733,7 +998,7 @@ func (s *Store) VisitAll(fn func(*Exam)) {
 func (s *Store) SetTask(id string, question int, teacher string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -758,7 +1023,7 @@ func (s *Store) SetTask(id string, question int, teacher string) error {
 func (s *Store) SetClassTask(id, class, teacher, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -784,7 +1049,7 @@ func (s *Store) SetClassTask(id, class, teacher, by string) error {
 func (s *Store) SetRooms(id string, plan *RoomPlan, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -797,7 +1062,7 @@ func (s *Store) SetRooms(id string, plan *RoomPlan, by string) error {
 func (s *Store) MutateRooms(id string, by string, fn func(*RoomPlan) (string, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -830,7 +1095,7 @@ func (s *Store) OverlayDir(id string) string {
 func (s *Store) ApplyKeySheet(id string, key []string, by string) (bool, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return false, 0, fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -931,7 +1196,7 @@ func writePageGroups(pageDir string, student int, group []*image.Gray, pageNos [
 func (s *Store) AppendScans(id, by string, oldBase int, results []*omr.Result, slices [][]omr.Slice, pageGroups [][]*image.Gray, pageNos [][]int, overlays [][][]byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return 0, fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1032,7 +1297,7 @@ func (s *Store) AppendScans(id, by string, oldBase int, results []*omr.Result, s
 func (s *Store) ReplaceResult(id string, student int, res *omr.Result, slices []omr.Slice, pages []*image.Gray, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1089,7 +1354,7 @@ func (s *Store) ReplaceResult(id string, student int, res *omr.Result, slices []
 func (s *Store) SetSheetAck(id string, student int, ack bool, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1121,7 +1386,7 @@ func (s *Store) SetSheetAck(id string, student int, ack bool, by string) error {
 func (s *Store) ClearFlagMarks(id string, student, question int, by string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return 0, fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1161,7 +1426,7 @@ func (s *Store) NextShortID() string {
 func (s *Store) AppendManual(id, reg string, absent bool, answers []string, by string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return 0, fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1199,7 +1464,7 @@ func (s *Store) AppendManual(id, reg string, absent bool, answers []string, by s
 func (s *Store) SetAbsent(id string, student int, absent bool, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1228,7 +1493,7 @@ func (s *Store) SetAbsent(id string, student int, absent bool, by string) error 
 func (s *Store) SetVoid(id string, student int, voided bool, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1261,8 +1526,8 @@ func (s *Store) genShortIDLocked() string {
 		cand := fmt.Sprintf("%04d", s.shortSeq)
 		s.shortSeq++
 		taken := false
-		for _, ex := range s.exams {
-			if ex.ShortID == cand {
+		for _, sm := range s.summaries { // 全量口径:未加载的考试也占号(缓存只是子集)
+			if sm.ShortID == cand {
 				taken = true
 				break
 			}
@@ -1279,7 +1544,7 @@ func (s *Store) genShortIDLocked() string {
 func (s *Store) AssignVariant(id string, student int, variant, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1358,7 +1623,7 @@ func (s *Store) AssignVariant(id string, student int, variant, by string) error 
 func (s *Store) SetMeta(id string, examDate, term, examType, examGroup, session *string, anonymous *bool, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1394,7 +1659,7 @@ func (s *Store) SetMeta(id string, examDate, term, examType, examGroup, session 
 func (s *Store) SetTaskDue(id, key, due, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1431,7 +1696,7 @@ func (ex *Exam) omrOptions() omr.Options {
 func (s *Store) SetKnowledge(id string, tags map[int]string, by string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return 0, fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1485,7 +1750,7 @@ func (s *Store) SetKnowledge(id string, tags map[int]string, by string) (int, er
 func (s *Store) SetScoring(id string, scheme *card.ScoringScheme, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1509,7 +1774,7 @@ func (s *Store) SetScoring(id string, scheme *card.ScoringScheme, by string) err
 func (s *Store) AddAppeal(id, reg, reason string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return 0, fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1549,7 +1814,7 @@ func (s *Store) AddAppeal(id, reg, reason string) (int, error) {
 func (s *Store) SetAppealBlock(id, reg string, blocked bool, reason, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1580,7 +1845,7 @@ func (s *Store) SetAppealBlock(id, reg string, blocked bool, reason, by string) 
 func (s *Store) ResolveAppeal(id string, n int, reply, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	ex, ok := s.exams[id]
+	ex, ok := s.getLocked(id)
 	if !ok {
 		return fmt.Errorf("考试 %s 不存在", id)
 	}
@@ -1635,6 +1900,9 @@ func (s *Store) SliceDir(id string) string {
 	return filepath.Join(s.dir, id, "slices")
 }
 
+// save 同步落盘一场考试(调用方持锁):exam.json + summary.json 原子写,
+// 内存摘要即时刷新、rev 递增(使在途的 flusher 旧克隆作废)。关键操作专用;
+// 评分类热路径走 markDirtyAsync + flusher。
 func (s *Store) save(ex *Exam) error {
 	dir := filepath.Join(s.dir, ex.ID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1644,7 +1912,14 @@ func (s *Store) save(ex *Exam) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(filepath.Join(dir, "exam.json"), b, 0o644)
+	if err := writeFileAtomic(filepath.Join(dir, "exam.json"), b, 0o644); err != nil {
+		return err
+	}
+	s.bumpRevLocked(ex.ID)
+	if s.summaries != nil {
+		s.summaries[ex.ID] = computeSummary(ex)
+	}
+	return writeSummaryFile(dir, computeSummary(ex))
 }
 
 // writeFileAtomic 原子落盘:先写临时文件再 rename 顶替(A-2)。

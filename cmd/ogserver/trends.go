@@ -9,6 +9,7 @@ package main
 import (
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/opengrade/opengrade/auth"
 	"github.com/opengrade/opengrade/score"
@@ -143,77 +144,74 @@ func classMeanOf(ex *Exam, rep *score.Report, class string) (mean float64, n int
 	return mean, n
 }
 
-// visibleExamsAsc 返回当前账号可见(可选再按学科过滤)的考试,时间升序;
-// 同刻度按 ID 稳定排序,保证趋势序列可复现。仅供教职员使用(学生端见 handleStudentTrends)。
-func visibleExamsAsc(store *Store, u *auth.User, subject string) []*Exam {
-	out := make([]*Exam, 0)
-	for _, ex := range store.List() { // List 为时间降序
-		if !canOpenExam(u, ex, store.School) {
-			continue
+// trendOrderAsc 是趋势时间轴上一场考试的排序键(考试日期优先,未填用创建时间)。
+type trendOrderAsc struct {
+	ID        string
+	ExamDate  string
+	CreatedAt time.Time
+}
+
+// visibleExamOrderAsc 返回当前账号可见(可选再按学科过滤)的考试,按时间轴口径升序;
+// 同刻度按 ID 稳定排序,保证趋势序列可复现。只读轻量摘要,不触发全量加载
+// —— 调用方按返回顺序逐场加载(汇总趋势需要全量数据,内存 O(单场))。
+// 时间轴口径与年级总表一致:考试日期优先;只按创建时间排,补录建考(创建晚于
+// 考试日期)会让两个纵向视图的科目顺序互相矛盾。
+func visibleExamOrderAsc(store *Store, u *auth.User, subject string) []trendOrderAsc {
+	var rows []trendOrderAsc
+	store.VisitSummaries(func(sm *ExamSummary) {
+		if !canOpenExamView(u, sm.identity(), store.School) {
+			return
 		}
-		if subject != "" && ex.Subject != subject {
-			continue
+		if subject != "" && sm.Subject != subject {
+			return
 		}
-		out = append(out, ex)
-	}
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 { // 反转为升序
-		out[i], out[j] = out[j], out[i]
-	}
-	// 时间轴口径与年级总表一致:考试日期优先(未填用创建时间)。
-	// 只按创建时间排,补录建考(创建晚于考试日期)会让两个纵向视图的科目顺序互相矛盾。
-	sort.SliceStable(out, func(i, j int) bool {
-		di, dj := examDateOf(out[i]), examDateOf(out[j])
+		rows = append(rows, trendOrderAsc{sm.ID, sm.ExamDate, sm.CreatedAt})
+	})
+	sort.SliceStable(rows, func(i, j int) bool {
+		di, dj := rows[i].ExamDate, rows[j].ExamDate
 		if di != dj {
 			return di < dj
 		}
-		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		if !rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
+			return rows[i].CreatedAt.Before(rows[j].CreatedAt)
 		}
-		return out[i].ID < out[j].ID
+		return rows[i].ID < rows[j].ID
 	})
-	return out
+	return rows
 }
 
 // handleStaffTrends 教师端纵向趋势:GET /api/v1/trends?class=&subject=
 // 返回可见考试序列(含班级均分走势)与逐生跨考对齐数据;班级/学科可选过滤。
 func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	class, subject := r.URL.Query().Get("class"), r.URL.Query().Get("subject")
-	exams := visibleExamsAsc(store, u, subject)
+	order := visibleExamOrderAsc(store, u, subject)
 
-	// 班级选择器候选:可见考试名册中出现过的班级
+	// 单遍流式:班级候选/名册三元组/interested 都是「升序并集」语义,边加载边累积;
+	// 逐场考试用完即弃(不保留快照),内存 O(学生数),不再随考试总数线性增长。
+	// interested 的过滤放到末尾(名册并集此时已齐全,学生换班跟随最近一场)。
 	classSet := map[string]bool{}
-	for _, ex := range exams {
+	regClass := map[string]string{} // reg → 行政班(以最近一场考试的名册为准,学生换班跟随最新)
+	regName := map[string]string{}
+	interested := map[string]bool{}
+	tExams := []TrendExam{} // 空序列输出 [] 而非 null
+	students := map[string]*TrendStudent{}
+	for _, o := range order {
+		ex, ok := store.Get(o.ID)
+		if !ok {
+			continue // 盘上缺失(外部破坏):跳过,与启动口径一致
+		}
 		for _, c := range examClasses(ex) {
 			classSet[c] = true
 		}
-	}
-	classes := make([]string, 0, len(classSet))
-	for c := range classSet {
-		classes = append(classes, c)
-	}
-	sort.Strings(classes)
-
-	// 关心哪些考号:指定班级 → 名册中该班的考号(走班含教学班归属);未指定 → 全部
-	regClass := map[string]string{} // reg → 行政班(以最近一场考试的名册为准,学生换班跟随最新)
-	regName := map[string]string{}
-	for _, ex := range exams {
 		for _, st := range ex.Roster {
 			if st.Reg == "" {
 				continue
 			}
 			if st.Class != "" {
-				regClass[st.Reg] = st.Class // exams 升序遍历,后写覆盖=最近考试
+				regClass[st.Reg] = st.Class // 升序遍历,后写覆盖=最近考试
 			}
 			if st.Name != "" {
 				regName[st.Reg] = st.Name
-			}
-		}
-	}
-	interested := map[string]bool{}
-	for _, ex := range exams {
-		for _, st := range ex.Roster {
-			if st.Reg == "" {
-				continue
 			}
 			if class == "" {
 				interested[st.Reg] = true
@@ -226,19 +224,14 @@ func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *
 				}
 			}
 		}
-		if class != "" {
-			continue
-		}
-		for i := range ex.Results { // 名册未覆盖的卷(校级卷)也纳入
-			if reg := ex.AssignedReg(i + 1); reg != "" {
-				interested[reg] = true
+		if class == "" {
+			for i := range ex.Results { // 名册未覆盖的卷(校级卷)也纳入
+				if reg := ex.AssignedReg(i + 1); reg != "" {
+					interested[reg] = true
+				}
 			}
 		}
-	}
 
-	tExams := []TrendExam{} // 空序列输出 [] 而非 null
-	students := map[string]*TrendStudent{}
-	for _, ex := range exams {
 		rep := mergeReport(ex)
 		mean, n := classMeanOf(ex, rep, class)
 		if class == "" { // 未指定班级:班级序列=全体序列
@@ -252,9 +245,6 @@ func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *
 		})
 		for _, l := range rep.Students {
 			reg := l.RegNumber
-			if !interested[reg] {
-				continue
-			}
 			ts := students[reg]
 			if ts == nil {
 				ts = &TrendStudent{Reg: reg, Name: regName[reg], Class: regClass[reg]}
@@ -279,7 +269,9 @@ func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *
 	}
 	regs := make([]string, 0, len(students))
 	for reg := range students {
-		regs = append(regs, reg)
+		if interested[reg] {
+			regs = append(regs, reg)
+		}
 	}
 	sort.Slice(regs, func(i, j int) bool {
 		if students[regs[i]].Class != students[regs[j]].Class {
@@ -287,6 +279,11 @@ func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *
 		}
 		return regs[i] < regs[j]
 	})
+	classes := make([]string, 0, len(classSet))
+	for c := range classSet {
+		classes = append(classes, c)
+	}
+	sort.Strings(classes)
 	out := make([]TrendStudent, 0, len(regs))
 	for _, reg := range regs {
 		out = append(out, *students[reg])
@@ -309,25 +306,31 @@ func handleStudentTrends(w http.ResponseWriter, r *http.Request, store *Store, u
 	}
 	// 时间轴口径与教师端 visibleExamsAsc 一致:考试日期优先(未填用创建时间)。
 	// 只按创建时间排,补录建考(创建晚于考试日期)会让个人曲线与教师端/年级总表互相矛盾。
-	exams := make([]*Exam, 0)
-	for _, ex := range store.List() {
-		if !ex.Published {
-			continue // 成绩发布控制:未发布不可查
+	// 摘要粗筛:已发布 ∧ 本人在册(Regs 与 findIndex 同口径:未作废卷的最终考号),
+	// 命中的考试才按需加载 —— 学生端趋势零全量加载。
+	var order []trendOrderAsc
+	store.VisitSummaries(func(sm *ExamSummary) {
+		if !sm.Published || !containsStr(sm.Regs, reg) {
+			return
 		}
-		exams = append(exams, ex)
-	}
-	sort.SliceStable(exams, func(i, j int) bool {
-		di, dj := examDateOf(exams[i]), examDateOf(exams[j])
+		order = append(order, trendOrderAsc{sm.ID, sm.ExamDate, sm.CreatedAt})
+	})
+	sort.SliceStable(order, func(i, j int) bool {
+		di, dj := order[i].ExamDate, order[j].ExamDate
 		if di != dj {
 			return di < dj
 		}
-		if !exams[i].CreatedAt.Equal(exams[j].CreatedAt) {
-			return exams[i].CreatedAt.Before(exams[j].CreatedAt)
+		if !order[i].CreatedAt.Equal(order[j].CreatedAt) {
+			return order[i].CreatedAt.Before(order[j].CreatedAt)
 		}
-		return exams[i].ID < exams[j].ID
+		return order[i].ID < order[j].ID
 	})
 	var points []TrendPoint
-	for _, ex := range exams {
+	for _, o := range order {
+		ex, ok := store.Get(o.ID)
+		if !ok {
+			continue
+		}
 		idx := findIndex(ex, reg)
 		if idx == 0 {
 			continue

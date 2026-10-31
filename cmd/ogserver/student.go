@@ -169,12 +169,27 @@ func handleStudentExams(w http.ResponseWriter, r *http.Request, store *Store, u 
 	}
 	out := []item{}
 	unmatched := 0 // 已发布但当前口径下没有关联答卷的场数:可能未参加,或考号未绑定
-	for _, ex := range store.List() {
-		if !ex.Published {
-			continue // 成绩发布控制:未发布不可查
+	// 摘要粗筛:Published + 考号在册(Regs 与 findIndex 同口径:未作废卷的最终考号),
+	// 命中的考试才按需加载算精确分数/排名 —— 学生端列表零全量加载。
+	var matchedIDs []string
+	store.VisitSummaries(func(sm *ExamSummary) {
+		if !sm.Published {
+			return // 成绩发布控制:未发布不可查
+		}
+		for _, reg := range regs {
+			if containsStr(sm.Regs, reg) {
+				matchedIDs = append(matchedIDs, sm.ID)
+				return
+			}
+		}
+		unmatched++ // 已发布但没有任何一个口径考号在册
+	})
+	for _, id := range matchedIDs {
+		ex, ok := store.Get(id)
+		if !ok {
+			continue // 盘上缺失(外部破坏):跳过
 		}
 		var rep *score.Report // 懒算:同场多孩只统分一次
-		found := false
 		for _, reg := range regs {
 			if findIndex(ex, reg) == 0 {
 				continue
@@ -186,7 +201,6 @@ func handleStudentExams(w http.ResponseWriter, r *http.Request, store *Store, u 
 			if !ok {
 				continue
 			}
-			found = true
 			it := item{ID: ex.ID, CreatedAt: ex.CreatedAt.Format("2006-01-02 15:04"), ExamDate: examDateOf(ex),
 				Subject: ex.Subject, Found: true, Absent: line.Absent, Score: line.Score, Total: line.Total,
 				Rank: line.Rank, Child: reg}
@@ -210,10 +224,6 @@ func handleStudentExams(w http.ResponseWriter, r *http.Request, store *Store, u 
 				}
 			}
 			out = append(out, it)
-		}
-		if !found {
-			unmatched++
-			continue
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"exams": out, "unmatched": unmatched})

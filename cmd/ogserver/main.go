@@ -895,28 +895,21 @@ func handleListExams(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		Flagged    int    `json:"flagged,omitempty"` // ⚑ 待复核数(列表角标)
 	}
 	out := []summary{} // 空列表也返回 [],避免 null 使前端 .map/.forOf 崩溃
-	// VisitAll 锁内只读聚合:列表页原先每请求对全部考试做整场深拷贝快照,
-	// 千人校×几十场是最大的读路径成本;summary 是值类型,锁内构建即快照。
-	store.VisitAll(func(ex *Exam) {
-		if !canOpenExam(u, ex, store.School) {
+	// VisitSummaries 只读遍历全量轻量摘要:列表页零全量加载(未打开过的考试不进内存),
+	// 阶段机看板数字为 examStage 派生结果的持久化(computeSummary 随每次变更刷新)。
+	store.VisitSummaries(func(sm *ExamSummary) {
+		if !canOpenExamView(u, sm.identity(), store.School) {
 			return // 学科教师只看任教班级+学科的考试
 		}
-		stage := examStage(ex)
-		pending := 0
-		for _, a := range ex.Appeals {
-			if a.Status == "open" {
-				pending++
-			}
-		}
 		out = append(out, summary{
-			ID: ex.ID, CreatedAt: ex.CreatedAt.Format("2006-01-02 15:04"), CreatedBy: ex.CreatedBy,
-			Subject: ex.Subject, ExamDate: ex.ExamDate, Term: ex.Term, ExamType: ex.ExamType, ExamGroup: ex.ExamGroup,
-			Students:  len(ex.Results),
-			Objective: len(ex.Layout.Questions), Subjective: len(ex.Layout.Subjectives),
-			Published: ex.Published, Mine: ex.CreatedBy == u.Username,
-			Stage: stage.Stage, StageLabel: stage.Label,
-			Expected: stage.Expected, Warnings: stage.Warnings, Ungraded: stage.Ungraded, Total: stage.Total,
-			Dirty: stage.Dirty, Appeals: pending, Flagged: stage.Flagged,
+			ID: sm.ID, CreatedAt: sm.CreatedAt.Format("2006-01-02 15:04"), CreatedBy: sm.CreatedBy,
+			Subject: sm.Subject, ExamDate: sm.ExamDate, Term: sm.Term, ExamType: sm.ExamType, ExamGroup: sm.ExamGroup,
+			Students:  sm.Students,
+			Objective: sm.Objective, Subjective: sm.Subjective,
+			Published: sm.Published, Mine: sm.CreatedBy == u.Username,
+			Stage: sm.Stage.Stage, StageLabel: sm.Stage.Label,
+			Expected: sm.Stage.Expected, Warnings: sm.Stage.Warnings, Ungraded: sm.Stage.Ungraded, Total: sm.Stage.Total,
+			Dirty: sm.Stage.Dirty, Appeals: sm.PendingAppeals, Flagged: sm.Stage.Flagged,
 		})
 	})
 	writeJSON(w, http.StatusOK, out)
