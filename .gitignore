@@ -24,3 +24,7 @@ ogserver-run.log
 
 # 会话工具状态
 .zcode/
+
+# 本地构建目录与搜索结果垃圾文件
+build/
+omr_*.json
