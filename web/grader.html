@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenGrade · Grader Studio 阅卷工作台</title>
+<link rel="stylesheet" href="/common.css">
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; color:var(--ink); background:#f5f7fa; height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:16px; padding:10px 20px; background:#fff; border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; }
+  header .meta { font-size:12px; color:#66707d; }
+  main { flex:1; display:flex; min-height:0; }
+  /* 左:切片画布 */
+  .stage { flex:1; display:grid; place-items:center; background:#3a4250; position:relative; min-width:0; overflow:auto; }
+  .wrap { position:relative; display:inline-block; }
+  .stage img { max-width:92vw; max-height:86vh; box-shadow:0 8px 32px rgba(0,0,0,.5); background:#fff; display:block; }
+  .stage.zoom img { max-width:none; max-height:none; width:170vh; }
+  .stage canvas { position:absolute; left:0; top:0; cursor:crosshair; }
+  .overlay { position:absolute; font-size:120px; font-weight:700; opacity:.85; pointer-events:none; }
+  .overlay.check { color:#00c853; }
+  .overlay.cross { color:#ff1744; }
+  /* 右:操作面板 */
+  .panel { width:330px; background:#fff; border-left:1px solid var(--line); display:flex; flex-direction:column; overflow:auto; }
+  .panel .row { padding:12px 16px; border-bottom:1px solid var(--line); }
+  .panel select, .panel input { width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font-size:14px; }
+  .scorebtns { display:grid; grid-template-columns:repeat(6,1fr); gap:6px; }
+  .scorebtns button, .markbtns button, .tools button, .scoreinput button { padding:9px 0; border:1px solid var(--line); border-radius:8px; background:#f8fafc; font-size:14px; cursor:pointer; }
+  .scorebtns button.active { background:var(--brand); color:#fff; border-color:var(--brand); }
+  .scoreinput { display:grid; grid-template-columns:48px 1fr 48px 60px; gap:6px; margin-top:6px; }
+  .scoreinput input { padding:8px 6px; border:1px solid var(--line); border-radius:6px; font-size:15px; text-align:center; }
+  .scoreinput button { font-size:12px; padding:6px 0; }
+  .scorebuf { margin-bottom:6px; padding:6px 10px; background:#fff7ed; border:1px solid #fdba74; border-radius:8px; font-size:13px; font-weight:600; color:#9a3412; }
+  .markbtns { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:8px; }
+  .markbtns button.active { background:#fff3cd; border-color:var(--warn); }
+  .tools { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-top:8px; }
+  .tools button.active { background:#e0f2e9; border-color:var(--brand); }
+  .tools button.inkRed.active { background:#fde8e8; border-color:#c0392b; }
+  .status { font-size:13px; color:#4b5563; line-height:1.7; }
+  /* 小问拆分(版式 v3):逐问得分行 */
+  .parts { margin-bottom:10px; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .partrow { display:flex; align-items:center; gap:8px; padding:7px 12px; border-bottom:1px solid var(--line); cursor:pointer; font-size:14px; }
+  .partrow:last-of-type { border-bottom:0; }
+  .partrow.sel { background:#e0f2e9; font-weight:600; }
+  .partrow .pl { min-width:34px; }
+  .partrow .pv { min-width:30px; text-align:right; font-variant-numeric:tabular-nums; }
+  .partrow .pm { color:#8a94a3; font-size:12px; }
+  .ptotal { padding:5px 12px; font-size:12px; color:#8a94a3; background:#f8fafc; }
+  .progress { height:8px; background:#eef2f6; border-radius:4px; overflow:hidden; }
+  .progress > div { height:100%; background:var(--brand); transition:width .2s; }
+  kbd { background:#eef2f6; border:1px solid var(--line); border-bottom-width:2px; border-radius:4px; padding:1px 5px; font-size:11px; }
+  .hint { font-size:12px; color:#8a94a3; line-height:2; }
+  .nav { display:flex; gap:8px; }
+  .nav button { flex:1; padding:10px; border:0; border-radius:8px; background:var(--brand); color:#fff; font-size:14px; cursor:pointer; }
+  .nav button.ghost { background:#eef2f6; color:var(--ink); }
+  #assignBox { margin-top:8px; padding:8px; background:#fff7ed; border:1px solid #fdba74; border-radius:8px; font-size:13px; }
+  #assignBox .chip { display:inline-block; margin:3px 4px 0 0; padding:4px 10px; background:#fff; border:1px solid var(--warn); border-radius:14px; cursor:pointer; }
+  #assignBox input { margin-top:6px; }
+  #report { max-height:38vh; overflow:auto; font-size:12px; }
+  #report table { width:100%; border-collapse:collapse; }
+  #report td, #report th { border-bottom:1px solid var(--line); padding:4px 6px; text-align:left; }
+  /* 触屏快捷行(R 同上分 / F 下一份未评 / G 待复核——键盘专属动作的手机出口) */
+  .quickbtns { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+  .quickbtns button { padding:11px 0; border:1px solid var(--line); border-radius:8px; background:#f8fafc; font-size:13px; cursor:pointer; }
+  /* —— 手机/触屏(≤860px,与 common.css 断点对齐):上图下操作区,全部动作可点 —— */
+  @media (max-width:860px) {
+    body { height:auto; min-height:100vh; }
+    main { flex-direction:column; }
+    .stage { height:46vh; flex:none; }
+    .stage img { max-width:96vw; max-height:42vh; }
+    .stage.zoom img { width:240vw; }
+    .panel { width:auto; border-left:0; border-top:1px solid var(--line); }
+    #toast { right:12px !important; } /* 覆盖内联 right:360px(写死假设右侧面板) */
+    .scorebtns { grid-template-columns:repeat(5,1fr); }
+    .scorebtns button, .markbtns button, .tools button, .quickbtns button, .nav button { padding:13px 0; font-size:15px; }
+    .kbdhelp { display:none; } /* 无键盘,键位提示隐藏 */
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Grader Studio <span class="meta" id="examMeta"></span></h1>
+  <span style="flex:1"></span>
+  <span class="meta"><a href="#" id="backHub">← 考试详情</a> · <a href="/">设计器</a> · <a href="#" id="reportLink">统分报告</a></span>
+</header>
+<main>
+  <section class="stage" id="stage">
+    <div class="wrap" id="wrap">
+      <img id="sliceImg" alt="主观题切片">
+      <canvas id="inkCanvas"></canvas>
+    </div>
+    <div class="overlay" id="markOverlay"></div>
+  </section>
+  <aside class="panel">
+    <div class="row">
+      <select id="questionSel"></select>
+      <div class="progress" style="margin-top:10px"><div id="progressBar" style="width:0"></div></div>
+      <div class="status" id="progressText"></div>
+    </div>
+    <div class="row">
+      <div class="status" id="studentInfo"></div>
+      <div id="assignBox" hidden></div>
+      <div id="partBox" class="parts" hidden></div>
+      <div id="scoreBuf" class="scorebuf" hidden></div>
+      <div class="scorebtns" id="scoreBtns"></div>
+      <div class="scoreinput">
+        <button id="minusHalf" title="在当前分上减 0.5">−0.5</button>
+        <input id="scoreInput" type="number" step="0.5" min="0" placeholder="键入分数">
+        <button id="plusHalf" title="在当前分上加 0.5">+0.5</button>
+        <button id="scoreInputOk" title="确认提交(触屏无回车键)">确认</button>
+      </div>
+      <div class="markbtns">
+        <button data-mark="check" title="正确">✓ (V)</button>
+        <button data-mark="cross" title="错误">✗ (B)</button>
+        <button data-mark="flag" title="待复核">⚑ (X)</button>
+      </div>
+      <div class="tools">
+        <button id="penBtn" title="手写批注笔(画笔开/关)">✎ 笔</button>
+        <button id="clearBtn" title="清除本卷批注">🧹 清</button>
+        <select id="enhance" title="图像增强">
+          <option value="">原图</option>
+          <option value="contrast(1.35)">增强</option>
+          <option value="grayscale(1) contrast(1.6) brightness(1.05)">灰度增强</option>
+          <option value="invert(1)">反色</option>
+        </select>
+        <button id="zoomBtn" title="放大查看笔迹细节">🔍 放大</button>
+      </div>
+    </div>
+    <div class="row nav">
+      <button class="ghost" id="prevBtn">← 上一卷</button>
+      <button id="nextBtn">下一卷 →</button>
+    </div>
+    <div class="row quickbtns">
+      <button onclick="quickSameLast()" title="与上一份同分(键盘 R)">⤵ 同上分</button>
+      <button onclick="quickNextUngraded()" title="下一份未评(键盘 F)">⏭ 下份未评</button>
+      <button onclick="jumpNextFlagged()" title="下一份待复核(键盘 G)">⚑ 复核</button>
+    </div>
+    <div class="row" style="display:flex;align-items:center;gap:8px">
+      <label style="font-size:13px;display:flex;align-items:center;gap:6px;margin:0">
+        <input type="checkbox" id="autoAdv" checked style="width:auto"> 打分后自动跳下一份未评
+      </label>
+    </div>
+    <div id="toast" style="position:fixed;top:64px;right:360px;background:var(--ink);color:#fff;padding:10px 18px;border-radius:8px;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,.25);opacity:0;transition:opacity .25s;pointer-events:none;z-index:50"></div>
+    <div class="row status" id="questionStatus"></div>
+    <div class="row hint kbdhelp">
+      <kbd>0</kbd>~<kbd>9</kbd> 打分(满分 ≤10 直接给分;更大满分:十位+个位两键,如 <kbd>1</kbd><kbd>2</kbd>=12 分)<br>
+      <kbd>.</kbd> 小数点 + <kbd>Enter</kbd> 提交(如 4.5)· <kbd>Space</kbd> 满分 · <kbd>Z</kbd> 零分 · <kbd>R</kbd> 同上分<br>
+      <kbd>V</kbd> 对 · <kbd>B</kbd> 错 · <kbd>X</kbd> 待复核 · <kbd>P</kbd> 画笔 · <kbd>Esc</kbd> 清除键入<br>
+      <kbd>F</kbd> 下一份未评 · <kbd>G</kbd> 下一份待复核 · <kbd>←</kbd> 上一卷(打分即保存,自动跳下一份未评卷)
+    </div>
+    <div class="row" id="report" hidden></div>
+  </aside>
+</main>
+<script src="/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const examId = new URLSearchParams(location.search).get("exam");
+let meta = null, slices = [], cur = 0, qIndex = 1, qMax = 10;
+let penOn = false, curStroke = null;
+let specParts = []; // 当前题的小问拆分(版式 v3);空 = 整题单分模式
+let partSel = 0;    // 当前打分的小问下标
+let lastScore = null; // 上一次成功保存的分值(R 键同分连评)
+const AUTO_KEY = "og.autoAdvance";
+if (localStorage.getItem(AUTO_KEY) === "0") { /* 默认开;读到了 0 才关 */ }
+
+function toast(msg, ms = 2600) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.opacity = 1;
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.style.opacity = 0, ms);
+}
+function autoAdvOn() { return $("autoAdv") && $("autoAdv").checked; }
+
+async function jget(url) { const r = await fetch(url); if (!r.ok) throw new Error((await r.json()).error); return r.json(); }
+async function jpost(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) {
+    let data = {};
+    try { data = await r.json(); } catch (e) { /* 非 JSON 错误体 */ }
+    const err = new Error(data.error || ("HTTP " + r.status));
+    err.status = r.status;
+    err.data = data;
+    throw err;
+  }
+  return r.json();
+}
+
+/* —— 阅卷分片租约(协作阅卷「谁在阅哪张」的服务端状态,TTL 3 分钟) ——
+   每端至多持有一张;claim 兼心跳续期;翻片/退出显式释放,断线靠 TTL 自愈。
+   租约只驱动「跳过他人持有」,绝不拦写路径 —— 正确性由评分乐观锁(409)兜底。 */
+let heldQ = 0, heldStudent = 0; // 当前持有的租约(题号 + 学生号;0 = 无)
+
+// ensureHeld 领取当前题下 s 的租约(已持有则免请求)。
+// 返回 "held"(可写) | "graded"(载入后已被评完,已本地置灰) | "locked"(他人持有) | "proceed"(网络故障,放行交给写路径 409 兜底)
+async function ensureHeld(s) {
+  if (heldQ === qIndex && heldStudent === s.student) return "held";
+  releaseHeld();
+  try {
+    const r = await jpost(`/api/v1/exams/${examId}/slices/claim`, { question: qIndex, student: s.student });
+    if (r.status === "graded") { markRemotelyGraded(s); return "graded"; }
+    heldQ = qIndex;
+    heldStudent = s.student;
+    return "held";
+  } catch (e) {
+    if (e.status === 409) { s.locked = true; return "locked"; }
+    return "proceed";
+  }
+}
+function markRemotelyGraded(s) {
+  if (specParts.length) partStateOf(s).forEach(p => p.graded = true);
+  s.graded = true;
+}
+// releaseHeld 释放当前持有的租约(fire-and-forget;keepalive 让页面关闭也能送达)
+function releaseHeld() {
+  if (!heldStudent) return;
+  const body = JSON.stringify({ question: heldQ, student: heldStudent });
+  heldQ = 0;
+  heldStudent = 0;
+  fetch(`/api/v1/exams/${examId}/slices/release`, { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true }).catch(() => { });
+}
+// 心跳:只在「正在阅的那张」上续期(浏览离开的租约交给 TTL 自然过期)
+setInterval(() => {
+  if (!heldStudent) return;
+  const s = slices[cur];
+  if (qIndex !== heldQ || !s || s.student !== heldStudent) return;
+  jpost(`/api/v1/exams/${examId}/slices/claim`, { question: heldQ, student: heldStudent }).catch(() => { });
+}, 90000);
+window.addEventListener("pagehide", releaseHeld);
+
+async function init() {
+  if (!await OG.init()) return;
+  if (!examId) { document.body.innerHTML = "<p style='padding:40px'>缺少 ?exam= 参数。<a href='/'>返回设计器</a></p>"; return; }
+  try {
+    meta = await jget(`/api/v1/exams/${examId}`);
+  } catch (e) {
+    document.querySelector("main").innerHTML = `<p style='padding:40px'>考试加载失败:${e.message}<br><a href='/teacher.html'>返回工作台</a></p>`;
+    return;
+  }
+  $("examMeta").textContent = `考试 ${examId} · ${meta.students} 份卷 · 客观 ${meta.objective.length} 题`;
+  $("backHub").href = `/teacher.html#exam-${examId}`; // 异常指派/阅卷做完回详情看清单是否清零
+  const sel = $("questionSel");
+  sel.innerHTML = meta.subjective.map((s, i) => {
+    const t = meta.tasks && meta.tasks["q" + (i + 1)];
+    const parts = (s.parts || []).length ? ":" + s.parts.map(p => p.score).join("+") : "";
+    const elec = s.elective ? ",选做" : "";
+    return `<option value="${i + 1}">第 ${meta.objective.length + i + 1} 题(${s.kind === "fillblank" ? "填空" : "解答"},满分 ${s.score}${parts}${elec}${t ? ",阅卷人 " + t : ""})</option>`;
+  }).join("");
+  sel.onchange = () => loadQuestion(+sel.value);
+  // 深链:?q=N 直接落位到第 N 题(我的任务/逐题进度入口),?student=S 落位到该卷(待复核队列入口)
+  const params = new URLSearchParams(location.search);
+  const qDeep = +params.get("q") || 0;
+  const studentDeep = +params.get("student") || 0;
+  if (meta.subjective.length) {
+    const q = qDeep >= 1 && qDeep <= meta.subjective.length ? qDeep : 1;
+    await loadQuestion(q);          // 必须等切片列表就绪再落位,否则 focusStudent 找的是空数组
+    sel.value = String(q);          // 深链回填题目下拉(否则信息行是第 N 题、下拉仍显示第 1 题)
+    if (studentDeep) focusStudent(studentDeep);
+  } else document.body.innerHTML = "<p style='padding:40px'>该考试没有主观题</p>";
+  $("reportLink").onclick = async e => { e.preventDefault(); showReport(); };
+  const saved = localStorage.getItem(AUTO_KEY);
+  if (saved !== null) $("autoAdv").checked = saved === "1";
+  $("autoAdv").onchange = e => localStorage.setItem(AUTO_KEY, e.target.checked ? "1" : "0");
+  $("penBtn").onclick = togglePen;
+  $("minusHalf").onclick = () => nudgeScore(-0.5);
+  $("plusHalf").onclick = () => nudgeScore(0.5);
+  // 分数输入条:回车与「确认」按钮同路(触屏没有回车键)
+  const commitScoreInput = () => {
+    const v = parseFloat($("scoreInput").value);
+    if (isNaN(v)) { toast("请输入分数"); return; }
+    $("scoreInput").value = "";
+    setScore(v);
+  };
+  $("scoreInput").addEventListener("keydown", e => { if (e.key === "Enter") commitScoreInput(); });
+  $("scoreInputOk").onclick = commitScoreInput;
+  $("clearBtn").onclick = async () => { slices[cur].ink = []; syncCanvas(); await saveGrade(); };
+  $("enhance").onchange = e => $("sliceImg").style.filter = e.target.value;
+  $("zoomBtn").onclick = () => { $("stage").classList.toggle("zoom"); $("zoomBtn").classList.toggle("active"); syncCanvas(); };
+  window.addEventListener("resize", syncCanvas);
+}
+
+async function loadQuestion(q, keepCur) {
+  let sl;
+  try {
+    sl = await jget(`/api/v1/exams/${examId}/slices?q=${q}&grading=1`); // 阅卷不受班级过滤(跨班职责)
+  } catch (e) {
+    toast("题目加载失败:" + e.message, 4200);
+    return; // qIndex/slices 保持旧值:加载失败时画面还是旧题,绝不能把分写到新题号下
+  }
+  const prevStudent = keepCur && slices[cur] ? slices[cur].student : 0;
+  if (heldQ !== q) releaseHeld(); // 切题释放旧题租约(409 同题重载不释放,持有状态保留)
+  qIndex = q;
+  slices = sl;
+  const spec = meta.subjective[q - 1];
+  specParts = spec.parts || [];
+  partSel = 0;
+  qMax = spec.score;
+  buildScoreBtns();
+  // 落位:冲突重载保持原卷;否则第一份未评卷(评卷惯例;全评完落第 1 卷)
+  let i = prevStudent ? slices.findIndex(x => x.student === prevStudent) : -1;
+  if (i < 0) i = Math.max(0, slices.findIndex(x => !x.graded && !x.locked));
+  cur = i;
+  $("questionSel").value = String(q); // 切题/跨题自动推进后同步下拉(否则下拉停在旧题,一点就跳回去)
+  preload(Math.min(8, slices.length));
+  render();
+}
+
+// 深链落位到指定卷(待复核队列入口):URL ?student=S 载入后直接切到该卷
+function focusStudent(student) {
+  const i = slices.findIndex(x => x.student === student);
+  if (i >= 0) { cur = i; partSel = 0; buildScoreBtns(); render(); toast(`已定位到卷 ${student}(${slices[i].mark === "flag" ? "⚑ 待复核" : "当前分 " + (slices[i].score ?? "-")})`); }
+}
+
+// 本题内跳下一份未评卷(环形:先向后再回绕,与原双段扫描同语义)。
+// 落位前先领取租约:他人持有/已被评完的片本地标记后继续找;无可落的返回 false。
+async function jumpNextUngraded() {
+  if (jumping) return true; // 在途防重入:连点 F/自动跳重叠时后者静默
+  jumping = true;
+  try {
+    const n = slices.length;
+    for (let step = 1; step <= n; step++) {
+      const i = (cur + step) % n;
+      const s = slices[i];
+      if (s.graded || s.locked) continue;
+      const h = await ensureHeld(s);
+      if (h === "locked" || h === "graded") continue; // ensureHeld 已本地标记,继续找
+      cur = i;
+      partSel = 0;
+      buildScoreBtns();
+      render();
+      return true;
+    }
+    return false;
+  } finally { jumping = false; }
+}
+let jumping = false;
+
+// 本题全部阅完:自动跳到下一个有未评卷的题(循环全题序列);全部阅完则庆祝
+async function crossQuestionAdvance() {
+  const n = meta.subjective.length, objN = meta.objective.length;
+  for (let step = 1; step < n; step++) {
+    const q = ((qIndex - 1 + step) % n) + 1;
+    try {
+      const sl = await jget(`/api/v1/exams/${examId}/slices?q=${q}&grading=1`);
+      if (sl.some(x => !x.graded && !x.locked)) {
+        toast(`第 ${objN + qIndex} 题已全部阅完,已跳到第 ${objN + q} 题(剩 ${sl.filter(x => !x.graded).length} 卷)`);
+        await loadQuestion(q);
+        return;
+      }
+    } catch (e) { /* 单题查询失败不阻塞,继续下一题 */ }
+  }
+  toast("🎉 全部主观题阅卷完成!可到「学情分析」查看统分结果", 5000);
+}
+
+function buildScoreBtns() {
+  const box = $("scoreBtns");
+  box.innerHTML = "";
+  const cap = curPartMax();
+  const mk = (label, v, onclick) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.dataset.v = v;
+    b.onclick = onclick;
+    box.appendChild(b);
+  };
+  if (cap <= 10) {
+    // 常规小题:0..满分 一键给分(整数);小数与 ±0.5 走下方输入条
+    for (let s = 0; s <= Math.floor(cap + 1e-9); s++) mk(String(s), s, () => setScore(s));
+  } else {
+    // 大题(两位数满分):十位先行,个位补全;个位单独点 = 直接给个位分
+    const tens = Math.floor(cap / 10);
+    for (let t = 0; t <= tens; t++) mk(String(t * 10), t * 10, () => {
+      if (t === 0) { setScore(0); return; }
+      if (t * 10 === cap) { setScore(cap); return; }
+      scoreBuf = String(t);
+      showBuf(`已选十位 ${t}_,点个位补全(满 ${cap} 分)`);
+    });
+    for (let d = 0; d <= 9; d++) mk(String(d), d, () => {
+      const v = scoreBuf === "" ? d : parseInt(scoreBuf, 10) * 10 + d;
+      clearBuf();
+      if (v > cap) { toast(`${v} 超过满分 ${cap},未保存`); return; }
+      setScore(v);
+    });
+  }
+  highlightScoreBtns();
+}
+
+// highlightScoreBtns 按当前生效分点亮对应快捷按钮(含 .5 的向下取整键)。
+function highlightScoreBtns() {
+  const s = slices[cur];
+  if (!s) return;
+  const activeScore = specParts.length ? partStateOf(s)[partSel].score : s.score;
+  const showActive = specParts.length || s.graded;
+  [...$("scoreBtns").children].forEach(b => {
+    const v = parseFloat(b.dataset.v);
+    b.classList.toggle("active", showActive && Math.abs(activeScore - v) < 0.01);
+  });
+}
+
+/* —— 评分颗粒度(P0):键盘缓冲 + 直输入条 ——
+   cap≤10:数字键即打即存(原快路径);
+   cap>10:两键十位+个位(如 1→2 = 12 分),0 开头即个位分(0→7 = 7 分);
+   小数:. 键进入小数缓冲,Enter 提交;或右侧输入条直接键入回车。 */
+let scoreBuf = ""; // 键盘输入缓冲(十位待补 / 小数串)
+
+function showBuf(text) {
+  const el = $("scoreBuf");
+  el.hidden = false;
+  el.textContent = text;
+}
+function clearBuf() {
+  scoreBuf = "";
+  $("scoreBuf").hidden = true;
+}
+function commitBuf() {
+  const v = parseFloat(scoreBuf);
+  const cap = curPartMax();
+  clearBuf();
+  if (isNaN(v)) { toast("没有可提交的分数"); return; }
+  if (v < 0 || v > cap + 1e-9) { toast(`${v} 超出范围(0 ~ ${cap})`); return; }
+  setScore(Math.round(v * 2) / 2); // 半分对齐
+}
+
+// nudgeScore 在当前生效分上 ±0.5(理科步骤分/作文折算的半分修正)。
+function nudgeScore(delta) {
+  const s = slices[cur];
+  if (!s) return;
+  const cap = curPartMax();
+  const base = specParts.length ? (partStateOf(s)[partSel].graded ? partStateOf(s)[partSel].score : 0)
+    : (s.graded ? (s.score || 0) : 0);
+  const v = Math.min(cap, Math.max(0, base + delta));
+  setScore(Math.round(v * 2) / 2);
+}
+
+// curPartMax 返回当前打分目标的满分:小问模式取当前小问,整题模式取大题满分。
+function curPartMax() {
+  if (specParts.length) return specParts[Math.min(partSel, specParts.length - 1)].score;
+  return qMax;
+}
+
+function preload(count) {
+  for (let i = cur; i < Math.min(cur + count, slices.length); i++) {
+    const im = new Image(); im.src = slices[i].url;
+  }
+}
+
+function render() {
+  if (!slices.length) { // 空态:按班范围无学生/全部作废/全部缺考 —— 不能保持上一题的旧图冒充本题
+    $("sliceImg").removeAttribute("src");
+    $("sliceImg").src = "data:image/svg+xml;utf8," + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="320"><rect width="100%" height="100%" fill="#f4f6f8"/><text x="50%" y="48%" font-size="30" fill="#8a94a3" text-anchor="middle" font-family="sans-serif">本题暂无可阅卷</text><text x="50%" y="62%" font-size="20" fill="#b6bec9" text-anchor="middle" font-family="sans-serif">可能已全部评完、按班分配范围内没有学生或缺考</text></svg>'
+    );
+    $("studentInfo").textContent = "本题没有可阅的卷";
+    $("progressBar").style.width = "100%";
+    $("progressText").textContent = "本题已阅 0/0";
+    $("questionStatus").textContent = "本题无可阅卷";
+    $("assignBox").hidden = true;
+    $("partBox").hidden = true;
+    return;
+  }
+  const s = slices[cur];
+  // 手工补录卷没有切片原图:占位提示,仍可键盘打分
+  $("sliceImg").src = s.missing ? "data:image/svg+xml;utf8," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="320"><rect width="100%" height="100%" fill="#f4f6f8"/><text x="50%" y="48%" font-size="30" fill="#8a94a3" text-anchor="middle" font-family="sans-serif">手工补录卷 · 无切片原图</text><text x="50%" y="62%" font-size="20" fill="#b6bec9" text-anchor="middle" font-family="sans-serif">可直接打分,评分正常计入统计</text></svg>'
+  ) : s.url;
+  $("sliceImg").onload = syncCanvas;
+  $("markOverlay").className = "overlay " + (s.mark || "");
+  $("markOverlay").textContent = s.mark === "check" ? "✓" : s.mark === "cross" ? "✗" : s.mark === "flag" ? "⚑" : "";
+  // 选做题(版式 v3):提示该生题号区涂选与判分计入的题
+  let elecNote = "";
+  if (s.elective) {
+    const n = s.elective.marks.length;
+    const chosenTxt = s.elective.chosen
+      ? `判分计入第 ${meta.objective.length + s.elective.chosen} 题`
+      : "该组不计分(未涂且无批阅)";
+    const marksTxt = n === 1
+      ? `已涂 ${s.elective.labels[s.elective.marks[0]]}`
+      : n === 0 ? "题号区未涂" : `题号区多涂(${n} 处)`;
+    elecNote = ` · 选做 ${s.elective.labels.join("/")}:${marksTxt},${chosenTxt}`;
+  }
+  $("studentInfo").innerHTML =
+    `学生 ${s.student}/${slices.length} · 考号 <b>${meta.anonymous ? "已匿名" : (s.reg || "?")}</b>${s.regValid || meta.anonymous ? "" : ' <span style="color:#c0392b">⚠ 无效,请指派</span>'} · 第 ${meta.objective.length + qIndex} 题(满分 ${qMax})${elecNote}` +
+    (s.locked ? ` <span style="color:#c0392b">⚠ ${s.lockedBy || "他人"} 正在阅这份卷</span>` : "") +
+    (!meta.anonymous && s.reg ? ` · <a href="/review.html?exam=${examId}&reg=${encodeURIComponent(s.reg)}" target="_blank" title="查看该生本场全部作答:逐题得分/切片/整卷,可直接改分">该生答卷 ↗</a>` : "");
+  renderParts();
+  clearBuf();
+  highlightScoreBtns();
+  document.querySelectorAll(".markbtns button").forEach(b => b.classList.toggle("active", s.mark === b.dataset.mark));
+  const graded = slices.filter(x => x.graded).length;
+  $("progressBar").style.width = (100 * graded / slices.length) + "%";
+  $("progressText").textContent = `本题已阅 ${graded}/${slices.length}`;
+  $("questionStatus").textContent = graded === slices.length ? "本题全部阅完,可切换下一题" : `还有 ${slices.length - graded} 卷未阅`;
+  $("assignBox").hidden = s.regValid;
+  if (!s.regValid) loadAssign(s.student);
+  syncCanvas();
+  preload(8);
+}
+
+/* —— 异常卷指派 —— */
+async function loadAssign(student) {
+  const box = $("assignBox");
+  box.innerHTML = "推荐候选加载中…";
+  try {
+    const sug = await jget(`/api/v1/exams/${examId}/suggest/${student}`);
+    let html = "考号无效。推荐:";
+    for (const c of (sug.suggestions || [])) {
+      html += `<span class="chip" onclick="assignReg('${c.reg}')">${c.reg} ${c.name}</span>`;
+    }
+    if (!(sug.suggestions || []).length) html += " 无(可搜索名册)";
+    html += `<div style="display:flex;gap:6px;margin-top:6px">
+      <input placeholder="输入姓名/考号搜索" id="rosterSearch" style="flex:1;width:auto">
+      <button id="rosterSearchBtn" style="padding:6px 14px;white-space:nowrap">搜索</button></div>`;
+    box.innerHTML = html;
+    const doSearch = async () => {
+      const list = await jget(`/api/v1/exams/${examId}/roster?q=${encodeURIComponent($("rosterSearch").value)}`);
+      box.querySelectorAll(".chip").forEach(x => x.remove());
+      for (const c of list) {
+        const sp = document.createElement("span");
+        sp.className = "chip";
+        sp.textContent = `${c.reg} ${c.name}`;
+        sp.onclick = () => assignReg(c.reg);
+        box.insertBefore(sp, $("rosterSearch").parentElement);
+      }
+    };
+    $("rosterSearch").onkeydown = e => { if (e.key === "Enter") doSearch(); };
+    $("rosterSearchBtn").onclick = doSearch;
+  } catch (err) { box.textContent = "推荐加载失败:" + err.message; }
+}
+async function assignReg(reg) {
+  const s = slices[cur];
+  try {
+    await jpost("/api/v1/assign", { examId, student: s.student, reg });
+    s.reg = reg; s.regValid = true;
+    render();
+  } catch (e) {
+    toast("指派失败:" + e.message, 4200); // 失败不置"已指派"假象(如考号被占用/不在名册)
+  }
+}
+
+/* —— 画布同步与手写批注 —— */
+// togglePen 画笔开关:触屏下开启时必须禁用画布的浏览器手势(touch-action:none),
+// 否则画一笔页面就跟着滚动;关闭时恢复,切片图可双指缩放浏览。
+function togglePen() {
+  penOn = !penOn;
+  $("penBtn").classList.toggle("active", penOn);
+  $("inkCanvas").style.touchAction = penOn ? "none" : "auto";
+}
+function syncCanvas() {
+  const img = $("sliceImg"), cv = $("inkCanvas");
+  if (!img.complete || !img.naturalWidth) return;
+  cv.width = img.clientWidth; cv.height = img.clientHeight;
+  redrawInk();
+}
+function redrawInk() {
+  const cv = $("inkCanvas"), ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.lineWidth = Math.max(3, Math.round(cv.width / 300)); // 大画布加粗;笔迹归一化存储,跨端重放一致
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (const st of (slices[cur]?.ink || [])) drawStroke(ctx, st);
+  if (curStroke) drawStroke(ctx, curStroke);
+}
+function drawStroke(ctx, st) {
+  ctx.strokeStyle = st.color === "green" ? "#00a152" : "#e53935";
+  ctx.beginPath();
+  for (let i = 0; i + 1 < st.pts.length; i += 2) {
+    const x = st.pts[i] * cv.width, y = st.pts[i + 1] * cv.height;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+const cv = document.getElementById("inkCanvas");
+cv.addEventListener("pointerdown", e => {
+  if (!penOn || !slices.length) return;
+  const r = cv.getBoundingClientRect();
+  curStroke = { color: "red", pts: [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height] };
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener("pointermove", e => {
+  if (!curStroke) return;
+  const r = cv.getBoundingClientRect();
+  curStroke.pts.push((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+  redrawInk();
+});
+cv.addEventListener("pointerup", async () => {
+  if (!curStroke) return;
+  slices[cur].ink = [...(slices[cur].ink || []), curStroke];
+  curStroke = null;
+  redrawInk();
+  await saveGrade();
+});
+// 触屏滚动劫持会触发 pointercancel 而非 pointerup:丢弃未完成笔迹,避免悬挂
+cv.addEventListener("pointercancel", () => { curStroke = null; redrawInk(); });
+
+/* —— 触屏快捷出口(R/F/G 三个键盘专属动作的手机按钮封装) —— */
+function quickSameLast() {
+  if (lastScore == null) { toast("还没有上一份的分数"); return; }
+  if (!slices.length || !slices[cur]) { toast("当前没有可评分的卷"); return; }
+  setScore(lastScore);
+}
+function quickNextUngraded() {
+  jumpNextUngraded().then(ok => { if (!ok) toast("本题已全部阅完(打分会自动跨题)"); });
+}
+
+/* —— 小问拆分(版式 v3):逐问打分,大题总分由服务端自动求和 —— */
+function partStateOf(s) {
+  if (!s.parts) s.parts = specParts.map(() => ({ part: 0, score: 0, graded: false, ver: 0 }));
+  return s.parts;
+}
+function renderParts() {
+  const box = $("partBox"), s = slices[cur];
+  if (!box) return;
+  if (!specParts.length) { box.hidden = true; return; }
+  const st = partStateOf(s);
+  box.hidden = false;
+  box.innerHTML = specParts.map((p, i) =>
+    `<div class="partrow ${i === partSel ? "sel" : ""}" onclick="partSel=${i};buildScoreBtns();renderParts()">
+       <span class="pl">${p.label || "(" + (i + 1) + ")"}</span><span class="pm">满分 ${p.score}</span>
+       <span style="flex:1"></span><span class="pv">${st[i].graded ? st[i].score : "–"}</span>
+     </div>`).join("")
+    + `<div class="ptotal">键盘 0-9 打当前小问分,自动跳下一问;已阅 ${st.filter(x => x.graded).length}/${specParts.length} 问,合计 ${st.filter(x => x.graded).reduce((a, x) => a + x.score, 0)} 分</div>`;
+  buildScoreBtns(); // 当前小问变了,快捷分值按钮随之刷新
+}
+
+// gradeVer 返回当前打分目标的乐观锁版本号(小问模式取当前小问,整题取题级 ver)。
+function gradeVer() {
+  const s = slices[cur];
+  if (specParts.length) return (partStateOf(s)[partSel] || {}).ver || 0;
+  return s.ver || 0;
+}
+
+async function setScore(score) {
+  const s = slices[cur];
+  if (!s) { toast("当前没有可评分的卷"); return; } // 队列切空/加载失败的兜底,防止 TypeError 中断阅卷流
+  const cap = curPartMax();
+  if (score < 0 || score > cap + 1e-9) { toast(`分数 ${score} 超出满分 ${cap},未保存`); return; }
+  score = Math.round(score * 100) / 100;
+  const h = await ensureHeld(s);
+  if (h === "locked") { // 他人正阅:不打分,自动跳下一份未评(graded/held/proceed 放行,改分复核带 ver 正常写)
+    toast("⚠ 这份卷正被他人阅,已跳下一份未评", 3600);
+    if (!await jumpNextUngraded()) await loadQuestion(qIndex, true);
+    return;
+  }
+  const payload = { examId, student: s.student, question: qIndex, score, mark: s.mark || "", graded: true, ink: s.ink || [], ver: gradeVer() };
+  try {
+    if (specParts.length) {
+      payload.part = partSel + 1;
+      const r = await jpost("/api/v1/grades", payload);
+      lastScore = score;
+      const st = partStateOf(s);
+      st[partSel].score = score;
+      st[partSel].graded = true;
+      st[partSel].ver = (r && r.ver) || gradeVer() + 1;
+      if (s.mark === "flag") toast("已改分;复核完成可再按 X 清除 ⚑(队列才会排空)", 3600);
+      const allPartsDone = st.every(x => x.graded);
+      if (partSel < specParts.length - 1) {
+        partSel++; // 同卷内自动跳下一小问
+        render();
+        return;
+      }
+      // 已是最后一问:全部小问评完 → 自动跳下一份未评卷 / 跨题
+      if (autoAdvOn()) {
+        if (allPartsDone) {
+          if (!await jumpNextUngraded()) await crossQuestionAdvance();
+          return;
+        }
+        partSel = 0; buildScoreBtns(); render();
+        return;
+      }
+      render();
+      return;
+    }
+    const r = await jpost("/api/v1/grades", payload);
+    lastScore = score;
+    Object.assign(s, { graded: true, score, ver: (r && r.ver) || gradeVer() + 1 });
+    if (s.mark === "flag") toast("已改分;复核完成可再按 X 清除 ⚑(队列才会排空)", 3600);
+    if (autoAdvOn()) {
+      if (!await jumpNextUngraded()) await crossQuestionAdvance();
+      return;
+    }
+    render();
+  } catch (e) {
+    if (String(e.message).includes("刚被他人改过")) {
+      toast("⚠ " + e.message, 4200);
+      await loadQuestion(qIndex, true); // 拉回服务器最新评分状态,并保持在当前这份卷上
+    } else {
+      toast("保存失败:" + e.message, 4200);
+    }
+  }
+}
+async function saveGrade() {
+  const s = slices[cur];
+  try {
+    if (specParts.length) { // 笔迹/标注同步写进每个小问(读取端取第 1 问);ver 逐问携带防旁路覆盖
+      const st = partStateOf(s);
+      for (let i = 0; i < specParts.length; i++) {
+        const r = await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, part: i + 1, score: st[i].score, mark: s.mark || "", graded: st[i].graded, ink: s.ink || [], ver: st[i].ver || 0 });
+        if (r && r.ver) st[i].ver = r.ver;
+      }
+      return;
+    }
+    const r = await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score: s.score, mark: s.mark || "", graded: s.graded, ink: s.ink || [], ver: s.ver || 0 });
+    if (r && r.ver) s.ver = r.ver;
+  } catch (e) {
+    toast("批注保存失败:" + e.message, 4200);
+    if (String(e.message).includes("刚被他人改过")) await loadQuestion(qIndex, true);
+  }
+}
+async function setMark(mark) {
+  const s = slices[cur];
+  const h = await ensureHeld(s);
+  if (h === "locked") { toast("⚠ 这份卷正被他人阅,标记未保存", 3600); return; }
+  const prevMark = s.mark;
+  const nextMark = prevMark === mark ? "" : mark;
+  s.mark = nextMark; // 先翻转本地高亮;失败即还原,绝不给"已标记"的假象
+  try {
+    if (specParts.length) {
+      const st = partStateOf(s);
+      for (let i = 0; i < specParts.length; i++) {
+        const r = await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, part: i + 1, score: st[i].score, mark: nextMark, graded: st[i].graded, ink: s.ink || [], ver: st[i].ver || 0 });
+        if (r && r.ver) st[i].ver = r.ver;
+      }
+      render();
+      return;
+    }
+    const r = await jpost("/api/v1/grades", { examId, student: s.student, question: qIndex, score: s.score, mark: nextMark, graded: s.graded, ink: s.ink || [], ver: s.ver || 0 });
+    if (r && r.ver) s.ver = r.ver;
+    render();
+  } catch (e) {
+    s.mark = prevMark;
+    toast("标记保存失败:" + e.message, 4200);
+    if (String(e.message).includes("刚被他人改过")) await loadQuestion(qIndex, true);
+    else render();
+  }
+}
+
+function next() { if (cur < slices.length - 1) { cur++; render(); } else toast("已是最后一份(Enter/→ 到头)"); }
+function prev() { if (cur > 0) { cur--; render(); } else toast("已是第一份"); }
+
+async function showReport() {
+  const rep = await jget(`/api/v1/exams/${examId}/report`);
+  const box = $("report");
+  box.hidden = false;
+  // 匿名阅卷:报告表同样不露考号(评完再对分;打开报告不再等于破匿名)
+  const anon = meta.anonymous;
+  let html = `<div style="margin-bottom:6px"><button class="ghost" style="padding:6px 14px" onclick="document.getElementById('report').hidden=true">✕ 关闭(Esc)</button></div>
+  <table><tr><th>卷号</th>${anon ? "" : "<th>考号</th>"}<th>客观</th><th>主观</th><th>总分</th><th>复核</th></tr>`;
+  for (const s of rep.students) {
+    html += `<tr><td>${s.index}</td>${anon ? "" : `<td>${s.regNumber || "?"}</td>`}<td>${s.objective}</td><td>${s.subjective}</td><td><b>${s.score}</b>/${rep.total}</td><td>${s.flagged ? "⚑" : ""}</td></tr>`;
+  }
+  html += `</table>
+  <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+    ${anon ? `<span class="hint">匿名阅卷中:导出(含姓名/考号)已隐藏,评完对分请到工作台</span>` : `
+    <a href="/api/v1/exams/${examId}/export.xlsx">成绩册 xlsx</a>
+    <a href="/api/v1/exams/${examId}/export.csv">csv</a>
+    <a href="/api/v1/exams/${examId}/review.pptx">讲评课件 pptx</a>
+    <a href="/api/v1/exams/${examId}/export.zip">全量数据包 zip</a>`}
+  </div>`;
+  box.innerHTML = html;
+}
+
+$("nextBtn").onclick = next;
+$("prevBtn").onclick = prev;
+document.querySelectorAll(".markbtns button").forEach(b => b.onclick = () => setMark(b.dataset.mark));
+
+window.addEventListener("keydown", e => {
+  if (!$("report").hidden && e.key === "Escape") { $("report").hidden = true; return; }
+  // 输入控件里的按键归输入控件:INPUT/SELECT/TEXTAREA 不触发快捷键。
+  // 按钮聚焦不在此列(点击按钮后焦点留在按钮上,数字/空格仍要能打分)——
+  // 但按钮上按空格会同时触发 click 与「满分」快捷键,所以所有已处理的键
+  // 一律 preventDefault,吃掉浏览器默认的按钮激活,杜绝"误打满分"。
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
+  if (!slices.length) return;
+  const k = e.key;
+  const cap = curPartMax();
+  // 评分键入缓冲:cap≤10 数字即打即存;cap>10 两键(十位+个位);"." 起小数缓冲,Enter 提交
+  if (k >= "0" && k <= "9") {
+    e.preventDefault();
+    if (scoreBuf.includes(".")) { scoreBuf += k; showBuf("输入:" + scoreBuf + " ⏎"); return; }
+    if (cap <= 10) { clearBuf(); setScore(+k); return; }
+    if (scoreBuf === "") {
+      if (k === "0") { setScore(0); return; }
+      scoreBuf = k;
+      showBuf(`已选十位 ${k}_,点个位补全(满 ${cap} 分;Esc 取消)`);
+      return;
+    }
+    const v = parseInt(scoreBuf, 10) * 10 + (+k);
+    clearBuf();
+    if (v > cap) { toast(`${v} 超过满分 ${cap},未保存`); return; }
+    setScore(v);
+    return;
+  }
+  if (k === ".") {
+    e.preventDefault();
+    if (!scoreBuf.includes(".")) {
+      scoreBuf = (scoreBuf === "" || scoreBuf.includes("_") ? "" : scoreBuf) + ".";
+      showBuf("输入:" + scoreBuf + " ⏎(小数,Enter 提交)");
+    }
+    return;
+  }
+  if (k === "Enter") {
+    if (scoreBuf !== "") { commitBuf(); e.preventDefault(); return; }
+    next(); e.preventDefault();
+    return;
+  }
+  if (k === "Escape") { clearBuf(); e.preventDefault(); return; }
+  if (k === "Backspace") {
+    if (scoreBuf !== "") { scoreBuf = scoreBuf.slice(0, -1); scoreBuf ? showBuf("输入:" + scoreBuf + " ⏎") : clearBuf(); e.preventDefault(); return; }
+    prev(); e.preventDefault();
+    return;
+  }
+  if (k === " ") { clearBuf(); setScore(curPartMax()); e.preventDefault(); }
+  else if (k === "z" || k === "Z") { clearBuf(); setScore(0); e.preventDefault(); }
+  else if (k === "v" || k === "V") { setMark("check"); e.preventDefault(); }
+  else if (k === "b" || k === "B") { setMark("cross"); e.preventDefault(); }
+  else if (k === "x" || k === "X") { setMark("flag"); e.preventDefault(); }
+  else if (k === "p" || k === "P") { togglePen(); e.preventDefault(); }
+  else if (k === "r" || k === "R") { if (lastScore != null) setScore(lastScore); e.preventDefault(); }
+  else if (k === "f" || k === "F") { // 跳到本题下一份未评;全评完提示
+    e.preventDefault();
+    jumpNextUngraded().then(ok => { if (!ok) toast("本题已全部阅完(打分会自动跨题)"); });
+  }
+  else if (k === "g" || k === "G") { jumpNextFlagged(); e.preventDefault(); } // 待复核队列:⚑ 卷逐份复核
+  else if (k === "ArrowRight") { next(); e.preventDefault(); }
+  else if (k === "ArrowLeft") { prev(); e.preventDefault(); }
+});
+
+// 待复核队列(⚑ 闭环):跳到本题下一份被标「待复核」的卷,复核打分后建议清标(X 再按一次或 V/B)
+function jumpNextFlagged() {
+  const idx = [...slices.keys()].filter(i => slices[i].mark === "flag" && i !== cur);
+  if (!idx.length) {
+    toast(slices[cur] && slices[cur].mark === "flag" ? "没有其他待复核卷(当前已是)— 复核后可打分覆盖,再按 X 清标" : "本题没有待复核卷");
+    return;
+  }
+  // 从当前位置环形找最近的一份
+  idx.sort((a, b) => (a > cur ? a - cur : a + slices.length - cur) - (b > cur ? b - cur : b + slices.length - cur));
+  cur = idx[0]; partSel = 0; buildScoreBtns(); render();
+  toast(`待复核:第 ${slices[cur].student} 号卷(⚑ ${idx.length} 份待复核)`); // 卷号用 student 字段:缺考/作废剔除后不等于下标+1
+}
+
+init();
+</script>
+</body>
+</html>
