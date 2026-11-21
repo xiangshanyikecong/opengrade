@@ -1,0 +1,12 @@
+# hvigor 构建缓存与产物
+.hvigor/
+oh_modules/
+build/
+entry/build/
+entry/oh_modules/
+local.properties
+*.har
+.cxx/
+/.clang/
+/.app/
+compiled_sdk/

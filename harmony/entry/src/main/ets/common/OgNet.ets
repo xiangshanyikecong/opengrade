@@ -1,0 +1,633 @@
+// 统一 HTTP 客户端:Bearer 鉴权、{error} 文案映射、401 全局登出、
+// multipart 上传(先拷入沙箱再上传)、二进制下载与沙箱落盘、鉴权位图缓存。
+
+import { http } from '@kit.NetworkKit';
+import { router } from '@kit.ArkUI';
+import { picker } from '@kit.CoreFileKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { image } from '@kit.ImageKit';
+import { util } from '@kit.ArkTS';
+import { OgSession } from './OgSession';
+import { LoginResp } from '../model/Api';
+
+export class OgError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+// JSON.parse 返回 any 会触发 arkts-no-any-unknown:统一经 Object 中转,调用方按需 narrow。
+export function parseJson(text: string): Object {
+  const raw: Object = JSON.parse(text);
+  return raw;
+}
+
+// 客户端报错统计(账号设置「诊断」页展示):网络异常 / HTTP 错误两类计数 + 最近一条。
+export class OgStats {
+  static netErr: number = 0;
+  static httpErr: number = 0;
+  static lastMsg: string = '';
+  static lastAt: string = '';
+
+  static record(kind: string, msg: string): void {
+    if (kind === 'net') {
+      OgStats.netErr++;
+    } else {
+      OgStats.httpErr++;
+    }
+    const now = new Date();
+    const pad = (n: number): string => (n < 10 ? '0' + String(n) : String(n));
+    OgStats.lastAt = pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + ' '
+      + pad(now.getHours()) + ':' + pad(now.getMinutes());
+    OgStats.lastMsg = msg;
+  }
+
+  static total(): number {
+    return OgStats.netErr + OgStats.httpErr;
+  }
+}
+
+// 从响应文本提取 {error} 文案(非 JSON 响应回落到空串)。
+export function errorOfText(text: string): string {
+  try {
+    const m = parseJson(text) as Record<string, string>;
+    if (typeof m['error'] === 'string') {
+      return m['error'];
+    }
+  } catch (e) {
+    // 非 JSON(网关错误页等)
+  }
+  return '';
+}
+
+export interface UploadFile {
+  field: string; // 表单字段名(如 images)
+  fileName: string;
+  contentType: string; // image/jpeg
+  filePath: string; // 沙箱内路径
+}
+
+interface ReqOpts {
+  method: string;
+  path: string; // 以 /api/v1 开头,或绝对 URL
+  body?: string; // 已序列化 JSON
+  contentType?: string;
+  timeout?: number;
+  rawArrayBuffer?: boolean;
+}
+
+export class OgNet {
+  // 401 统一处理:清会话回登录页(登录页自身不带 token,不会触发)。
+  private static onUnauthorized(): void {
+    if (OgSession.token() !== '') {
+      OgSession.clearToken();
+      router.replaceUrl({ url: 'pages/LoginPage' }).catch(() => {});
+    }
+  }
+
+  private static url(path: string): string {
+    if (path.startsWith('http://') || path.startsWith('https://')) {
+      return path;
+    }
+    return OgSession.baseUrl() + path;
+  }
+
+  private static authHeaders(): Record<string, string> {
+    const h: Record<string, string> = {};
+    const tok = OgSession.token();
+    if (tok !== '') {
+      h['Authorization'] = 'Bearer ' + tok;
+    }
+    return h;
+  }
+
+  static errText(status: number, body: string): string {
+    if (body !== '') {
+      const msg = errorOfText(body);
+      if (msg !== '') {
+        return msg;
+      }
+    }
+    if (status === 401) {
+      return '未登录或会话已过期';
+    }
+    if (status === 403) {
+      return '没有权限执行此操作';
+    }
+    if (status === 409) {
+      return '刚被他人改过,请刷新后重试';
+    }
+    if (status === 429) {
+      return '尝试过于频繁,请稍后再试';
+    }
+    if (status >= 500) {
+      return '服务端错误(' + status + ')';
+    }
+    return '请求失败(HTTP ' + status + ')';
+  }
+
+  private static async req(o: ReqOpts): Promise<string | ArrayBuffer> {
+    if (OgSession.baseUrl() === '' && !o.path.startsWith('http')) {
+      throw new OgError(0, '尚未配置服务器地址');
+    }
+    const hr = http.createHttp();
+    try {
+      const headers: Record<string, string> = OgNet.authHeaders();
+      headers['Content-Type'] = o.contentType ?? 'application/json';
+      const opt: http.HttpRequestOptions = {
+        method: o.method as http.RequestMethod,
+        header: headers,
+        expectDataType: o.rawArrayBuffer ? http.HttpDataType.ARRAY_BUFFER : http.HttpDataType.STRING,
+        connectTimeout: 10000,
+        readTimeout: o.timeout ?? 30000
+      };
+      if (o.body !== undefined && o.body !== '') {
+        opt.extraData = o.body;
+      }
+      const resp = await hr.request(OgNet.url(o.path), opt);
+      if (resp.responseCode >= 200 && resp.responseCode < 300) {
+        if (o.rawArrayBuffer) {
+          return resp.result as ArrayBuffer;
+        }
+        return resp.result as string;
+      }
+      const bodyText = typeof resp.result === 'string' ? resp.result : '';
+      const msg = OgNet.errText(resp.responseCode, bodyText);
+      OgStats.record('http', 'HTTP ' + resp.responseCode + ' ' + msg);
+      if (resp.responseCode === 401) {
+        OgNet.onUnauthorized();
+      }
+      throw new OgError(resp.responseCode, msg);
+    } catch (e) {
+      if (e instanceof OgError) {
+        throw e;
+      }
+      const netMsg = '无法连接服务器:请检查地址与网络(模拟器/手机请填宿主机局域网 IP,不能用 127.0.0.1)';
+      OgStats.record('net', netMsg);
+      throw new OgError(0, netMsg);
+    } finally {
+      hr.destroy();
+    }
+  }
+
+  static async jget<T>(path: string, timeout?: number): Promise<T> {
+    const o: ReqOpts = { method: 'GET', path: path, timeout: timeout };
+    const text = await OgNet.req(o) as string;
+    return parseJson(text) as T;
+  }
+
+  static async jpost<T>(path: string, body: Object | null): Promise<T> {
+    const o: ReqOpts = {
+      method: 'POST', path: path,
+      body: body === null ? '{}' : JSON.stringify(body)
+    };
+    const text = await OgNet.req(o) as string;
+    return parseJson(text === '' ? '{}' : text) as T;
+  }
+
+  static async jput<T>(path: string, body: Object | null): Promise<T> {
+    const o: ReqOpts = {
+      method: 'PUT', path: path,
+      body: body === null ? '{}' : JSON.stringify(body)
+    };
+    const text = await OgNet.req(o) as string;
+    return parseJson(text === '' ? '{}' : text) as T;
+  }
+
+  static async jpatch<T>(path: string, body: Object): Promise<T> {
+    const o: ReqOpts = { method: 'PATCH', path: path, body: JSON.stringify(body) };
+    const text = await OgNet.req(o) as string;
+    return parseJson(text === '' ? '{}' : text) as T;
+  }
+
+  static async jdel<T>(path: string): Promise<T> {
+    const o: ReqOpts = { method: 'DELETE', path: path };
+    const text = await OgNet.req(o) as string;
+    return parseJson(text === '' ? '{}' : text) as T;
+  }
+
+  // 服务器连通性校验(登录页用):返回版本号。
+  static async checkServer(base: string): Promise<string> {
+    const hr = http.createHttp();
+    try {
+      const opt: http.HttpRequestOptions = {
+        method: http.RequestMethod.GET,
+        expectDataType: http.HttpDataType.STRING,
+        connectTimeout: 5000,
+        readTimeout: 5000
+      };
+      const resp = await hr.request(base.replace(/\/+$/, '') + '/healthz', opt);
+      if (resp.responseCode !== 200) {
+        throw new OgError(resp.responseCode, '服务器返回 HTTP ' + resp.responseCode);
+      }
+      const m = parseJson(resp.result as string) as Record<string, string>;
+      if (m['service'] !== 'opengrade') {
+        throw new OgError(0, '这不是 OpenGrade 服务器');
+      }
+      return m['version'] ?? '';
+    } catch (e) {
+      if (e instanceof OgError) {
+        throw e;
+      }
+      throw new OgError(0, '无法连接服务器,请检查地址与网络');
+    } finally {
+      hr.destroy();
+    }
+  }
+
+  // 原生登录:native:true → 响应携带 token。
+  static async nativeLogin(base: string, username: string, password: string): Promise<LoginResp> {
+    const hr = http.createHttp();
+    try {
+      const opt: http.HttpRequestOptions = {
+        method: http.RequestMethod.POST,
+        header: { 'Content-Type': 'application/json' } as Record<string, string>,
+        extraData: JSON.stringify({ 'username': username, 'password': password, 'native': true }) as string,
+        expectDataType: http.HttpDataType.STRING,
+        connectTimeout: 10000,
+        readTimeout: 15000
+      };
+      const resp = await hr.request(base.replace(/\/+$/, '') + '/api/v1/auth/login', opt);
+      const text = resp.result as string;
+      if (resp.responseCode !== 200) {
+        throw new OgError(resp.responseCode, OgNet.errText(resp.responseCode, text));
+      }
+      return parseJson(text) as LoginResp;
+    } catch (e) {
+      if (e instanceof OgError) {
+        throw e;
+      }
+      throw new OgError(0, '无法连接服务器:请检查地址与网络(模拟器/手机请填宿主机局域网 IP,不能用 127.0.0.1)');
+    } finally {
+      hr.destroy();
+    }
+  }
+
+  static async getBytes(path: string, timeout?: number): Promise<ArrayBuffer> {
+    return await OgNet.req({
+      method: 'GET', path: path, rawArrayBuffer: true,
+      timeout: timeout ?? 120000
+    }) as ArrayBuffer;
+  }
+
+  // multipart 上传:文本字段 + 文件(文件须已在沙箱内,见 copyUriToCache)。
+  static async upload(path: string, fields: Record<string, string>, files: UploadFile[], timeout?: number): Promise<string> {
+    if (OgSession.baseUrl() === '') {
+      throw new OgError(0, '尚未配置服务器地址');
+    }
+    const hr = http.createHttp();
+    try {
+      const forms: Array<http.MultiFormData> = [];
+      const names = Object.keys(fields);
+      for (const k of names) {
+        const f: http.MultiFormData = {
+          name: k,
+          contentType: 'text/plain',
+          data: fields[k]
+        };
+        forms.push(f);
+      }
+      for (const f of files) {
+        const mf: http.MultiFormData = {
+          name: f.field,
+          contentType: f.contentType,
+          remoteFileName: f.fileName,
+          filePath: f.filePath
+        };
+        forms.push(mf);
+      }
+      const headers: Record<string, string> = OgNet.authHeaders();
+      const opt: http.HttpRequestOptions = {
+        method: http.RequestMethod.POST,
+        header: headers,
+        multiFormDataList: forms,
+        expectDataType: http.HttpDataType.STRING,
+        connectTimeout: 10000,
+        readTimeout: timeout ?? 600000
+      };
+      const resp = await hr.request(OgNet.url(path), opt);
+      if (resp.responseCode >= 200 && resp.responseCode < 300) {
+        return resp.result as string;
+      }
+      const bodyText = typeof resp.result === 'string' ? resp.result : '';
+      const upMsg = OgNet.errText(resp.responseCode, bodyText);
+      OgStats.record('http', 'HTTP ' + resp.responseCode + ' ' + upMsg);
+      if (resp.responseCode === 401) {
+        OgNet.onUnauthorized();
+      }
+      throw new OgError(resp.responseCode, upMsg);
+    } catch (e) {
+      if (e instanceof OgError) {
+        throw e;
+      }
+      OgStats.record('net', '上传失败:网络异常或文件不可读');
+      throw new OgError(0, '上传失败:网络异常或文件不可读');
+    } finally {
+      hr.destroy();
+    }
+  }
+
+// 把 picker 返回的 file://media URI 拷入沙箱缓存,返回沙箱路径(multipart filePath 需要真实路径)。
+  static async copyUriToCache(uri: string, cacheName: string): Promise<string> {
+    const ctx = OgSession.context();
+    const dest = ctx.cacheDir + '/' + cacheName;
+    const src = await fs.open(uri, fs.OpenMode.READ_ONLY);
+    try {
+      await fs.copyFile(src.fd, dest);
+    } finally {
+      await fs.close(src.fd);
+    }
+    return dest;
+  }
+
+  // 读取 picker 文件为文本(版式 JSON / CSV 粘贴导入兜底)。
+  static async readUriText(uri: string): Promise<string> {
+    const f = await fs.open(uri, fs.OpenMode.READ_ONLY);
+    try {
+      const st = await fs.stat(f.fd);
+      const buf = new ArrayBuffer(st.size);
+      fs.readSync(f.fd, buf);
+      return OgNet.bufToText(buf);
+    } finally {
+      await fs.close(f.fd);
+    }
+  }
+
+  // 下载二进制并通过系统「另存为」落盘(成绩册/数据包/成绩单等)。
+  static async downloadToPicker(path: string, fileName: string): Promise<string> {
+    const buf = await OgNet.getBytes(path, 600000);
+    const dp = new picker.DocumentViewPicker();
+    const opt: picker.DocumentSaveOptions = { newFileNames: [fileName] };
+    const uris: string[] = await dp.save(opt);
+    if (uris.length === 0) {
+      return '';
+    }
+    const f = await fs.open(uris[0], fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+    try {
+      await fs.write(f.fd, buf);
+    } finally {
+      await fs.close(f.fd);
+    }
+    return uris[0];
+  }
+
+  // 清理应用沙箱缓存目录(扫描上传的临时拷贝等)+ 内存/磁盘位图缓存。
+  static clearAppCache(): void {
+    try {
+      const ctx = OgSession.context();
+      const files: string[] = fs.listFileSync(ctx.cacheDir);
+      for (const f of files) {
+        try {
+          fs.unlinkSync(ctx.cacheDir + '/' + f);
+        } catch (e) {
+          // 单个文件删除失败不阻塞
+        }
+      }
+    } catch (e) {
+      // 目录不可列举时仅清内存缓存
+    }
+    ImageCache.clear();
+    ImageCache.clearDisk();
+  }
+
+  // 测速:GET /healthz 往返毫秒;-1 = 不可达。
+  static async ping(base: string): Promise<number> {
+    const t0 = Date.now();
+    try {
+      await OgNet.checkServer(base);
+      return Date.now() - t0;
+    } catch (e) {
+      return -1;
+    }
+  }
+
+  static bufToText(buf: ArrayBuffer): string {
+    const decoder = util.TextDecoder.create('utf-8');
+    return decoder.decodeToString(new Uint8Array(buf));
+  }
+
+  static qs(params: Record<string, string>): string {
+    const keys = Object.keys(params);
+    const parts: string[] = [];
+    for (const k of keys) {
+      if (params[k] !== '') {
+        parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+      }
+    }
+    if (parts.length === 0) {
+      return '';
+    }
+    return '?' + parts.join('&');
+  }
+}
+
+// 鉴权位图缓存:OgImage 组件与 Grader 预加载共用;内存 FIFO 淘汰 + 磁盘持久层。
+// 磁盘层存原始字节(应用 filesDir/imgcache,清理缓存不掉,离线/弱网可复用)。
+export class ImageCache {
+  private static map: Map<string, image.PixelMap> = new Map();
+  private static order: string[] = [];
+  static readonly CAP: number = 80;
+  static readonly DISK_CAP: number = 400; // 磁盘文件数上限(超出淘汰最旧)
+
+  static get(key: string): image.PixelMap | null {
+    return ImageCache.map.get(key) ?? null;
+  }
+
+  static put(key: string, pm: image.PixelMap): void {
+    if (ImageCache.map.has(key)) {
+      return;
+    }
+    ImageCache.map.set(key, pm);
+    ImageCache.order.push(key);
+    while (ImageCache.order.length > ImageCache.CAP) {
+      const old = ImageCache.order.shift();
+      if (old !== undefined) {
+        ImageCache.map.delete(old);
+      }
+    }
+  }
+
+  static has(key: string): boolean {
+    return ImageCache.map.has(key);
+  }
+
+  static clear(): void {
+    ImageCache.map.clear();
+    ImageCache.order.splice(0, ImageCache.order.length);
+  }
+
+  // 磁盘缓存目录(应用 filesDir 下,清「清理缓存」除外仍保留)。
+  private static diskDir(): string {
+    try {
+      return OgSession.context().filesDir + '/imgcache';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  private static diskName(url: string): string {
+    let h = 5381;
+    for (let i = 0; i < url.length; i++) {
+      h = ((h * 33) + url.charCodeAt(i)) & 0x7FFFFFFF;
+    }
+    return 'i' + h.toString(36) + '.img';
+  }
+
+  static diskPath(url: string): string {
+    const dir = ImageCache.diskDir();
+    if (dir === '') {
+      return '';
+    }
+    return dir + '/' + ImageCache.diskName(url);
+  }
+
+  // 落盘(尽力而为;写入失败不影响显示)。listSync 偶发才做一次淘汰,摊平开销。
+  static saveDisk(url: string, buf: ArrayBuffer): void {
+    const path = ImageCache.diskPath(url);
+    if (path === '') {
+      return;
+    }
+    try {
+      const dir = ImageCache.diskDir();
+      try {
+        fs.mkdirSync(dir);
+      } catch (e) {
+        // 已存在
+      }
+      const f = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      try {
+        fs.writeSync(f.fd, buf);
+      } finally {
+        fs.closeSync(f.fd);
+      }
+      if (Math.random() < 0.05) {
+        ImageCache.evictDisk(dir);
+      }
+    } catch (e) {
+      // 磁盘缓存失败静默
+    }
+  }
+
+  private static evictDisk(dir: string): void {
+    try {
+      const names: string[] = fs.listFileSync(dir);
+      if (names.length <= ImageCache.DISK_CAP) {
+        return;
+      }
+      const items: DiskFile[] = [];
+      for (const n of names) {
+        try {
+          const st = fs.statSync(dir + '/' + n);
+          items.push({ name: n, mtime: st.mtime } as DiskFile);
+        } catch (e) {
+          // 忽略
+        }
+      }
+      items.sort((a, b) => a.mtime - b.mtime);
+      const over = items.length - ImageCache.DISK_CAP;
+      for (let i = 0; i < over && i < items.length; i++) {
+        try {
+          fs.unlinkSync(dir + '/' + items[i].name);
+        } catch (e) {
+          // 忽略
+        }
+      }
+    } catch (e) {
+      // 忽略
+    }
+  }
+
+  static readDisk(url: string): ArrayBuffer | null {
+    const path = ImageCache.diskPath(url);
+    if (path === '') {
+      return null;
+    }
+    try {
+      const st = fs.statSync(path);
+      if (st.size <= 0) {
+        return null;
+      }
+      const buf = new ArrayBuffer(st.size);
+      const f = fs.openSync(path, fs.OpenMode.READ_ONLY);
+      try {
+        fs.readSync(f.fd, buf);
+      } finally {
+        fs.closeSync(f.fd);
+      }
+      return buf;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  static clearDisk(): void {
+    try {
+      const dir = ImageCache.diskDir();
+      const names: string[] = fs.listFileSync(dir);
+      for (const n of names) {
+        try {
+          fs.unlinkSync(dir + '/' + n);
+        } catch (e) {
+          // 忽略
+        }
+      }
+    } catch (e) {
+      // 目录不存在
+    }
+  }
+
+  // 预取:下载 + 解码入缓存(失败静默,交由正式加载重试)。
+  static async prefetch(url: string, maxDim: number): Promise<void> {
+    if (ImageCache.map.has(url)) {
+      return;
+    }
+    try {
+      const pm = await OgImageCodec.decodeUrl(url, maxDim);
+      ImageCache.put(url, pm);
+    } catch (e) {
+      // 静默:预加载失败不打扰用户
+    }
+  }
+}
+
+interface DiskFile {
+  name: string;
+  mtime: number;
+}
+
+// 下载并解码为 PixelMap(可选降采样上限,防止大图占满内存)。
+export class OgImageCodec {
+  static async decodeBuf(buf: ArrayBuffer, maxDim: number): Promise<image.PixelMap> {
+    const src = image.createImageSource(buf);
+    try {
+      const info = await src.getImageInfo();
+      const opts: image.DecodingOptions = {};
+      const w = info.size.width;
+      const h = info.size.height;
+      if (maxDim > 0 && (w > maxDim || h > maxDim)) {
+        const k = maxDim / Math.max(w, h);
+        opts.desiredSize = { width: Math.round(w * k), height: Math.round(h * k) };
+      }
+      return await src.createPixelMap(opts);
+    } finally {
+      await src.release();
+    }
+  }
+
+  // 取数顺序:内存(调用方自检)→ 磁盘 → 网络;网络成功后回写磁盘。
+  static async decodeUrl(url: string, maxDim: number): Promise<image.PixelMap> {
+    const disk = ImageCache.readDisk(url);
+    if (disk !== null) {
+      try {
+        return await OgImageCodec.decodeBuf(disk, maxDim);
+      } catch (e) {
+        // 缓存文件损坏:走网络重取
+      }
+    }
+    const buf = await OgNet.getBytes(url);
+    ImageCache.saveDisk(url, buf);
+    return await OgImageCodec.decodeBuf(buf, maxDim);
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "OpenGrade 鸿蒙客户端主模块" },
+    { "name": "EntryAbility_desc", "value": "开元智阅 —— 阅卷与查分" },
+    { "name": "EntryAbility_label", "value": "开元智阅" }
+  ]
+}
