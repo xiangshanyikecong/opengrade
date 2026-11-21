@@ -155,27 +155,38 @@ func (s *School) SetAppealBan(reg, reason, by string, banned bool) error {
 	reason = strings.TrimSpace(reason)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var nb []AppealBan
 	if banned {
 		if n := len([]rune(reason)); n > 200 {
 			return fmt.Errorf("拉黑原因请控制在 200 字以内(当前 %d 字)", n)
 		}
-		for i := range s.AppealBans {
-			if s.AppealBans[i].Reg == reg { // 已在名单:只更新原因与操作人
-				s.AppealBans[i].Reason, s.AppealBans[i].By, s.AppealBans[i].Time = reason, by, time.Now()
-				return s.save()
+		updated := false
+		nb = append(nb, s.AppealBans...)
+		for i := range nb {
+			if nb[i].Reg == reg { // 已在名单:只更新原因与操作人
+				nb[i].Reason, nb[i].By, nb[i].Time = reason, by, time.Now()
+				updated = true
+				break
 			}
 		}
-		s.AppealBans = append(s.AppealBans, AppealBan{Reg: reg, Reason: reason, By: by, Time: time.Now()})
-		return s.save()
-	}
-	kept := s.AppealBans[:0]
-	for _, b := range s.AppealBans {
-		if b.Reg != reg {
-			kept = append(kept, b)
+		if !updated {
+			nb = append(nb, AppealBan{Reg: reg, Reason: reason, By: by, Time: time.Now()})
+		}
+	} else {
+		nb = make([]AppealBan, 0, len(s.AppealBans))
+		for _, b := range s.AppealBans {
+			if b.Reg != reg {
+				nb = append(nb, b)
+			}
 		}
 	}
-	s.AppealBans = kept
-	return s.save()
+	old := s.AppealBans
+	s.AppealBans = nb
+	if err := s.save(); err != nil {
+		s.AppealBans = old // 落盘失败回滚内存(评审 school.go:241)
+		return err
+	}
+	return nil
 }
 
 // validateSessions 校验场次表:名称非空且不重复、HH:MM 可解析且开始早于结束。
@@ -211,8 +222,13 @@ func (s *School) SetSessions(sessions []SessionDef) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	old := s.Sessions
 	s.Sessions = sessions
-	return s.save()
+	if err := s.save(); err != nil {
+		s.Sessions = old // 落盘失败回滚内存:失败后的请求仍按旧配置走(评审 school.go:241)
+		return err
+	}
+	return nil
 }
 
 // SetGrades 整体替换年级配置:校验年级不重名、班级不重复归属。
@@ -238,8 +254,13 @@ func (s *School) SetGrades(grades []GradeDef) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	old := s.Grades
 	s.Grades = grades
-	return s.save()
+	if err := s.save(); err != nil {
+		s.Grades = old // 落盘失败回滚:否则"清空年级保存失败"后组长范围被放开(评审 school.go:241)
+		return err
+	}
+	return nil
 }
 
 // ClassGrade 返回班级所属年级;未配置返回 ""。
