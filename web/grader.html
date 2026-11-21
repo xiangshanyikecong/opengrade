@@ -55,7 +55,10 @@
   .nav button { flex:1; padding:10px; border:0; border-radius:8px; background:var(--brand); color:#fff; font-size:14px; cursor:pointer; }
   .nav button.ghost { background:#eef2f6; color:var(--ink); }
   #assignBox { margin-top:8px; padding:8px; background:#fff7ed; border:1px solid #fdba74; border-radius:8px; font-size:13px; }
-  #assignBox .chip { display:inline-block; margin:3px 4px 0 0; padding:4px 10px; background:#fff; border:1px solid var(--warn); border-radius:14px; cursor:pointer; }
+  #assignBox .chip { display:inline-block; margin:3px 4px 0 0; padding:4px 10px; background:#fff; border:1px solid var(--warn); border-radius:14px; cursor:pointer; font:inherit; color:inherit; }
+  /* 小问行改原生 button(键盘可达,评审 grader.html:508):重置按钮默认外观,保留行样式 */
+  button.partrow { width:100%; text-align:left; background:none; border:none; border-bottom:1px solid var(--line); font:inherit; color:inherit; cursor:pointer; }
+  button.partrow.sel { background:#e0f2e9; }
   #assignBox input { margin-top:6px; }
   #report { max-height:38vh; overflow:auto; font-size:12px; }
   #report table { width:100%; border-collapse:collapse; }
@@ -280,13 +283,18 @@ async function init() {
   window.addEventListener("resize", syncCanvas);
 }
 
+let loadSeq = 0; // 切题请求序号:过期响应不得覆盖当前页面状态(评审 grader.html:293)
 async function loadQuestion(q, keepCur) {
+  const seq = ++loadSeq;
   let sl;
   try {
     sl = await jget(`/api/v1/exams/${examId}/slices?q=${q}&grading=1`); // 阅卷不受班级过滤(跨班职责)
   } catch (e) {
     toast("题目加载失败:" + e.message, 4200);
     return; // qIndex/slices 保持旧值:加载失败时画面还是旧题,绝不能把分写到新题号下
+  }
+  if (seq !== loadSeq) {
+    return; // 已被后续切题请求取代:过期响应不改题号/切片/租约(评审 grader.html:293)
   }
   const prevStudent = keepCur && slices[cur] ? slices[cur].student : 0;
   if (heldQ !== q) releaseHeld(); // 切题释放旧题租约(409 同题重载不释放,持有状态保留)
@@ -313,25 +321,31 @@ function focusStudent(student) {
 }
 
 // 本题内跳下一份未评卷(环形:先向后再回绕,与原双段扫描同语义)。
-// 落位前先领取租约:他人持有/已被评完的片本地标记后继续找;无可落的返回 false。
+// 落位前先领取租约:他人持有/已被评完的片本地标记后继续找。
+// 返回 "moved"(已落位) / "all-graded"(全部已评) / "all-locked"(剩卷全被他人锁定):
+// 后两者含义不同,不能都当成"全部阅完"提示(评审 grader.html:353)。
 async function jumpNextUngraded() {
-  if (jumping) return true; // 在途防重入:连点 F/自动跳重叠时后者静默
+  if (jumping) return "moved"; // 在途防重入:连点 F/自动跳重叠时后者静默
   jumping = true;
   try {
     const n = slices.length;
+    let sawUngraded = false, othersLocked = false;
     for (let step = 1; step <= n; step++) {
       const i = (cur + step) % n;
       const s = slices[i];
-      if (s.graded || s.locked) continue;
+      if (s.graded) continue;
+      sawUngraded = true;
+      if (s.locked) { othersLocked = true; continue; }
       const h = await ensureHeld(s);
-      if (h === "locked" || h === "graded") continue; // ensureHeld 已本地标记,继续找
+      if (h === "locked" || h === "graded") { othersLocked = true; continue; } // ensureHeld 已本地标记,继续找
       cur = i;
       partSel = 0;
       buildScoreBtns();
       render();
-      return true;
+      return "moved";
     }
-    return false;
+    if (!sawUngraded) return "all-graded";
+    return othersLocked ? "all-locked" : "all-graded";
   } finally { jumping = false; }
 }
 let jumping = false;
@@ -339,16 +353,23 @@ let jumping = false;
 // 本题全部阅完:自动跳到下一个有未评卷的题(循环全题序列);全部阅完则庆祝
 async function crossQuestionAdvance() {
   const n = meta.subjective.length, objN = meta.objective.length;
+  let anyQueryOK = false;
   for (let step = 1; step < n; step++) {
     const q = ((qIndex - 1 + step) % n) + 1;
     try {
       const sl = await jget(`/api/v1/exams/${examId}/slices?q=${q}&grading=1`);
+      anyQueryOK = true;
       if (sl.some(x => !x.graded && !x.locked)) {
         toast(`第 ${objN + qIndex} 题已全部阅完,已跳到第 ${objN + q} 题(剩 ${sl.filter(x => !x.graded).length} 卷)`);
         await loadQuestion(q);
         return;
       }
     } catch (e) { /* 单题查询失败不阻塞,继续下一题 */ }
+  }
+  if (!anyQueryOK) {
+    // 其他题的查询全部失败:不能当成"全部阅完"庆祝(评审 grader.html:353)
+    toast("其他题的阅卷队列暂时查询失败,请稍后手动切题重试", 4200);
+    return;
   }
   toast("🎉 全部主观题阅卷完成!可到「学情分析」查看统分结果", 5000);
 }
@@ -505,7 +526,7 @@ async function loadAssign(student) {
     const sug = await jget(`/api/v1/exams/${examId}/suggest/${student}`);
     let html = "考号无效。推荐:";
     for (const c of (sug.suggestions || [])) {
-      html += `<span class="chip" onclick="assignReg('${c.reg}')">${c.reg} ${c.name}</span>`;
+      html += `<button type="button" class="chip" onclick="assignReg('${c.reg}')">${c.reg} ${c.name}</button>`;
     }
     if (!(sug.suggestions || []).length) html += " 无(可搜索名册)";
     html += `<div style="display:flex;gap:6px;margin-top:6px">
@@ -516,7 +537,8 @@ async function loadAssign(student) {
       const list = await jget(`/api/v1/exams/${examId}/roster?q=${encodeURIComponent($("rosterSearch").value)}`);
       box.querySelectorAll(".chip").forEach(x => x.remove());
       for (const c of list) {
-        const sp = document.createElement("span");
+        const sp = document.createElement("button");
+        sp.type = "button";
         sp.className = "chip";
         sp.textContent = `${c.reg} ${c.name}`;
         sp.onclick = () => assignReg(c.reg);
@@ -599,7 +621,10 @@ function quickSameLast() {
   setScore(lastScore);
 }
 function quickNextUngraded() {
-  jumpNextUngraded().then(ok => { if (!ok) toast("本题已全部阅完(打分会自动跨题)"); });
+  jumpNextUngraded().then(r => {
+    if (r === "all-graded") toast("本题已全部阅完(打分会自动跨题)");
+    else if (r === "all-locked") toast("本题剩余未评卷都被他人锁定,可稍后回来或先跨题");
+  });
 }
 
 /* —— 小问拆分(版式 v3):逐问打分,大题总分由服务端自动求和 —— */
@@ -614,11 +639,11 @@ function renderParts() {
   const st = partStateOf(s);
   box.hidden = false;
   box.innerHTML = specParts.map((p, i) =>
-    `<div class="partrow ${i === partSel ? "sel" : ""}" onclick="partSel=${i};buildScoreBtns();renderParts()">
+    `<button type="button" class="partrow ${i === partSel ? "sel" : ""}" aria-pressed="${i === partSel}" onclick="partSel=${i};buildScoreBtns();renderParts()">
        <span class="pl">${p.label || "(" + (i + 1) + ")"}</span><span class="pm">满分 ${p.score}</span>
        <span style="flex:1"></span><span class="pv">${st[i].graded ? st[i].score : "–"}</span>
-     </div>`).join("")
-    + `<div class="ptotal">键盘 0-9 打当前小问分,自动跳下一问;已阅 ${st.filter(x => x.graded).length}/${specParts.length} 问,合计 ${st.filter(x => x.graded).reduce((a, x) => a + x.score, 0)} 分</div>`;
+     </button>`).join("")
+    + `<div class="ptotal">键盘 0-9 打当前小问分,自动跳下一问;要打小数请先按 . 再输入、回车提交(不自动跳卷);已阅 ${st.filter(x => x.graded).length}/${specParts.length} 问,合计 ${st.filter(x => x.graded).reduce((a, x) => a + x.score, 0)} 分</div>`;
   buildScoreBtns(); // 当前小问变了,快捷分值按钮随之刷新
 }
 
@@ -638,7 +663,7 @@ async function setScore(score) {
   const h = await ensureHeld(s);
   if (h === "locked") { // 他人正阅:不打分,自动跳下一份未评(graded/held/proceed 放行,改分复核带 ver 正常写)
     toast("⚠ 这份卷正被他人阅,已跳下一份未评", 3600);
-    if (!await jumpNextUngraded()) await loadQuestion(qIndex, true);
+    if (await jumpNextUngraded() !== "moved") await loadQuestion(qIndex, true);
     return;
   }
   const payload = { examId, student: s.student, question: qIndex, score, mark: s.mark || "", graded: true, ink: s.ink || [], ver: gradeVer() };
@@ -661,7 +686,7 @@ async function setScore(score) {
       // 已是最后一问:全部小问评完 → 自动跳下一份未评卷 / 跨题
       if (autoAdvOn()) {
         if (allPartsDone) {
-          if (!await jumpNextUngraded()) await crossQuestionAdvance();
+          if (await jumpNextUngraded() !== "moved") await crossQuestionAdvance();
           return;
         }
         partSel = 0; buildScoreBtns(); render();
@@ -675,7 +700,7 @@ async function setScore(score) {
     Object.assign(s, { graded: true, score, ver: (r && r.ver) || gradeVer() + 1 });
     if (s.mark === "flag") toast("已改分;复核完成可再按 X 清除 ⚑(队列才会排空)", 3600);
     if (autoAdvOn()) {
-      if (!await jumpNextUngraded()) await crossQuestionAdvance();
+      if (await jumpNextUngraded() !== "moved") await crossQuestionAdvance();
       return;
     }
     render();
@@ -818,7 +843,10 @@ window.addEventListener("keydown", e => {
   else if (k === "r" || k === "R") { if (lastScore != null) setScore(lastScore); e.preventDefault(); }
   else if (k === "f" || k === "F") { // 跳到本题下一份未评;全评完提示
     e.preventDefault();
-    jumpNextUngraded().then(ok => { if (!ok) toast("本题已全部阅完(打分会自动跨题)"); });
+    jumpNextUngraded().then(r => {
+    if (r === "all-graded") toast("本题已全部阅完(打分会自动跨题)");
+    else if (r === "all-locked") toast("本题剩余未评卷都被他人锁定,可稍后回来或先跨题");
+  });
   }
   else if (k === "g" || k === "G") { jumpNextFlagged(); e.preventDefault(); } // 待复核队列:⚑ 卷逐份复核
   else if (k === "ArrowRight") { next(); e.preventDefault(); }

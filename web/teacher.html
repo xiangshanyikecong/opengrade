@@ -1240,18 +1240,25 @@ async function toggleRosterPicker() {
     <div><span class="hint" id="rosterPickSum">勾选要参加考试的班级</span>
     <button class="ghost" style="margin-left:8px" onclick="rosterPickApply()">生成名册填入</button></div>`;
 }
+// inPickedClass 列表/汇总/生成名册共用的分组判断:无班级学生归入「未分班」组,
+// 勾选「未分班」时三者口径一致(此前列表显示 N 人、汇总/生成却是 0 人,评审 teacher.html:1247)
+function inPickedClass(s, picked) {
+  const cls = s.classes || [];
+  if (cls.length) return cls.some(c => picked.includes(c));
+  return picked.includes("(未分班)");
+}
 function rosterPickSum() {
   const picked = [...document.querySelectorAll("#rosterPicker input:checked")].map(i => i.value);
   const sum = document.getElementById("rosterPickSum");
   if (!picked.length) { sum.textContent = "勾选要参加考试的班级"; return; }
-  const n = rosterStudents.filter(s => (s.classes || []).some(c => picked.includes(c))).length;
+  const n = rosterStudents.filter(s => inPickedClass(s, picked)).length;
   sum.textContent = `已选 ${picked.length} 个班,共 ${n} 名学生`;
 }
 function rosterPickApply() {
   const picked = [...document.querySelectorAll("#rosterPicker input:checked")].map(i => i.value);
   if (!picked.length) return;
   const rows = rosterStudents
-    .filter(s => (s.classes || []).some(c => picked.includes(c)))
+    .filter(s => inPickedClass(s, picked)) // 无班级学生保留真实空班级字段
     .map(s => [s.reg, s.name || "", (s.classes || []).join("|")].join(","));
   document.getElementById("examRoster").value = rows.join("\n");
 }

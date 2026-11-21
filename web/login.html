@@ -36,8 +36,12 @@
   首次部署默认管理员 admin / admin123,登录后请立即修改。</p>
 </div>
 <script>
+let loggingIn = false; // 双入口(点击/Enter)共用:同一时间只允许一次在途请求(评审 login.html:39)
 async function doLogin() {
+  if (loggingIn) return;
+  loggingIn = true;
   const msg = document.getElementById("msg");
+  const unlock = () => { loggingIn = false; }; // 仅失败路径解锁;成功路径保持锁定直到导航
   try {
     const r = await fetch("/api/v1/auth/login", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -45,17 +49,25 @@ async function doLogin() {
                              password: document.getElementById("password").value }),
     });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) { msg.textContent = j.error || `登录失败(HTTP ${r.status})`; return; }
+    if (!r.ok) { msg.textContent = j.error || `登录失败(HTTP ${r.status})`; unlock(); return; }
+    // 跳转地址必须是有应用内路径:代理返回 200 HTML 等异常响应时不带着 undefined 导航(评审 login.html:47)
+    const target = (typeof j.redirect === "string" && j.redirect.startsWith("/")) ? j.redirect : "";
+    if (!target) {
+      msg.textContent = j.error || "登录服务返回异常(缺少跳转地址),请重试或联系管理员";
+      unlock();
+      return;
+    }
     // 首登强制改密:仍用初始密码的账号落地后第一件事就是改密
     if (j.mustChangePassword) {
       msg.style.color = "#c2410c";
       msg.textContent = "当前账号仍在使用初始密码,即将进入改密页面…";
-      setTimeout(() => location.href = j.redirect + "?forcePwd=1", 900);
+      setTimeout(() => location.href = target + "?forcePwd=1", 900);
       return;
     }
-    location.href = j.redirect;
+    location.href = target;
   } catch (e) {
     msg.textContent = "网络异常,登录请求未发出:" + e.message; // 断网/服务未启动时按钮不再无声失效
+    unlock();
   }
 }
 </script>

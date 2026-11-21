@@ -76,7 +76,7 @@
       placeholder='或直接粘贴 CSV 内容,如:
 s20250011,李雷,学生,,00000011,三年二班
 s20250012,韩梅梅,学生,,00000012,三年二班
-t03,王老师,教师,,三年三班,数学|物理'></textarea>
+t03,王老师,教师,,,三年三班,数学|物理'></textarea>
     <div class="err" id="impMsg" style="white-space:pre-wrap"></div>
   </div>
   <div class="panel">
@@ -164,14 +164,23 @@ function delUser(i) { delUserByName(userRows[i] && userRows[i].username); }
 let schoolGrades = []; // [{name, classes[]}]
 let schoolSessions = []; // [{name, start, end}] 场次表(如 第1节 08:00-09:30)
 let knownClasses = [];
+let studentsCache = [];
+async function fetchSchoolData() {
+  const [sch, students] = await Promise.all([OG.jget("/api/v1/school"), OG.jget("/api/v1/students").catch(() => [])]);
+  studentsCache = students || [];
+  return sch;
+}
+function recomputeKnownClasses() {
+  const cs = new Set(schoolGrades.flatMap(g => g.classes));
+  for (const s of studentsCache) for (const c of (s.classes || [])) cs.add(c);
+  knownClasses = [...cs].sort();
+}
 async function loadSchool() {
   try {
-    const [sch, students] = await Promise.all([OG.jget("/api/v1/school"), OG.jget("/api/v1/students").catch(() => [])]);
+    const sch = await fetchSchoolData();
     schoolGrades = (sch.grades || []).map(g => ({ name: g.name, classes: [...(g.classes || [])] }));
     schoolSessions = (sch.sessions || []).map(s => ({ name: s.name, start: s.start, end: s.end }));
-    const cs = new Set(schoolGrades.flatMap(g => g.classes));
-    for (const s of students) for (const c of (s.classes || [])) cs.add(c);
-    knownClasses = [...cs].sort();
+    recomputeKnownClasses();
   } catch (e) { document.getElementById("schoolBox").innerHTML = `<span class="err">${OG.esc(e.message)}</span>`; return; }
   renderSchool();
 }
@@ -180,7 +189,11 @@ function renderSchool() {
   let html;
   if (!schoolGrades.length) {
     html = `<span class="hint">尚未配置年级。已知班级(来自学生账号):${knownClasses.map(c => `<code>${OG.esc(c)}</code>`).join(" ") || "无"}</span><br>
-      <button class="primary" style="margin-top:8px" onclick="addGradeRow()">+ 添加年级</button>`;
+      <button class="primary" style="margin-top:8px" onclick="addGradeRow()">+ 添加年级</button>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <button class="primary" onclick="saveSchool()">保存组织架构</button>
+        <span class="hint">空年级列表也可直接保存(用于整体清空组织架构)</span>
+      </div>`;
   } else {
     html = schoolGrades.map((g, i) => `
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
@@ -214,14 +227,23 @@ async function saveSchool() {
   const msg = document.getElementById("schoolMsg");
   try {
     await OG.jpost("/api/v1/school", { grades: schoolGrades }, "PUT");
-    msg.textContent = ""; await loadSchool();
+    msg.textContent = "";
+    // 只刷新年级区:另一配置区(场次表)的未保存草稿不被服务端数据覆盖(评审 admin.html:217)
+    const sch = await fetchSchoolData();
+    schoolGrades = (sch.grades || []).map(g => ({ name: g.name, classes: [...(g.classes || [])] }));
+    recomputeKnownClasses();
+    renderSchool();
   } catch (e) { msg.textContent = e.message; }
 }
 async function saveSessions() {
   const msg = document.getElementById("schoolMsg");
   try {
     await OG.jpost("/api/v1/school/sessions", { sessions: schoolSessions }, "PUT");
-    msg.textContent = ""; await loadSchool();
+    msg.textContent = "";
+    // 只刷新场次区:年级草稿保留(评审 admin.html:217)
+    const sch = await fetchSchoolData();
+    schoolSessions = (sch.sessions || []).map(s => ({ name: s.name, start: s.start, end: s.end }));
+    renderSchool();
   } catch (e) { msg.textContent = e.message; }
 }
 

@@ -49,6 +49,9 @@
   table { width:100%; border-collapse:collapse; font-size:13px; }
   td, th { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; }
   a { color:var(--brand); }
+/* 折叠面板:hidden 属性 + 展开态网格布局(内联 display:grid 会覆盖 hidden 的 UA 样式,
+   导致切换按钮失效 —— 评审 index.html:121) */
+#importPanel:not([hidden]), #abHelper:not([hidden]), #paperScan:not([hidden]) { display: grid; gap: 8px; }
 </style>
 </head>
 <body>
@@ -118,7 +121,7 @@
     <button class="secondary" id="bankPickBtn" onclick="pickBank()">⇩ 从题库选题</button>
     <div id="bankPick" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px;max-height:300px;overflow:auto"></div>
     <button class="secondary" onclick="toggleImportPanel()">⇩ 导入版式 JSON</button>
-    <div id="importPanel" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px;display:grid;gap:8px">
+    <div id="importPanel" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px">
       <p class="hint">粘贴版式 JSON(version 2)回灌设计器逐题编辑——设计器生成的、他人分享的、试卷识别产出的版式都能导入;导入会<b>替换当前题目列表</b>(卷头一并带出)。</p>
       <textarea id="importJSON" rows="6" placeholder='{"version":2,"title":"...","questions":[...],"subjectives":[...]}' style="font-family:monospace;font-size:12px"></textarea>
       <div style="display:flex;gap:8px;align-items:center">
@@ -127,7 +130,7 @@
       </div>
     </div>
     <button class="secondary" onclick="toggleABHelper()">⇩ AB 卷助手(生成 B 卷版式)</button>
-    <div id="abHelper" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px;display:grid;gap:8px">
+    <div id="abHelper" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px">
       <p class="hint">由当前客观题一键派生 B 卷版式(主观题区不变):<b>打乱</b>=随机错位排列(题序必与 A 不同,与建考自动生成同口径)、<b>倒序</b>=题号倒排。B 卷参考答案在建考时自动与 A 卷同步,无需另填。生成后到「教师工作台 → 新建考试 → AB 卷(高级)」一键载入。</p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="primary" onclick="makeBV('shuffle')">🎲 生成打乱 B 卷</button>
@@ -139,7 +142,7 @@
       <div class="hint" id="abResult"></div>
     </div>
     <button class="secondary" onclick="togglePaperScan()">⇩ 从试卷扫描识别版式(半自动)</button>
-    <div id="paperScan" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px;display:grid;gap:8px">
+    <div id="paperScan" hidden style="border:1px solid var(--line);border-radius:8px;padding:10px">
       <p class="hint">上传试卷照片/扫描件(PNG/JPG/多页 PDF),自动检测题目构成(客观题题型/选项数/题号、留白作答区高度),并裁出每题<b>题干截图</b>供核对与导入题库;<b>半自动</b>:「应用到表单」后请逐题核对题型/选项数/分值再出卡。适用:A4 单栏或标准双栏印刷体、倾斜 ≤±5°;判断题印 A/B 或「对/错」均可识别;多选与单选结构相同(默认按单选导入);填空的下划线会当作文字行,需手工补题;手机照片请正对拍摄(强透视矫正属后续版本)。</p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <input id="paperFile" type="file" accept="image/png,image/jpeg,application/pdf" multiple>
@@ -221,7 +224,7 @@ function addObj(kind = "choice", options = 4, score = 2, knowledge = "") {
       <option value="choice">单选</option><option value="judge">判断</option><option value="multiple">多选</option>
     </select>
     <input type="number" class="o" value="${options}" min="2" max="6" title="选项数">
-    <input type="number" class="s" value="${score}" min="0.5" step="0.5" title="分值">
+    <input type="number" class="s" value="${score}" min="0.5" step="0.5" title="分值" oninput="updateTotal()">
     <button class="mv" title="上移" onclick="moveSpec(this,-1)">▲</button>
     <button class="mv" title="下移" onclick="moveSpec(this,1)">▼</button>
     <button class="del" title="删除本题" onclick="delSpec(this)">×</button>
@@ -280,12 +283,12 @@ function addSub(kind = "fillblank", label = "", score = 5, height = 16, parts = 
     <span class="qno"></span>
     <select class="k"><option value="fillblank">填空</option><option value="subjective">解答</option></select>
     <input type="text" class="l" value="${label}" placeholder="题干(可空)">
-    <input type="number" class="s" value="${score}" title="满分">
+    <input type="number" class="s" value="${score}" title="满分" oninput="updateTotal()">
     <button class="mv" title="上移" onclick="moveSpec(this,-1)">▲</button>
     <button class="mv" title="下移" onclick="moveSpec(this,1)">▼</button>
     <button class="del" title="删除本题" onclick="delSpec(this)">×</button>
     <input type="number" class="h" value="${height}" min="4" max="120" title="作答区高度 mm" style="grid-column:span 2">
-    <input type="text" class="p" value="${parts}" placeholder="拆小问分值,如 6,5,6(留空=整题一问)">
+    <input type="text" class="p" value="${parts}" placeholder="拆小问分值,如 6,5,6(留空=整题一问)" oninput="updateTotal()">
     <input type="text" class="e" value="${elective}" placeholder="选做组(如 A;同组题互为多选一,2~4 道)" title="选做题:卡面印题号区,判分只取学生涂选的题">
     <input type="text" class="kn know" placeholder="知识点标签(可空,多个用 , 或 、 分隔)" title="用于学情掌握度分析">`;
   div.querySelector(".k").value = kind;

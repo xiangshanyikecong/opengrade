@@ -228,6 +228,7 @@ async function saveScore(question) {
   if (!st) return;
   try {
     if ((st.parts || []).length) {
+      let submitted = 0;
       for (const p of st.parts) {
         const v = parseFloat((document.getElementById(`sc-${question}-${p.part}`) || {}).value);
         if (isNaN(v)) continue;
@@ -236,6 +237,12 @@ async function saveScore(question) {
           mark: st.mark || "", ink: st.ink || [], ver: p.ver || 0,
         });
         p.ver = (r && r.ver) || (p.ver || 0) + 1;
+        submitted++;
+      }
+      if (submitted === 0) {
+        // 一个分数都没填:不提示"已保存",也不自动把申请标为已处理(评审 review.html:233)
+        OG.toast("请输入至少一个小问的分数");
+        return;
       }
     } else {
       const v = parseFloat((document.getElementById(`sc-${question}`) || {}).value);

@@ -97,7 +97,11 @@ const OG = {
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = "/vendor/pdf.worker.min.js";
         resolve(window.pdfjsLib);
       };
-      s.onerror = () => reject(new Error("pdf.js 加载失败(web/vendor/pdf.min.js 缺失)"));
+      s.onerror = () => {
+        // 加载失败清缓存:同页稍后重试可重新发起加载(评审 common.js:92)
+        this.pdfjsReady = null;
+        reject(new Error("pdf.js 加载失败(web/vendor/pdf.min.js 缺失)"));
+      };
       document.head.appendChild(s);
     });
     return this.pdfjsReady;
@@ -105,21 +109,31 @@ const OG = {
   async pdfToImages(file, onProgress) {
     const lib = await this.ensurePdfJs();
     const buf = await file.arrayBuffer();
-    const pdf = await lib.getDocument({ data: buf }).promise;
-    const out = [];
-    for (let p = 1; p <= pdf.numPages; p++) {
-      const page = await pdf.getPage(p);
-      const base = page.getViewport({ scale: 1 });
-      const scale = Math.min(4, Math.max(1.2, 2200 / base.width)); // 目标宽 ~2200px(≈265dpi):PDF 内嵌 300dpi 扫描图少降采样,二维码考号模块保 6px+
-      const vp = page.getViewport({ scale });
-      const cv = document.createElement("canvas");
-      cv.width = Math.floor(vp.width); cv.height = Math.floor(vp.height);
-      await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
-      const blob = await new Promise(res => cv.toBlob(res, "image/jpeg", 0.85));
-      out.push(new File([blob], file.name.replace(/\.pdf$/i, "") + `-p${p}.jpg`, { type: "image/jpeg" }));
-      if (onProgress) onProgress(p, pdf.numPages);
+    const task = lib.getDocument({ data: buf });
+    try {
+      const pdf = await task.promise;
+      const out = [];
+      for (let p = 1; p <= pdf.numPages; p++) {
+        const page = await pdf.getPage(p);
+        const base = page.getViewport({ scale: 1 });
+        const scale = Math.min(4, Math.max(1.2, 2200 / base.width)); // 目标宽 ~2200px(≈265dpi):PDF 内嵌 300dpi 扫描图少降采样,二维码考号模块保 6px+
+        const vp = page.getViewport({ scale });
+        const cv = document.createElement("canvas");
+        cv.width = Math.floor(vp.width); cv.height = Math.floor(vp.height);
+        await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+        const blob = await new Promise(res => cv.toBlob(res, "image/jpeg", 0.85));
+        // toBlob 可返回 null(画布异常):此时不能把无效"图像"塞进上传队列(评审 common.js:118)
+        if (!blob) {
+          throw new Error(`PDF 第 ${p} 页编码失败(${OG.esc(file.name)}),请重试或改用图片上传`);
+        }
+        out.push(new File([blob], file.name.replace(/\.pdf$/i, "") + `-p${p}.jpg`, { type: "image/jpeg" }));
+        if (onProgress) onProgress(p, pdf.numPages);
+      }
+      return out;
+    } finally {
+      // 销毁加载任务(含其 PDFWorker):连续拆分多个 PDF 时 worker/文档数据不再累计(评审 common.js:108)
+      try { await task.destroy(); } catch (e) { /* 忽略销毁异常 */ }
     }
-    return out;
   },
   // collectScanFiles 把用户选的文件统一成图像数组:PDF 拆页,图片直通。msg 可为 null。
   async collectScanFiles(files, msg) {
@@ -234,10 +248,34 @@ const OG = {
     if (!ov) {
       ov = document.createElement("div");
       ov.id = "ogLightbox";
-      ov.onclick = () => ov.classList.remove("show");
+      ov.onclick = () => OG.closeLightbox();
       document.body.appendChild(ov);
     }
-    ov.innerHTML = `<div class="lb-cap">${OG.esc(caption || "")} <span style="opacity:.6">点击任意处关闭</span></div><img src="${OG.esc(src)}" alt="">`;
+    ov.innerHTML = `<div class="lb-cap">${OG.esc(caption || "")}
+      <button type="button" aria-label="关闭看图" style="background:none;border:0;color:inherit;cursor:pointer;font-size:14px;padding:0 4px" onclick="event.stopPropagation();OG.closeLightbox()">✕</button>
+      <span style="opacity:.6">点击任意处或按 Esc 关闭</span></div><img src="${OG.esc(src)}" alt="">`;
     ov.classList.add("show");
+    // 键盘可达:焦点移入浮层,Esc 关闭,关闭后焦点归还触发元素(评审 common.js:235)
+    this._lbReturnFocus = document.activeElement;
+    const btn = ov.querySelector("button");
+    if (btn) btn.focus();
+    if (!this._lbKeyHandler) {
+      this._lbKeyHandler = (e) => {
+        const box = document.getElementById("ogLightbox");
+        if (box && box.classList.contains("show") && e.key === "Escape") {
+          e.preventDefault();
+          OG.closeLightbox();
+        }
+      };
+      document.addEventListener("keydown", this._lbKeyHandler);
+    }
+  },
+  closeLightbox() {
+    const ov = document.getElementById("ogLightbox");
+    if (ov) ov.classList.remove("show");
+    if (this._lbReturnFocus && document.contains(this._lbReturnFocus)) {
+      try { this._lbReturnFocus.focus(); } catch (e) { /* 元素已不可聚焦则忽略 */ }
+    }
+    this._lbReturnFocus = null;
   },
 };
