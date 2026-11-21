@@ -1,0 +1,30 @@
+# 演示与本地运行产物
+demo_output/
+og_out/
+data/
+dist/
+# 本地验证临时文件
+cr.json
+eid.txt
+csv_t.csv
+el.json
+ek.json
+er.json
+esubj.txt
+
+# 构建产物
+*.exe
+*.test
+# 本地 UI 截图与二进制备份
+.ui-shots/
+*.exe~
+
+# 运行日志
+ogserver-run.log
+
+# 会话工具状态
+.zcode/
+
+# 本地构建目录与搜索结果垃圾文件
+build/
+omr_*.json

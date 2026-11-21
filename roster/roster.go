@@ -1,0 +1,202 @@
+// Package roster 提供学生名册管理与考号模糊匹配:
+// 当 OMR 判读考号无效(漏涂/多涂)时,用"可读位精确匹配"从名册推荐候选,
+// 交由教师在阅卷工作台一键确认 —— 方案稿『考号智能容错重影匹配』的规则版
+// (手写姓名 OCR 属后续增强)。
+package roster
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+)
+
+// Student 是名册中的一名学生。Reg 为纯数字考号(与答题卡位数一致)。
+// 走班排考(新高考)下学生双归属:Class 为行政班(首班),Classes 为全部班级
+// (Classes[0] 恒等于 Class;老数据只有 class 时 AllClasses 自动归一)。
+type Student struct {
+	Reg     string   `json:"reg"`
+	Name    string   `json:"name"`
+	Class   string   `json:"class,omitempty"`
+	Classes []string `json:"classes,omitempty"`
+}
+
+// AllClasses 返回该生的全部班级(行政班+教学班);只有 class 的老数据归一为单班。
+func (s Student) AllClasses() []string {
+	if len(s.Classes) > 0 {
+		return s.Classes
+	}
+	if s.Class != "" {
+		return []string{s.Class}
+	}
+	return nil
+}
+
+// splitClasses 把"行政班|教学班1|教学班2"形式的串拆成班级列表;
+// 首个非空作为行政班,其余去重保序。
+func splitClasses(s string) (string, []string) {
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range strings.Split(s, "|") {
+		if p = strings.TrimSpace(p); p != "" && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return "", nil
+	}
+	return out[0], out
+}
+
+// Load 解析名册:支持 JSON 数组或 CSV(每行 reg,name[,class],首行表头自动跳过)。
+func Load(data []byte) ([]Student, error) {
+	trimmed := strings.TrimSpace(string(data))
+	if strings.HasPrefix(trimmed, "[") {
+		var out []Student
+		if err := json.Unmarshal(data, &out); err != nil {
+			return nil, fmt.Errorf("名册 JSON 解析失败: %w", err)
+		}
+		if err := validate(out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+	var out []Student
+	dataLine := 0 // 已处理的数据行数(表头判定看"第一个非空行",而非物理第 0 行:
+	// 文件以空行开头时,原先把真表头当数据行,整份名册因"考号必须为纯数字"被拒)
+	for _, line := range strings.Split(trimmed, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, ",")
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("名册第 %d 行格式不合法(应为 考号,姓名[,班级])", dataLine+1)
+		}
+		if dataLine == 0 && !isDigits(strings.TrimSpace(parts[0])) {
+			dataLine++
+			continue // 表头(第一个非空行且考号列非数字)
+		}
+		s := Student{Reg: strings.TrimSpace(parts[0]), Name: strings.TrimSpace(parts[1])}
+		if len(parts) > 2 {
+			// 第 3 列支持"行政班|教学班1|教学班2"(走班双归属);单值等同旧格式
+			s.Class, s.Classes = splitClasses(parts[2])
+		}
+		out = append(out, s)
+		dataLine++
+	}
+	if err := validate(out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func validate(students []Student) error {
+	seen := map[string]bool{}
+	for i := range students {
+		s := &students[i]
+		if !isDigits(s.Reg) || s.Reg == "" {
+			return fmt.Errorf("名册中考号 %q 必须为纯数字", s.Reg)
+		}
+		if s.Name == "" {
+			return fmt.Errorf("考号 %s 缺少姓名", s.Reg)
+		}
+		if seen[s.Reg] {
+			return fmt.Errorf("名册中考号 %s 重复", s.Reg)
+		}
+		seen[s.Reg] = true
+		// 走班归一:Classes[0] 恒为行政班;老数据只有 class 时补单班列表
+		if len(s.Classes) == 0 && s.Class != "" {
+			s.Classes = []string{s.Class}
+		}
+		if s.Class == "" && len(s.Classes) > 0 {
+			s.Class = s.Classes[0]
+		}
+	}
+	return nil
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// Suggest 依据 OMR 逐位判涂明细(regMarks,来自 omr.Result)从名册推荐候选。
+// 规则:所有"唯一判读位"必须精确匹配;按匹配位数排序,取前 n 个;
+// 位长不一致的名册条目直接跳过。
+func Suggest(regMarks [][]int, students []Student, n int) []Student {
+	digitsOf := func(reg string) []int {
+		out := make([]int, len(reg))
+		for i, r := range reg {
+			out[i] = int(r - '0')
+		}
+		return out
+	}
+	type scored struct {
+		s     Student
+		score int
+	}
+	var cands []scored
+	for _, st := range students {
+		dg := digitsOf(st.Reg)
+		if len(dg) != len(regMarks) {
+			continue
+		}
+		ok := true
+		score := 0
+		determined := 0
+		for ci, marks := range regMarks {
+			if len(marks) == 0 {
+				continue // 该位未判读,不加分不否决
+			}
+			determined++
+			hit := false
+			for _, m := range marks {
+				if m == dg[ci] {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				ok = false
+				break
+			}
+			score += len(marks) // 多涂位命中也计分(候选更可信)
+		}
+		if ok && determined > 0 { // 完全无可读位时没有证据,不给候选
+			cands = append(cands, scored{st, score})
+		}
+	}
+	sort.Slice(cands, func(i, j int) bool { return cands[i].score > cands[j].score })
+	if len(cands) > n {
+		cands = cands[:n]
+	}
+	out := make([]Student, len(cands))
+	for i, c := range cands {
+		out[i] = c.s
+	}
+	return out
+}
+
+// SuggestByText 按姓名或考号前缀过滤名册(工作台手动搜索用)。
+func SuggestByText(students []Student, query string, n int) []Student {
+	q := strings.TrimSpace(query)
+	var out []Student
+	for _, s := range students {
+		if q == "" || strings.Contains(s.Name, q) || strings.HasPrefix(s.Reg, q) {
+			out = append(out, s)
+			if len(out) >= n {
+				break
+			}
+		}
+	}
+	return out
+}
