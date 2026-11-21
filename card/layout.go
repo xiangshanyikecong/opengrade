@@ -786,14 +786,14 @@ func firstNonZero(a, b int) int {
 	return b
 }
 
-// normalizeRegMode 规范化考号通道;空值与其他历史写法归一到 "fill"。
+// normalizeRegMode 规范化考号通道:仅空值归一为 "fill"。未知取值(如误写 "qrr")
+// 原样返回,交给 Validate 报"非法通道"—— 静默改写成 fill 会让校验失效、导出的
+// 卡面缺二维码通道(评审 layout.go:794)。
 func normalizeRegMode(m string) string {
-	switch m {
-	case RegBarcode, RegQR, RegFillBarcode, RegFillQR:
-		return m
-	default:
+	if m == "" {
 		return RegFill
 	}
+	return m
 }
 
 func firstNonZeroF(a, b float64) float64 {

@@ -69,12 +69,12 @@ func buildTestFont() []byte {
 	w16(&cmap, 1) // encodingID
 	w32(&cmap, 12)
 	w16(&cmap, 4)      // format
-	w16(&cmap, 32)     // length(3 段)
+	w16(&cmap, 40)     // length(3 段实长,与数据一致;评审 font_test.go:72)
 	w16(&cmap, 0)      // language
 	w16(&cmap, 6)      // segCountX2
 	w16(&cmap, 8)      // searchRange
 	w16(&cmap, 1)      // entrySelector
-	w16(&cmap, 0xFFFE) // rangeShift(占位,解析器不读)
+	w16(&cmap, 4)      // rangeShift(2*segCount-searchRange,评审 font_test.go:72)
 	w16(&cmap, 0x41)   // end[0]
 	w16(&cmap, 0x4E2D)
 	w16(&cmap, 0xFFFF)
@@ -257,8 +257,10 @@ func TestSystemFontDiscovery(t *testing.T) {
 	if f == nil {
 		t.Skip("本机未发现可用中文字体,跳过")
 	}
+	// 中文单独绘制并统计:混排串里的 ASCII("3"等)墨迹不能掩盖中文字形缺失
+	//(评审 font_test.go:261)
 	c := raster.NewCanvas(600, 60)
-	f.Draw(c, 5, 8, "高一(3)班 月考答题卡", 30, 0)
+	f.Draw(c, 5, 8, "高一班月考答题卡", 30, 0)
 	ink := 0
 	for _, p := range c.Pix {
 		if p < 128 {

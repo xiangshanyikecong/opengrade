@@ -182,6 +182,16 @@ func textStart(b *bytes.Buffer, x, y, size float64, s string) {
 }
 
 func xmlEscape(s string) string {
+	// 先剔除 XML 1.0 不允许的字符(NUL 等控制符):标题带 \u0000 时整张 SVG
+	// 无法解析;合法字符照常转义(评审 svg.go:185)
+	clean := strings.Map(func(r rune) rune {
+		if r == 0x9 || r == 0xA || r == 0xD ||
+			(r >= 0x20 && r <= 0xD7FF) || (r >= 0xE000 && r <= 0xFFFD) ||
+			(r >= 0x10000 && r <= 0x10FFFF) {
+			return r
+		}
+		return -1
+	}, s)
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;")
-	return r.Replace(s)
+	return r.Replace(clean)
 }

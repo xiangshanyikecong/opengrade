@@ -32,7 +32,7 @@ type Matrix struct {
 }
 
 // EncodeNumeric 把纯数字内容编码为 QR(v1~v4 自动选最小可容版本,纠错级 M,数字模式)。
-// v1-M 数字容量 33 位,v4-M 达 127 位;考号(≤12 位)恒用 v1。
+// 数字容量按实际边界:v1-M 34 位、v4-M 149 位(qrcode.com 官方容量表);考号(≤12 位)恒用 v1。
 func EncodeNumeric(content string) (*Matrix, error) {
 	digits, err := numericBits(content)
 	if err != nil {
@@ -46,7 +46,7 @@ func EncodeNumeric(content string) (*Matrix, error) {
 		}
 	}
 	if vi < 0 {
-		return nil, fmt.Errorf("内容 %d 位数字超出 v4-M 容量(127 位)", len(content))
+		return nil, fmt.Errorf("内容 %d 位数字超出 v4-M 容量(149 位)", len(content))
 	}
 	spec := versions[vi]
 

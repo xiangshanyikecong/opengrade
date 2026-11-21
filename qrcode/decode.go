@@ -4,6 +4,7 @@
 package qrcode
 
 import (
+	"sort"
 	"fmt"
 	"image"
 	"strings"
@@ -21,6 +22,9 @@ type candidate struct {
 func DecodeRegion(gray *image.Gray, rect image.Rectangle) (string, error) {
 	if rect.Dx() < 20 || rect.Dy() < 20 {
 		return "", fmt.Errorf("二维码区域过小(%d×%d)", rect.Dx(), rect.Dy())
+	}
+	if !rect.In(gray.Bounds()) {
+		return "", fmt.Errorf("二维码区域 %v 超出图像 %v", rect, gray.Bounds())
 	}
 	th := regionOtsu(gray, rect)
 	isDark := func(x, y int) bool { return gray.GrayAt(x, y).Y <= th }
@@ -123,6 +127,11 @@ func DecodeGrid(dark [][]bool) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("矩阵边长 %d 不是 v1~v4", n)
 	}
+	for i, row := range dark {
+		if len(row) != n {
+			return "", fmt.Errorf("矩阵第 %d 行长度 %d ≠ %d", i+1, len(row), n)
+		}
+	}
 	mask, err := readFormat(dark)
 	if err != nil {
 		return "", err
@@ -187,7 +196,30 @@ func DecodeGrid(dark [][]bool) (string, error) {
 	return parseNumeric(data)
 }
 
-// readFormat 从两份格式信息中读出掩码号;两份都过 BCH 校验且不一致、或都失败时报错。
+// formatCodes 预生成 32 个合法 15-bit 格式串(data=等级2位+掩码3位,XOR 掩码后)。
+var formatCodes = func() [32]uint16 {
+	var out [32]uint16
+	for data := 0; data < 32; data++ {
+		rem := data
+		for i := 0; i < 10; i++ {
+			rem = (rem << 1) ^ ((rem >> 9) * 0x537)
+		}
+		out[data] = uint16(data<<10|rem) ^ 0x5412
+	}
+	return out
+}()
+
+func popcount16(v uint16) int {
+	n := 0
+	for ; v != 0; v &= v - 1 {
+		n++
+	}
+	return n
+}
+
+// readFormat 从两份格式信息读出掩码号。每份允许最多 3 位错(与合法格式串按汉明距
+// 纠错);恢复的 5 位数据保留纠错等级位 —— 本解码器只支持 M(等级位 00),显式拒绝
+// 其它等级;两份恢复结果不一致时报错(评审 decode.go:221/224)。
 func readFormat(dark [][]bool) (int, error) {
 	n := len(dark)
 	copy1 := make([]bool, 15)
@@ -212,31 +244,40 @@ func readFormat(dark [][]bool) (int, error) {
 		for i := 14; i >= 0; i-- {
 			v = v<<1 | uint16(boolByte(cp[i]))
 		}
-		v ^= 0x5412
-		data := int(v >> 10)
-		rem := data
-		for i := 0; i < 10; i++ {
-			rem = (rem << 1) ^ ((rem >> 9) * 0x537)
+		best, bestDist, ties := -1, 15, 0
+		for data := 0; data < 32; data++ {
+			d := popcount16(v ^ formatCodes[data])
+			if d < bestDist {
+				best, bestDist, ties = data, d, 1
+			} else if d == bestDist {
+				ties++
+			}
 		}
-		if uint16(data<<10|rem) != v {
-			return 0, false
+		if best < 0 || bestDist > 3 || ties > 1 {
+			return 0, false // 无候选/超过 3 位错/最近候选并列(歧义)
 		}
-		return data & 7, true
+		return best, true
 	}
-	m1, ok1 := read(copy1)
-	m2, ok2 := read(copy2)
+	d1, ok1 := read(copy1)
+	d2, ok2 := read(copy2)
+	pick := func(data int) (int, error) {
+		if data>>3 != 0 {
+			return 0, fmt.Errorf("格式信息纠错等级非 M(等级位 %d),本解码器仅支持 M", data>>3)
+		}
+		return data & 7, nil
+	}
 	switch {
 	case ok1 && ok2:
-		if m1 != m2 {
-			return 0, fmt.Errorf("两份格式信息不一致(%d vs %d)", m1, m2)
+		if d1 != d2 {
+			return 0, fmt.Errorf("两份格式信息恢复结果不一致(%d vs %d)", d1, d2)
 		}
-		return m1, nil
+		return pick(d1)
 	case ok1:
-		return m1, nil
+		return pick(d1)
 	case ok2:
-		return m2, nil
+		return pick(d2)
 	default:
-		return 0, fmt.Errorf("格式信息 BCH 校验失败")
+		return 0, fmt.Errorf("格式信息 BCH 校验失败(纠错后仍无唯一候选)")
 	}
 }
 
@@ -379,13 +420,8 @@ func cluster(cands []candidate, keep func(candidate) bool) []candCluster {
 			kept = append(kept, c)
 		}
 	}
-	for i := 0; i < len(kept); i++ {
-		for j := i + 1; j < len(kept); j++ {
-			if kept[j].pos < kept[i].pos {
-				kept[i], kept[j] = kept[j], kept[i]
-			}
-		}
-	}
+	// 标准库排序:此前冒泡两两比较,海量伪候选时 O(n²) 不可接受(评审 decode.go:382)
+	sort.Slice(kept, func(i, j int) bool { return kept[i].pos < kept[j].pos })
 	var out []candCluster
 	for _, c := range kept {
 		if len(out) > 0 && c.pos-out[len(out)-1].pos <= tol &&
@@ -418,13 +454,7 @@ func leftmost(cs []candCluster) *candCluster {
 // sortedDesc 按 pos 降序返回副本(前几个即最右/最下簇)。
 func sortedDesc(cs []candCluster) []candCluster {
 	out := append([]candCluster{}, cs...)
-	for i := 0; i < len(out); i++ {
-		for j := i + 1; j < len(out); j++ {
-			if out[j].pos > out[i].pos {
-				out[i], out[j] = out[j], out[i]
-			}
-		}
-	}
+	sort.Slice(out, func(i, j int) bool { return out[j].pos < out[i].pos }) // 标准库排序(评审 decode.go:421)
 	return out
 }
 
@@ -440,9 +470,10 @@ func specBySize(n int) (versionSpec, bool) {
 func regionOtsu(gray *image.Gray, rect image.Rectangle) uint8 {
 	var hist [256]int
 	for y := rect.Min.Y; y < rect.Max.Y; y++ {
-		base := y * gray.Stride
+		// 行起点按 PixOffset:子图边界非 (0,0) 时 y*Stride+x 会越过 Pix(评审 decode.go:443)
+		base := gray.PixOffset(rect.Min.X, y)
 		for x := rect.Min.X; x < rect.Max.X; x++ {
-			hist[gray.Pix[base+x]]++
+			hist[gray.Pix[base+x-rect.Min.X]]++
 		}
 	}
 	total := rect.Dx() * rect.Dy()

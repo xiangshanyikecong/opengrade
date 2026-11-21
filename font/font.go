@@ -145,8 +145,8 @@ func parseCmap(b []byte) (func(rune) (int, bool), error) {
 			score = 3
 		case pid == 0 && format == 4:
 			score = 2
-		case pid == 3 && eid == 1 && format == 0:
-			score = 1 // 符号子表,BMP 内可用
+		// format 0(字节编码子表)不作为候选:按 format 4 的段数解释会把字形
+		// 数组误读成段表(评审 font.go:148)。仅支持 format 4/12。
 		}
 		if score >= 0 && (best == nil || score > best.score) {
 			best = &cand{score: score, off: off, format: format}
@@ -230,7 +230,10 @@ func format12Lookup(b []byte) func(rune) (int, bool) {
 			} else if c < s {
 				hi = mid - 1
 			} else {
-				return g + (c - s), g != 0
+				// 命中判定用计算后的字形 ID:分组起始 ID 为 0 时,组内第二个字符
+				// 映射到 ID 1,按起始 ID 判断会漏(评审 font.go:233)
+				id := g + (c - s)
+				return id, id != 0
 			}
 		}
 		return 0, false

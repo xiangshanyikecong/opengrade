@@ -203,13 +203,18 @@ func TestAnalyzePaperDistorted(t *testing.T) {
 	}
 	bad := 0
 	for i, q := range a.Questions {
+		if strings.Contains(q.Note, "疑似漏检") || strings.Contains(q.Note, "占位") {
+			bad++
+			t.Logf("第 %d 题是自动补出的占位题:%s —— 畸变测试要求每题真实检出(评审 paperan_test.go:205)", i+1, q.Note)
+			continue
+		}
 		if q.Options != wantOpts[i] {
 			bad++
 			t.Logf("第 %d 题选项数 %d,应为 %d", i+1, q.Options, wantOpts[i])
 		}
 	}
 	if bad > 0 {
-		t.Fatalf("畸变件选项数错判 %d 题(倾斜 %.1f°)", bad, a.SkewDeg)
+		t.Fatalf("畸变件选项数错判/占位题 %d 题(倾斜 %.1f°)", bad, a.SkewDeg)
 	}
 	if len(a.Subjectives) != 2 {
 		t.Fatalf("畸变件主观留白区应 2 处,得到 %d:%+v", len(a.Subjectives), a.Subjectives)

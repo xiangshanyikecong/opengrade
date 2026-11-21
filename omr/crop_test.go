@@ -79,6 +79,14 @@ func TestReadCroppedAndFramed(t *testing.T) { // nolint: gocritic // 表驱动�
 		}
 		if len(res.Answers) != 30 {
 			t.Errorf("%-32s 客观题判读 %d 题,期望 30", c.name, len(res.Answers))
+			continue
+		}
+		// 逐项核对前四题:只查长度会让"考号对、30 个空答案"的判读溜过(评审 crop_test.go:80)
+		want := []string{"A", "B", "C", "D"} // 与夹具 Filling.Answers 一致
+		for i := 0; i < 4 && i < len(want); i++ {
+			if res.Answers[i] != want[i] {
+				t.Errorf("%-32s 第 %d 题判读 %q,期望 %q", c.name, i+1, res.Answers[i], want[i])
+			}
 		}
 	}
 }

@@ -32,10 +32,15 @@ func ToGray(src image.Image) *image.Gray {
 // Otsu 计算全局最佳二值化阈值(类间方差最大化)。
 func Otsu(g *image.Gray) uint8 {
 	var hist [256]int
-	for _, p := range g.Pix {
-		hist[p]++
+	total := 0
+	// SubImage 保留父图 Stride,Pix 可能含可见区外的填充:按可见宽高逐行统计(评审 bitmap.go:152)
+	for y := 0; y < g.Rect.Dy(); y++ {
+		row := g.Pix[g.PixOffset(g.Rect.Min.X, g.Rect.Min.Y+y):][:g.Rect.Dx()]
+		for _, p := range row {
+			hist[p]++
+			total++
+		}
 	}
-	total := len(g.Pix)
 	sumAll := 0
 	for i, n := range hist {
 		sumAll += i * n
@@ -65,10 +70,14 @@ func Otsu(g *image.Gray) uint8 {
 
 // Binarize 按阈值 t 二值化(灰度 <= t 记为墨迹)。
 func Binarize(g *image.Gray, t uint8) *bitmap {
-	b := &bitmap{W: g.Rect.Dx(), H: g.Rect.Dy(), D: make([]byte, len(g.Pix))}
-	for i, p := range g.Pix {
-		if p <= t {
-			b.D[i] = 1
+	w, h := g.Rect.Dx(), g.Rect.Dy()
+	b := &bitmap{W: w, H: h, D: make([]byte, w*h)}
+	for y := 0; y < h; y++ {
+		row := g.Pix[g.PixOffset(g.Rect.Min.X, g.Rect.Min.Y+y):][:w]
+		for x, p := range row {
+			if p <= t {
+				b.D[y*w+x] = 1
+			}
 		}
 	}
 	return b
@@ -91,12 +100,14 @@ func AdaptiveBinarize(g *image.Gray, win int, frac float64) *bitmap {
 	if frac <= 0 || frac >= 1 {
 		frac = 0.15
 	}
-	// 积分图(含零行零列前缀),uint64 防 255*像素数 溢出
+	// 积分图(含零行零列前缀),uint64 防 255*像素数 溢出;
+	// 源图按可见宽高逐行累加(Stride/子图边界安全,评审 bitmap.go:152)
 	integ := make([]uint64, (w+1)*(h+1))
 	for y := 0; y < h; y++ {
 		rowSum := uint64(0)
-		for x := 0; x < w; x++ {
-			rowSum += uint64(g.Pix[y*w+x])
+		row := g.Pix[g.PixOffset(g.Rect.Min.X, g.Rect.Min.Y+y):][:w]
+		for x, p := range row {
+			rowSum += uint64(p)
 			integ[(y+1)*(w+1)+x+1] = integ[y*(w+1)+x+1] + rowSum
 		}
 	}
@@ -110,7 +121,7 @@ func AdaptiveBinarize(g *image.Gray, win int, frac float64) *bitmap {
 			sum := integ[(y1+1)*(w+1)+x1+1] - integ[y0*(w+1)+x1+1] -
 				integ[(y1+1)*(w+1)+x0] + integ[y0*(w+1)+x0]
 			mean := float64(sum) / float64(area)
-			if float64(g.Pix[y*w+x]) < mean*(1-frac) {
+			if float64(g.Pix[g.PixOffset(g.Rect.Min.X, g.Rect.Min.Y+y)+x]) < mean*(1-frac) {
 				b.D[y*w+x] = 1
 			}
 		}
@@ -123,10 +134,15 @@ func AdaptiveBinarize(g *image.Gray, win int, frac float64) *bitmap {
 // 按 2% 切分既保住它们又不至于把纸面噪声整体划为墨迹。
 func inkPercentile(g *image.Gray, frac float64) uint8 {
 	var hist [256]int
-	for _, p := range g.Pix {
-		hist[p]++
+	total := 0
+	for y := 0; y < g.Rect.Dy(); y++ {
+		row := g.Pix[g.PixOffset(g.Rect.Min.X, g.Rect.Min.Y+y):][:g.Rect.Dx()]
+		for _, p := range row {
+			hist[p]++
+			total++
+		}
 	}
-	limit := int(float64(len(g.Pix)) * frac)
+	limit := int(float64(total) * frac)
 	if limit < 1 {
 		limit = 1
 	}
@@ -149,10 +165,11 @@ func SampleBilinear(g *image.Gray, x, y float64) float64 {
 	x0, y0 := int(math.Floor(x)), int(math.Floor(y))
 	x1, y1 := min(x0+1, w-1), min(y0+1, h-1)
 	fx, fy := x-float64(x0), y-float64(y0)
-	p00 := float64(g.Pix[y0*w+x0])
-	p10 := float64(g.Pix[y0*w+x1])
-	p01 := float64(g.Pix[y1*w+x0])
-	p11 := float64(g.Pix[y1*w+x1])
+	// 行起点按 PixOffset:SubImage 保留父图 Stride,按图宽定位会采到可见区外(评审 bitmap.go:152)
+	p00 := float64(g.Pix[g.PixOffset(g.Rect.Min.X+x0, g.Rect.Min.Y+y0)])
+	p10 := float64(g.Pix[g.PixOffset(g.Rect.Min.X+x1, g.Rect.Min.Y+y0)])
+	p01 := float64(g.Pix[g.PixOffset(g.Rect.Min.X+x0, g.Rect.Min.Y+y1)])
+	p11 := float64(g.Pix[g.PixOffset(g.Rect.Min.X+x1, g.Rect.Min.Y+y1)])
 	return p00*(1-fx)*(1-fy) + p10*fx*(1-fy) + p01*(1-fx)*fy + p11*fx*fy
 }
 

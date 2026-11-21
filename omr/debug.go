@@ -67,7 +67,9 @@ func RenderDebugOverlay(d *Debug, sheet *card.Sheet, th float64) *image.RGBA {
 			}
 		}
 	}
-	for _, p := range d.Locators {
+	// 背景是矫正到标准网格的图:红圈用标准版面角标坐标 —— d.Locators 是扫描原图
+	// 坐标,600DPI 下会放大约一倍、部分圈落到图外(评审 debug.go:70)
+	for _, p := range sheet.Locators {
 		ring(p.X, p.Y, sheet.LocatorSidePx, red)
 	}
 	return out

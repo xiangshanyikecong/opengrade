@@ -134,6 +134,11 @@ func TestLocateRescueScenarios(t *testing.T) { // nolint: gocritic // 表驱动�
 		} else if res.RegValid && res.RegNumber != "20250713" {
 			t.Errorf("%-24s 考号 = %q,失准时应保持未判读而非误读", sc.name, res.RegNumber)
 		}
+		if len(res.Answers) != len(answers) {
+			// 数量不同时报告场景名并继续下一场景:避免后续 answers[qi] 越界 panic(评审 locate_rescue_test.go:142)
+			t.Errorf("%-24s 客观题判读 %d 题,期望 %d 题", sc.name, len(res.Answers), len(answers))
+			continue
+		}
 		answered, correct := 0, 0
 		for qi, a := range res.Answers {
 			if a != "" {
@@ -143,8 +148,8 @@ func TestLocateRescueScenarios(t *testing.T) { // nolint: gocritic // 表驱动�
 				correct++
 			}
 		}
-		if len(res.Answers) != 30 || correct < sc.minAnswers {
-			t.Errorf("%-24s 客观题判读 %d 题/判对 %d,期望 30 题/判对 ≥%d", sc.name, len(res.Answers), correct, sc.minAnswers)
+		if correct < sc.minAnswers {
+			t.Errorf("%-24s 客观题判对 %d,期望 ≥%d", sc.name, correct, sc.minAnswers)
 		}
 	}
 }

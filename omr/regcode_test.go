@@ -4,6 +4,7 @@ package omr_test
 // 覆盖:纯条码 / 纯二维码 / 双通道(涂卡正常、涂卡漏涂由码修复)。
 
 import (
+	"strings"
 	"bytes"
 	"image/jpeg"
 	"math/rand"
@@ -137,7 +138,8 @@ func TestQRChannelNoFillWarnings(t *testing.T) {
 	f := &card.Filling{Reg: digitsReg("87654321"), Answers: answers4()}
 	res := readDistorted(t, sheet, f, 21)
 	for _, w := range res.Warnings {
-		if len(w) > 6 && w[:6] == "考号第" {
+		// 字节切片 "考号第" 有 9 字节,w[:6] 比较恒假:改用 HasPrefix(评审 regcode_test.go:140)
+		if strings.HasPrefix(w, "考号第") {
 			t.Fatalf("纯码制不应产生涂卡漏涂告警: %v", res.Warnings)
 		}
 	}

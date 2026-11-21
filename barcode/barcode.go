@@ -236,8 +236,10 @@ func runsOf(line []bool) []run {
 func Decode(line []bool) (string, error) {
 	runs := runsOf(line)
 	var lastErr error
-	for lead := 0; lead <= 4; lead += 2 {
-		for tail := 0; tail <= 2; tail += 2 {
+	// lead/tail 参数是黑游程数(不是黑白总游程):两侧各试 0/1/2 个,
+	// 单个前导噪点(恰一个黑游程)也能剥掉而不连带起始符(评审 barcode.go:239)
+	for lead := 0; lead <= 2; lead++ {
+		for tail := 0; tail <= 2; tail++ {
 			r := trimEdges(runs, lead, tail)
 			if len(r) < 19 { // start+check+stop 的最小游程规模
 				continue

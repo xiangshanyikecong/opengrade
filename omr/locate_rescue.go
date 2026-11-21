@@ -93,6 +93,9 @@ func calibratedExpect(blobs []blob, b *bitmap, sheet *card.Sheet, ds int) *locat
 					continue
 				}
 				for _, d := range cands {
+					if d == c {
+						continue // 锚点不给自己投票:单方块也能凑出"互证"(评审 locate_rescue.go:95)
+					}
 					dside := (float64(d.w()) + float64(d.h())) / 2
 					if dside < 0.5*cside || dside > 2.0*cside {
 						continue

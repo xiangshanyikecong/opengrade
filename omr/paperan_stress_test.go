@@ -84,7 +84,10 @@ func itoa(v int) string {
 	return string(b[i:])
 }
 
-// distortStress 透视(±ampPct% 四角抖动)+ 旋转(±rotDeg°)+ 光照梯度 + 噪声 + JPEG。
+// distortStress 透视(±ampPct/2 % 四角抖动,单侧实幅 = 尺寸×ampPct/200,调用方传 1.0
+// 时约 ±0.5%)+ 旋转(±rotDeg°)+ 光照梯度 + 噪声 + JPEG。
+// 注意:当前实幅约 ±0.5%,尚未覆盖文件头声称的 ±1.5% 容忍边界(评审 paperan_stress_test.go:92);
+// 调高参数需先保证阅读器对更大形变的通过率。
 func distortStress(t *testing.T, src *image.Gray, seed int64, ampPct, rotDeg float64) *image.Gray {
 	t.Helper()
 	w, h := src.Rect.Dx(), src.Rect.Dy()

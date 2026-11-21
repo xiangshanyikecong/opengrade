@@ -57,8 +57,14 @@ func rowThreshold(ratios []float64, global float64) float64 {
 	if cand < global-adaptiveClamp {
 		cand = global - adaptiveClamp
 	}
-	if cand < adaptiveFloor {
-		cand = adaptiveFloor
+	// 绝对下限不得高于用户设置的全局阈值:否则"只向下放宽"的契约被打破,
+	// 高于用户阈值的涂点会被误判空白(评审 adaptive.go:60)
+	floor := adaptiveFloor
+	if floor > global {
+		floor = global
+	}
+	if cand < floor {
+		cand = floor
 	}
 	return cand
 }

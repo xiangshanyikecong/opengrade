@@ -33,8 +33,10 @@ func SliceRectified(rect *image.Gray, sheet *card.Sheet, studentIndex int, regNu
 		w, h := r.Dx(), r.Dy()
 		img := image.NewGray(image.Rect(0, 0, w, h))
 		for y := 0; y < h; y++ {
-			copy(img.Pix[y*w:(y+1)*w],
-				rect.Pix[(r.Min.Y+y)*rect.Rect.Dx()+r.Min.X:(r.Min.Y+y)*rect.Rect.Dx()+r.Min.X+w])
+			// 行起点按 PixOffset 计算:源图可能带填充 Stride,按图宽定位会把
+			// 行填充/相邻行内容复制成作答区(评审 slice.go:37)
+			off := rect.PixOffset(r.Min.X, r.Min.Y+y)
+			copy(img.Pix[y*w:(y+1)*w], rect.Pix[off:off+w])
 		}
 		kind := ""
 		if qi < len(sheet.Layout.Subjectives) {

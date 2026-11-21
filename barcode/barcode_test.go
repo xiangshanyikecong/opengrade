@@ -55,8 +55,14 @@ func TestEncodeErrors(t *testing.T) {
 
 // TestCodeCCompact 验证偶位数字走 Code C:模块数显著短于 Code B。
 func TestCodeCCompact(t *testing.T) {
-	mC, _ := Encode("12345678")
-	mB, _ := Encode("1234567") // 奇位只能 Code B
+	mC, errC := Encode("12345678")
+	if errC != nil {
+		t.Fatalf("偶位编码失败: %v", errC)
+	}
+	mB, errB := Encode("1234567") // 奇位只能 Code B
+	if errB != nil {
+		t.Fatalf("奇位编码失败: %v", errB)
+	}
 	if len(mC) >= len(mB) {
 		t.Fatalf("Code C 应更紧凑:%d vs %d", len(mC), len(mB))
 	}
@@ -64,15 +70,18 @@ func TestCodeCCompact(t *testing.T) {
 
 // TestChecksumReject 篡改校验符后必须解码失败(mod-103 拦截)。
 func TestChecksumReject(t *testing.T) {
-	mods, _ := Encode("12345678")
-	// 找到校验符区域(终止符前 11 模块),整体取反一次即可改变该符号
-	// 终止符 13 模块,校验符在它前面 11 模块
-	start := len(mods) - 13 - 11
-	line := withQuiet(mods, 5)
-	// 翻转校验符中一个条模块对应的 5 个像素
-	for i := start * 5; i < start*5+5; i++ {
-		line[i] = !line[i]
+	mods, err := Encode("12345678")
+	if err != nil {
+		t.Fatalf("编码失败: %v", err)
 	}
+	// 用另一合法符号 48 的条空比替换校验符 11 模块:只有校验值不符、符号形状
+	// 仍能通过量化 —— 翻转像素会先被量化拒绝,验证不到 mod-103(评审 barcode_test.go:70)
+	start := len(mods) - 13 - 11
+	pattern48 := []bool{true, false, true, false, true, true, false, true, false, true, true}
+	for k, v := range pattern48 {
+		mods[start+k] = v
+	}
+	line := withQuiet(mods, 5)
 	if _, err := Decode(line); err == nil {
 		t.Fatal("篡改校验符后仍解码成功,校验失效")
 	}

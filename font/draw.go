@@ -165,7 +165,7 @@ func (f *Font) Draw(c *raster.Canvas, x, yTop int, s string, sizePx int, v uint8
 			}
 		}
 		pen += int(float64(f.Advance(r)) * float64(sizePx) / float64(f.unitsPerEm))
-	}
+	} // BISECT-TMP
 }
 
 // DrawCenter 以文本包围盒中心 (cx,cyTop) 绘制。

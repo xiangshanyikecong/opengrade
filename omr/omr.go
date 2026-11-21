@@ -206,15 +206,18 @@ func ReadRectified(sheet *card.Sheet, rect *image.Gray, opt Options) (*Result, *
 				mergeRegCode(res, sheet, codeVal, true)
 				parsed = true
 			case len(codeVal) == 5+sheet.Layout.RegDigits:
-				res.CodeShort = codeVal[:4]
-				switch codeVal[4] {
-				case '1':
-					res.CodeVariant = "A"
-				case '2':
-					res.CodeVariant = "B"
+				// 卷种位只认 1/2:非法复合码(如卷种位 9)不进合并,走 parsed=false
+				// 的失败回退(评审 omr.go:216)
+				if codeVal[4] == '1' || codeVal[4] == '2' {
+					res.CodeShort = codeVal[:4]
+					if codeVal[4] == '1' {
+						res.CodeVariant = "A"
+					} else {
+						res.CodeVariant = "B"
+					}
+					mergeRegCode(res, sheet, codeVal[5:], true)
+					parsed = true
 				}
-				mergeRegCode(res, sheet, codeVal[5:], true)
-				parsed = true
 			}
 		}
 		if !parsed {
@@ -297,13 +300,20 @@ func readMarks(bin *bitmap, sheet *card.Sheet, opt Options) (*Result, *Debug) {
 
 	sampleR := func(r int) int { return int(float64(r) * 0.8) } // 只看涂卡圆内部,避开描边
 
-	// 页点(多页卡):第 k 点实心 = 第 k 页,供按考号归组后的页内排序与缺页告警
+	// 页点(多页卡):第 k 点实心 = 第 k 页。恰一实心才写页号;多个实心说明编码
+	// 不成立(污渍/误读),页号保持未知,交由归组侧按到达顺序兜底(评审 omr.go:304)
 	if len(sheet.PageDots) > 0 {
+		solid, first := 0, -1
 		for i, p := range sheet.PageDots {
 			if inkRatio(bin, p.X, p.Y, sheet.PageDotR) >= th {
-				res.PageNo = i + 1
-				break
+				solid++
+				if first < 0 {
+					first = i
+				}
 			}
+		}
+		if solid == 1 && first >= 0 {
+			res.PageNo = first + 1
 		}
 	}
 

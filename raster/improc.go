@@ -39,7 +39,7 @@ func MedianGray(g *image.Gray, k int) *image.Gray {
 				yy := clampInt(y+dy, 0, h-1)
 				for dx := -half; dx <= half; dx++ {
 					xx := clampInt(x+dx, 0, w-1)
-					win = append(win, g.Pix[yy*w+xx])
+					win = append(win, g.Pix[yy*g.Stride+xx]) // 源图按 Stride 读行(评审 improc.go:42)
 				}
 			}
 			sort.Slice(win, func(i, j int) bool { return win[i] < win[j] })
@@ -99,7 +99,7 @@ func CLAHEGray(g *image.Gray, tiles int, clip float64) *image.Gray {
 	out := image.NewGray(image.Rect(0, 0, w, h))
 	for y := 0; y < h; y++ {
 		j0, j1, sy := interp(cys, float64(y)+0.5)
-		base := y * w
+		base := y * g.Stride // 源图按 Stride 读行;输出仍按自身行距写(评审 improc.go:42)
 		for x := 0; x < w; x++ {
 			i0, i1, sx := interp(cxs, float64(x)+0.5)
 			v := g.Pix[base+x]
@@ -123,7 +123,7 @@ func tileLUT(g *image.Gray, x0, x1, y0, y1 int, clip float64) [256]uint8 {
 	}
 	var hist [256]int
 	for y := y0; y < y1; y++ {
-		base := y * g.Rect.Dx()
+		base := y * g.Stride // 源图按 Stride 读行(评审 improc.go:42)
 		for x := x0; x < x1; x++ {
 			hist[g.Pix[base+x]]++
 		}

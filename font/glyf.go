@@ -199,6 +199,7 @@ func appendContour(pts []cpoint, out *[]Seg) {
 // parseComposite 解析组合字形(支持平移/缩放/2x2 矩阵;点匹配定位按零偏移退化)。
 func (f *Font) parseComposite(b []byte, depth int, seen map[int]bool) ([]Seg, error) {
 	var segs []Seg
+	more := false // 上一个组件声明了 MORE_COMPONENTS
 	p := 10
 	for {
 		if p+4 > len(b) {
@@ -210,13 +211,13 @@ func (f *Font) parseComposite(b []byte, depth int, seen map[int]bool) ([]Seg, er
 		dx, dy := 0, 0
 		if flags&0x0001 != 0 {
 			if p+4 > len(b) {
-				break
+				return nil, fmt.Errorf("组合字形数据截断(偏移参数不完整)")
 			}
 			dx, dy = i16(b, p), i16(b, p+2)
 			p += 4
 		} else {
 			if p+2 > len(b) {
-				break
+				return nil, fmt.Errorf("组合字形数据截断(偏移参数不完整)")
 			}
 			dx, dy = int(int8(b[p])), int(int8(b[p+1]))
 			p += 2
@@ -225,7 +226,7 @@ func (f *Font) parseComposite(b []byte, depth int, seen map[int]bool) ([]Seg, er
 		switch {
 		case flags&0x0080 != 0: // 2x2
 			if p+8 > len(b) {
-				return segs, nil
+				return nil, fmt.Errorf("组合字形数据截断(2x2 变换不完整)")
 			}
 			a = float64(i16(b, p)) / 16384
 			bb = float64(i16(b, p+2)) / 16384
@@ -234,26 +235,33 @@ func (f *Font) parseComposite(b []byte, depth int, seen map[int]bool) ([]Seg, er
 			p += 8
 		case flags&0x0040 != 0: // x/y 缩放
 			if p+4 > len(b) {
-				return segs, nil
+				return nil, fmt.Errorf("组合字形数据截断(缩放参数不完整)")
 			}
 			a = float64(i16(b, p)) / 16384
 			d = float64(i16(b, p+2)) / 16384
 			p += 4
 		case flags&0x0008 != 0: // 均匀缩放
 			if p+2 > len(b) {
-				return segs, nil
+				return nil, fmt.Errorf("组合字形数据截断(缩放参数不完整)")
 			}
 			a = float64(i16(b, p)) / 16384
 			d = a
 			p += 2
 		}
+		// 完整读取一个组件后才算数:截断的组件数据不得当完整轮廓缓存(评审 glyf.go:204)
+		more = flags&0x0020 != 0
 		sub, err := f.glyphSegs(gi, depth+1, seen)
 		if err != nil {
 			return nil, err
 		}
 		for _, s := range sub {
 			tr := func(x, y float64) (float64, float64) {
-				return a*x + c*y + float64(dx), bb*x + d*y + float64(dy)
+				tx, ty := float64(dx), float64(dy)
+				if flags&0x0800 != 0 {
+					// SCALED_COMPONENT_OFFSET:偏移向量随组件矩阵缩放(评审 glyf.go:256)
+					tx, ty = a*float64(dx)+c*float64(dy), bb*float64(dx)+d*float64(dy)
+				}
+				return a*x + c*y + tx, bb*x + d*y + ty
 			}
 			ns := Seg{Quad: s.Quad}
 			ns.X0, ns.Y0 = tr(s.X0, s.Y0)
@@ -266,6 +274,9 @@ func (f *Font) parseComposite(b []byte, depth int, seen map[int]bool) ([]Seg, er
 		if flags&0x0020 == 0 { // MORE_COMPONENTS
 			break
 		}
+	}
+	if more {
+		return nil, fmt.Errorf("组合字形声明了后续组件但数据已截断")
 	}
 	return segs, nil
 }

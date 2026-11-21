@@ -109,7 +109,9 @@ func rsEncode(data []byte, ecLen int) []byte {
 }
 
 // rsDecode 纠正接收码字 msg(data+ecLen 个,msg[0] 为最高次)中的错误,
-// 返回纠错后的数据部分;错误超过 ecLen/2 处或定位失败时返回错误。
+// 返回纠错后的数据部分。保证纠正能力范围(≤ecLen/2 处)内的错误;超出范围的
+// 损坏可能报错、也可能被误纠正到另一组合法码字(伴随式复核只能挡住其中一部分,
+// 不构成普遍拒绝保证,评审 gf.go:111)。
 // 路径:伴随式 → Berlekamp-Massey 错误定位多项式(降幂) → Chien 搜索 → Forney 求值 → 伴随式复核。
 func rsDecode(msg []byte, ecLen int) ([]byte, error) {
 	n := len(msg)

@@ -56,8 +56,12 @@ func readHalf(t *testing.T, sheet *card.Sheet, g *image.Gray, wantReg string, wa
 	if res.RegNumber != wantReg {
 		t.Fatalf("考号 = %q,期望 %q(warnings=%v)", res.RegNumber, wantReg, res.Warnings)
 	}
+	// 先断言数量相等:缺末题/多题/全空都应显式失败,而非被循环跳过(评审 impose_test.go:60)
+	if len(res.Answers) != len(wantAns) {
+		t.Fatalf("客观题判读 %d 题,期望 %d 题(answers=%v)", len(res.Answers), len(wantAns), res.Answers)
+	}
 	for i, w := range wantAns {
-		if i < len(res.Answers) && res.Answers[i] != w {
+		if res.Answers[i] != w {
 			t.Fatalf("第 %d 题判读 %q,期望 %q", i+1, res.Answers[i], w)
 		}
 	}

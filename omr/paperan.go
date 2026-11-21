@@ -126,24 +126,41 @@ func AnalyzePaper(gray0 *image.Gray) (*PaperResult, error) {
 	}
 	a := &PaperAnalysis{Questions: []PaperQuestion{}, Subjectives: []PaperSubjective{}, Notes: []string{}}
 
-	// 全黑/反色防御:纸面平均灰度过低说明不是正常白纸(黑版/底片/镜头盖),
-	// 自适应二值化在黑纸+白角的边界会造出贯穿整页的假墨带,后续全是无意义输出
-	var graySum int64
-	for _, p := range gray0.Pix {
-		graySum += int64(p)
-	}
-	if m := float64(graySum) / float64(len(gray0.Pix)); m < 80 {
-		return nil, fmt.Errorf("图像平均灰度 %.0f,疑似全黑页或反色图,请上传正常纸面扫描件", m)
+	// 入口规范化:image.Gray.SubImage 保留父图 Stride 与视图外像素,均值/投影/采样
+	// 若按 y*width+x 读取会混入裁剪区外内容 —— 非紧密存储的图按可见区逐行复制;
+	// 紧密图(常规解码产物)保持零拷贝快速路径(评审 paperan.go:132)
+	if gray0.Stride != gray0.Rect.Dx() || gray0.Rect.Min.X != 0 || gray0.Rect.Min.Y != 0 {
+		tight := image.NewGray(image.Rect(0, 0, gray0.Rect.Dx(), gray0.Rect.Dy()))
+		for y := 0; y < gray0.Rect.Dy(); y++ {
+			off := gray0.PixOffset(gray0.Rect.Min.X, gray0.Rect.Min.Y+y)
+			copy(tight.Pix[y*tight.Stride:(y+1)*tight.Stride], gray0.Pix[off:off+gray0.Rect.Dx()])
+		}
+		gray0 = tight
 	}
 
 	// 0. 统一分析尺度(超宽照片重采样)+ 照片纸面裁剪(裁掉桌面/暗背景,恢复 A4 宽度假定)
 	gray := resampleGrayCap(gray0, 2400)
 	gray = cropPaperRegion(gray)
 
+	// 全黑/反色防御改到裁纸后判定(评审 paperan.go:135):黑桌面包围白纸的照片
+	// 整图均值会低到 80 以下被误拒;裁出的纸面均值正常照片远高于阈值,
+	// 全黑图裁不出亮区、均值仍过低照样拒绝
+	var graySum int64
+	for _, p := range gray.Pix {
+		graySum += int64(p)
+	}
+	if m := float64(graySum) / float64(len(gray.Pix)); m < 80 {
+		return nil, fmt.Errorf("图像平均灰度 %.0f,疑似全黑页或反色图,请上传正常纸面扫描件", m)
+	}
+
 	// 1. 二值化(矫正前),并做全黑/反色防御(墨迹占比过半说明不是正常纸面)
 	bin0 := AdaptiveBinarize(gray, 0, 0.18)
-	_, _, bin0 = trimFrame(bin0)
+	dx0, dy0, trimmed0 := trimFrame(bin0)
+	bin0 = trimmed0
 	despeckle(bin0)
+	// 灰度图按位图同款裁切同步(评审 paperan.go:145):此前位图独立裁边、灰度不裁,
+	// 栏缝/簇坐标(位图系)与灰度截图错位 dx0/dy0,题干小图与叠加标注整体偏移。
+	gray = cropGrayBox(gray, image.Rect(dx0, dy0, dx0+bin0.W, dy0+bin0.H))
 	W := bin0.W
 	pxMM := float64(W) / 210.0 // A4 假定:纸面图宽 ≈ 210mm(cropPaperRegion 已裁到纸边时成立)
 	if ink := totalInk(bin0); ink > W*bin0.H/2 {
@@ -162,12 +179,13 @@ func AnalyzePaper(gray0 *image.Gray) (*PaperResult, error) {
 		lb0 := cropCols(bin0, 0, band[0]-1)
 		rb0 := cropCols(bin0, band[1]+1, W-1)
 		skewL, skewR := estimateSkew(lb0), estimateSkew(rb0)
-		lg := binarizePlane(rotateGray(cropGrayRegion(gray, 0, band[0]-1), -skewL))
-		rg := binarizePlane(rotateGray(cropGrayRegion(gray, band[1]+1, W-1), -skewR))
+		lg, lgGray := binarizePlane(rotateGray(cropGrayRegion(gray, 0, band[0]-1), -skewL))
+		rg, rgGray := binarizePlane(rotateGray(cropGrayRegion(gray, band[1]+1, W-1), -skewR))
+		// 行网格对齐仍是当前判定(评审 paperan.go:167 指出标准双栏共享行距时会误判单栏;
+		// 尝试的「跨缝延续行」补充证据会反向误伤选项网格布局 —— 选项列之间的竖向留白带
+		// 同样满足"行不跨缝",需真实样张回归后再引入结构级判据,暂保持原判据)
 		if !rowsAligned(lg, rg) {
 			// 真分栏:左右栏各自的分析平面(矫正后),overlay 用分半矫正图拼回整页
-			lgGray := rotateGray(cropGrayRegion(gray, 0, band[0]-1), -skewL)
-			rgGray := rotateGray(cropGrayRegion(gray, band[1]+1, W-1), -skewR)
 			planes = []colPlane{
 				{xOff: 0, bin: lg, gray: lgGray},
 				{xOff: band[1] + 1, bin: rg, gray: rgGray},
@@ -192,9 +210,9 @@ func AnalyzePaper(gray0 *image.Gray) (*PaperResult, error) {
 		if math.Abs(skew) >= 0.2 {
 			gray = rotateGray(gray, -skew) // estimateSkew 与 rotateGray 同号约定,归正取负
 		}
-		bin := binarizePlane(gray)
-		planes = []colPlane{{xOff: 0, bin: bin, gray: gray}}
-		overlayGray = gray
+		bin, grayTrimmed := binarizePlane(gray)
+		planes = []colPlane{{xOff: 0, bin: bin, gray: grayTrimmed}}
+		overlayGray = grayTrimmed
 	}
 
 	st := &pageState{a: a, pxMM: pxMM}
@@ -231,11 +249,15 @@ type colPlane struct {
 }
 
 // binarizePlane 自适应二值化 + 裁边 + 去噪。
-func binarizePlane(g *image.Gray) *bitmap {
+// binarizePlane 平面二值化 + 裁边;灰度图按同一裁切偏移同步返回 ——
+// 此前只裁位图,平面的 gray/bin 坐标系错位(colPlane 契约"同尺寸同坐标系"被违反),
+// 题干小图截到错位区域(评审 paperan.go:145)。
+func binarizePlane(g *image.Gray) (*bitmap, *image.Gray) {
 	bin := AdaptiveBinarize(g, 0, 0.18)
-	_, _, bin = trimFrame(bin)
+	dx, dy, trimmed := trimFrame(bin)
+	bin = trimmed
 	despeckle(bin)
-	return bin
+	return bin, cropGrayBox(g, image.Rect(dx, dy, dx+bin.W, dy+bin.H))
 }
 
 // widestGutterBand 页宽中段 25%~75% 内最宽的全高无墨竖带(≥3mm,候选栏缝)。
@@ -313,6 +335,21 @@ func cropGrayRegion(g *image.Gray, x0, x1 int) *image.Gray {
 	return out
 }
 
+// cropGrayBox 按矩形裁灰度图,产物原点归零(与 image.SubImage 不同):可直接用
+// Pix[y*Stride+x] 索引。入参 g 须为原点在 (0,0) 的图(本包内部产物均满足)。
+func cropGrayBox(g *image.Gray, r image.Rectangle) *image.Gray {
+	r = r.Intersect(g.Rect)
+	if r.Dx() <= 0 || r.Dy() <= 0 {
+		return g
+	}
+	out := image.NewGray(image.Rect(0, 0, r.Dx(), r.Dy()))
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		copy(out.Pix[(y-r.Min.Y)*out.Stride:(y-r.Min.Y)*out.Stride+out.Rect.Dx()],
+			g.Pix[y*g.Stride+r.Min.X:y*g.Stride+r.Min.X+out.Rect.Dx()])
+	}
+	return out
+}
+
 // pastePlanes 把各分栏的矫正灰度按 xOff 拼回整页画布(叠加图底图)。
 func pastePlanes(base *image.Gray, planes []colPlane) *image.Gray {
 	out := image.NewGray(image.Rect(0, 0, base.Rect.Dx(), base.Rect.Dy()))
@@ -373,7 +410,7 @@ func analyzeColumn(st *pageState, p colPlane) {
 			if lowConfidence(lc.scores) {
 				q.Note = joinNote(q.Note, "选项字母置信度偏低,请核对选项数")
 			}
-			q.StemImg = cropStemImg(p.gray, p.bin, st, stemRunRect(lines, lastBlock+1, i-1, lines[i], lc))
+			q.StemImg = cropStemImg(p.gray, p.bin, st, stemRunRect(lines, lastBlock+1, i-1, lines[i], lc), xOff)
 			a.Questions = append(a.Questions, q)
 			lastOpt = len(a.Questions) - 1
 			st.rects = append(st.rects, optLineRect(lines[i], lc))
@@ -383,7 +420,9 @@ func analyzeColumn(st *pageState, p colPlane) {
 				continue
 			}
 			q := &a.Questions[lastOpt]
-			if int(lc.letters[0]-'A') > q.Options || q.Options+len(lc.letters) > 6 {
+			// 续排必须从「下一预期字母」开始(索引=当前选项数):重复字母
+			//(已识别 A/B 又来一行 B/C)会让三项变四项(评审 paperan.go:386)
+			if int(lc.letters[0]-'A') != q.Options || q.Options+len(lc.letters) > 6 {
 				continue // 字母接不上:按普通文本行处理
 			}
 			q.Options += len(lc.letters)
@@ -398,7 +437,7 @@ func analyzeColumn(st *pageState, p colPlane) {
 		case lineJudgeDC:
 			q := PaperQuestion{Kind: "judge", Options: 2, Score: 1, Number: lc.number,
 				Note: "按「对/错」字形识别为判断题,请核对题型"}
-			q.StemImg = cropStemImg(p.gray, p.bin, st, stemRunRect(lines, lastBlock+1, i-1, lines[i], lc))
+			q.StemImg = cropStemImg(p.gray, p.bin, st, stemRunRect(lines, lastBlock+1, i-1, lines[i], lc), xOff)
 			a.Questions = append(a.Questions, q)
 			lastOpt = len(a.Questions) - 1
 			st.rects = append(st.rects, optLineRect(lines[i], lc))
@@ -409,7 +448,7 @@ func analyzeColumn(st *pageState, p colPlane) {
 	subs, subRects, subStems, subNotes := detectSubjectiveBlanks(lines, pxMM, colBin.H, xOff, colW)
 	for i := range subs {
 		if subStems[i] != nil {
-			subs[i].StemImg = cropStemImg(p.gray, p.bin, st, subStems[i])
+			subs[i].StemImg = cropStemImg(p.gray, p.bin, st, subStems[i], xOff)
 		}
 		a.Subjectives = append(a.Subjectives, subs[i])
 	}
@@ -501,25 +540,31 @@ func lineExtent(ln colLine) *image.Rectangle {
 }
 
 // cropStemImg 从矫正后灰度图裁题干小图;区域内几乎无墨迹(空白区间)时不产出。
-func cropStemImg(gray *image.Gray, bin *bitmap, st *pageState, r *image.Rectangle) *image.Gray {
+func cropStemImg(gray *image.Gray, bin *bitmap, st *pageState, r *image.Rectangle, xOff int) *image.Gray {
 	if r == nil {
 		return nil
 	}
-	binR := r.Intersect(image.Rect(0, 0, bin.W, bin.H))
+	// r 是全页绝对坐标(lineExtent/stemRunRect 已加 xOff);墨迹统计与裁剪必须用
+	// 平面局部位图 —— 先转局部坐标,否则右栏的全页 x 会与栏内位图宽度求交截空甚至越界
+	//(评审 paperan.go:508)。叠加标注(st.rects)保持全页系,加回 xOff。
+	local := image.Rect(r.Min.X-xOff, r.Min.Y, r.Max.X-xOff+1, r.Max.Y+1)
+	binR := local.Intersect(image.Rect(0, 0, bin.W, bin.H))
 	if binR.Dx() < 8 || binR.Dy() < 4 {
 		return nil
 	}
 	ink := 0
-	for y := binR.Min.Y; y <= binR.Max.Y; y++ {
+	// 半开区间扫描:Intersect 的 Max 是开边界,闭式循环在 Max.X==bin.W 时越界
+	//(评审 paperan.go:508 预言的索引越界)
+	for y := binR.Min.Y; y < binR.Max.Y; y++ {
 		row := bin.D[y*bin.W : (y+1)*bin.W]
-		for x := binR.Min.X; x <= binR.Max.X; x++ {
+		for x := binR.Min.X; x < binR.Max.X; x++ {
 			ink += int(row[x])
 		}
 	}
 	if ink < binR.Dx()*binR.Dy()/500 { // <0.2% 墨迹 = 空白区间,不是题干
 		return nil
 	}
-	g := r.Intersect(gray.Rect)
+	g := local.Intersect(image.Rect(0, 0, gray.Rect.Dx(), gray.Rect.Dy()))
 	if g.Dx() < 8 || g.Dy() < 4 {
 		return nil
 	}
@@ -543,7 +588,7 @@ func cropStemImg(gray *image.Gray, bin *bitmap, st *pageState, r *image.Rectangl
 		copy(out.Pix[(y-y0)*out.Stride:(y-y0)*out.Stride+out.Rect.Dx()],
 			gray.Pix[y*gray.Stride+x0:y*gray.Stride+x0+out.Rect.Dx()])
 	}
-	st.rects = append(st.rects, paperRect{g.Min.X, g.Min.Y, g.Max.X, g.Max.Y, 3})
+	st.rects = append(st.rects, paperRect{g.Min.X + xOff, g.Min.Y, g.Max.X + xOff, g.Max.Y, 3})
 	return out
 }
 
@@ -552,8 +597,10 @@ func cropStemImg(gray *image.Gray, bin *bitmap, st *pageState, r *image.Rectangl
 func auditNumbers(a *PaperAnalysis) {
 	out := make([]PaperQuestion, 0, len(a.Questions)+8)
 	last := 0
+	pending := 0 // 自上一道有编号题以来累积的未编号题(题号未读出,可能正是缺口本身)
 	for _, q := range a.Questions {
 		if q.Number == 0 {
+			pending++
 			out = append(out, q)
 			continue
 		}
@@ -563,18 +610,26 @@ func auditNumbers(a *PaperAnalysis) {
 				q.Note = joinNote(q.Note, "题号与上一题重复,疑似误检,请核对")
 			case q.Number > last+1:
 				gap := q.Number - last - 1
-				if gap > auditMaxGap {
+				missing := gap - pending // 未编号题可解释的缺口数(评审 paperan.go:556)
+				if missing < 0 {
+					// 未编号题比缺口还多:题号读出数与序列对不上,不补题,提示人工核对 ——
+					// 此前无条件按缺口补占位,与已有未编号题重复(1,0,3 变 4 题)
+					q.Note = joinNote(q.Note, fmt.Sprintf("题号 %d→%d 之间存在 %d 道未编号题,缺口只有 %d,请核对题号识别", last, q.Number, pending, gap))
+				} else if missing == 0 {
+					// 未编号题恰好补齐缺口:不再额外补占位
+				} else if missing > auditMaxGap {
 					q.Note = joinNote(q.Note, fmt.Sprintf("题号从 %d 跳到 %d,疑似漏检过多或误读,请逐题核对", last, q.Number))
 					a.Notes = append(a.Notes, fmt.Sprintf("题号 %d→%d 跳变过大,未自动补题,请人工核对", last, q.Number))
 				} else {
-					for k := last + 1; k < q.Number; k++ {
+					for k := last + 1 + pending; k < q.Number; k++ {
 						out = append(out, PaperQuestion{Kind: "choice", Options: 4, Score: 1, Number: k,
 							Note: fmt.Sprintf("原卷第 %d 题疑似漏检(题号跳变),已补占位——请核对或删除", k)})
 					}
-					a.Notes = append(a.Notes, fmt.Sprintf("题号 %d→%d 跳变,已补 %d 道占位题,请在确认页逐题核对", last, q.Number, gap))
+					a.Notes = append(a.Notes, fmt.Sprintf("题号 %d→%d 跳变,已补 %d 道占位题,请在确认页逐题核对", last, q.Number, missing))
 				}
 			}
 		}
+		pending = 0
 		last = q.Number
 		out = append(out, q)
 	}
@@ -1007,6 +1062,13 @@ func classifyClusters(b *bitmap, clusters []paperCluster, lineH float64, tight b
 	}
 	if letters, scores := leadingLetters(b, rem); len(letters) >= 2 && lettersConsecutive(letters) &&
 		letters[0] >= 'B' && letters[0] <= 'F' {
+		return lineClass{kind: lineCont, letters: letters, scores: scores, number: num, numUsed: used}, rem, false
+	}
+	// 单个 B–F 字母也可进入续排候选(评审 paperan.go:1008):选项独占一行的末选项
+	// 此前被判成普通文本,题目少掉最后一个选项。单字母缺少序列自证,须字形高置信
+	// 才放行;接收与否由 analyzeColumn 的「恰好下一预期字母」闸门把关。
+	if letters, scores := leadingLetters(b, rem); len(letters) == 1 &&
+		letters[0] >= 'B' && letters[0] <= 'F' && scores[0] >= glyphAccept {
 		return lineClass{kind: lineCont, letters: letters, scores: scores, number: num, numUsed: used}, rem, false
 	}
 	if len(rem) == 2 && duiCuoPair(b, rem[0], rem[1]) {
