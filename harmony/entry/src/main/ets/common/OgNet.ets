@@ -365,10 +365,28 @@ export class OgNet {
       return '';
     }
     const f = await fs.open(uris[0], fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+    let done = false;
     try {
-      await fs.write(f.fd, buf);
+      // 评审 OgNet.ets:369 — 校验实际写入字节数,不足则续写;未完整写入则报失败并清理残缺文件
+      let off = 0;
+      while (off < buf.byteLength) {
+        const written: number = await fs.write(f.fd, buf.slice(off));
+        if (written <= 0) {
+          break;
+        }
+        off += written;
+      }
+      done = off >= buf.byteLength;
     } finally {
       await fs.close(f.fd);
+    }
+    if (!done) {
+      try {
+        fs.unlinkSync(uris[0]);
+      } catch (e) {
+        // 清理残缺文件失败不阻塞报错
+      }
+      throw new OgError(0, '导出失败:磁盘写入不完整,请检查存储空间后重试');
     }
     return uris[0];
   }

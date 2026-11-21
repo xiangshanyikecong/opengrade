@@ -18,12 +18,25 @@ export class OgCache {
       } catch (e) {
         // 已存在
       }
-      const f = fs.openSync(dir + '/' + key + '.json',
+      // 评审 OgCache.ets:21 — 先写同目录临时文件,完整写入成功后再原子替换旧缓存
+      const target = dir + '/' + key + '.json';
+      const tmp = target + '.tmp';
+      const f = fs.openSync(tmp,
         fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
       try {
         fs.writeSync(f.fd, text);
       } finally {
         fs.closeSync(f.fd);
+      }
+      try {
+        fs.renameSync(tmp, target);
+      } catch (e) {
+        try {
+          fs.unlinkSync(tmp);
+        } catch (e2) {
+          // 忽略
+        }
+        // 替换失败时保留旧缓存文件
       }
     } catch (e) {
       // 缓存失败不影响主流程

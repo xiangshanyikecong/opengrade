@@ -53,6 +53,10 @@ export struct ScorePad {
         this.onScore(0); // 与 web 一致:0 直接打零分
         return;
       }
+      if (d * 10 > this.cap) {
+        this.onScore(d); // 十位已超满分:该键只能是个位分(满分 20 打 5 分不再静默复位,评审 ScorePad.ets:51)
+        return;
+      }
       this.tens = d;
       return;
     }
@@ -95,14 +99,19 @@ export struct ScorePad {
   build() {
     Column({ space: 8 }) {
       if (this.tens !== 0) {
-        Text('已选十位 ' + this.tens + '_,点个位补全(满分 ' + OgFormat.score(this.cap) + ')')
-          .fontSize(12)
-          .fontColor(OgC.WARN)
-          .width('100%')
-          .textAlign(TextAlign.Center)
-          .onClick(() => {
-            this.tens = 0;
-          })
+        Row({ space: 12 }) {
+          Text('已选十位 ' + this.tens + '_,点个位补全(满分 ' + OgFormat.score(this.cap) + ');点此只打 ' + this.tens + ' 分,再点取消')
+            .fontSize(12)
+            .fontColor(OgC.WARN)
+            .textAlign(TextAlign.Center)
+            .onClick(() => {
+              const v = this.tens;
+              this.tens = 0;
+              this.onScore(v); // 单独的十位分也可提交(cap=20 时"1 分"有出口,评审 ScorePad.ets:51)
+            })
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.Center)
       }
       if (this.cap <= 10) {
         Row({ space: 6 }) {

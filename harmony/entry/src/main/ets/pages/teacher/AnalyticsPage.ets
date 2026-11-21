@@ -44,7 +44,37 @@ struct AnalyticsPage {
     this.loading = false;
   }
 
-  private async convert(fine: boolean): Promise<void> {
+  private convert(fine: boolean): void {
+    // 评审 AnalyticsPage.ets:47 — 赋分是覆盖写:进行中直接返回,执行前先弹确认
+    if (this.converting) {
+      return;
+    }
+    const label = fine ? '21 级细分档' : '五等赋分';
+    AlertDialog.show({
+      message: '赋分会覆盖本考试已有赋分结果,确认按「' + label + '」执行?',
+      title: '等级赋分',
+      autoCancel: true,
+      alignment: DialogAlignment.Center,
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '确认赋分',
+        fontColor: OgC.BRAND,
+        action: () => {
+          this.doConvert(fine);
+        }
+      }
+    });
+  }
+
+  private async doConvert(fine: boolean): Promise<void> {
+    // 评审 AnalyticsPage.ets:47 — 并发保护:两个按钮连续点击不会并发发出两个 POST
+    if (this.converting) {
+      return;
+    }
     this.converting = true;
     try {
       await OgNet.jpost<Record<string, string>>('/api/v1/exams/' + this.examId + '/grade-convert', {

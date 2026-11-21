@@ -207,6 +207,7 @@ export interface Stroke {
 
 export interface PartState {
   part: number;
+  max?: number; // 小问满分(服务端随复核状态下发,逐问校验用)
   score: number;
   graded: boolean;
   ver?: number;
@@ -297,6 +298,7 @@ export interface StudentSliceRef {
 }
 
 export interface StudentAppealItem {
+  n?: number; // 考试内申请序号(1-based,裁决提交用)
   time: string;
   reason: string;
   status: string;

@@ -36,6 +36,10 @@ struct PdfViewerPage {
   private sandboxPath: string = '';
   private lastRendered: number = -1;
 
+  private initUrl: string = '';
+  private initPath: string = '';
+  private downloadedPath: string = ''; // url 模式下载到沙箱的成绩单副本(登出/页面关闭清理)
+
   aboutToAppear(): void {
     const p = router.getParams() as PdfParams | null;
     if (p !== null && p !== undefined) {
@@ -45,7 +49,9 @@ struct PdfViewerPage {
       if (p.fileName !== undefined && p.fileName !== '') {
         this.fileName = p.fileName;
       }
-      this.open(p.url ?? '', p.path ?? '');
+      this.initUrl = p.url ?? '';
+      this.initPath = p.path ?? '';
+      this.open(this.initUrl, this.initPath);
     } else {
       this.failed = '缺少参数';
       this.loading = false;
@@ -54,6 +60,16 @@ struct PdfViewerPage {
 
   aboutToDisappear(): void {
     this.releaseDoc();
+    // url 模式的成绩单副本不滞留沙箱缓存(path 模式是调用方的文件,不动;
+    // 评审 PdfViewerPage.ets:76/CWE-459)
+    if (this.downloadedPath !== '') {
+      try {
+        fs.unlinkSync(this.downloadedPath);
+      } catch (e) {
+        // 忽略
+      }
+      this.downloadedPath = '';
+    }
   }
 
   private releaseDoc(): void {
@@ -74,6 +90,7 @@ struct PdfViewerPage {
         this.sandboxPath = path;
       } else {
         this.sandboxPath = OgSession.context().cacheDir + '/pdfview_' + Date.now() + '.pdf';
+        this.downloadedPath = this.sandboxPath;
         const buf = await OgNet.getBytes(url, 600000);
         const f = fs.openSync(this.sandboxPath,
           fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
@@ -226,9 +243,10 @@ struct PdfViewerPage {
         Column({ space: 10 }) {
           Text('⚠ ' + this.failed).fontSize(13).fontColor(OgC.BAD).textAlign(TextAlign.Center)
           PrimaryButton({ label: '重试', onTap: () => {
-            const url = (router.getParams() as PdfParams | null)?.url ?? '';
+            // 重试必须带上原始 url+path:path 模式下 url 为空,只传 url 会去下载空地址
+            //(评审 PdfViewerPage.ets:228)
             this.releaseDoc();
-            this.open(url, '');
+            this.open(this.initUrl, this.initPath);
           } })
         }
         .width('100%')

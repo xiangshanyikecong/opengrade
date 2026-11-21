@@ -132,6 +132,10 @@ struct RoomsPage {
   }
 
   private async setProctor(room: string, teacher: string): Promise<void> {
+    // 评审 RoomsPage.ets:139 — 编排修改入口共享 busy 守卫,防并发指派被旧响应覆盖
+    if (this.busy) {
+      return;
+    }
     if (!this.canEditRooms()) {
       promptAction.showToast({ message: '仅管理员/年级组长/建卷教师可指派监考' });
       return;
@@ -386,6 +390,8 @@ struct RoomsPage {
         }
         .padding({ left: OgDim.PAD, right: OgDim.PAD, top: 8 })
         .width('100%')
+        // 评审 RoomsPage.ets:400 — 概要/冲突/重生成区域与考场列表一起收口 800(OgDim.MAXW)
+        .constraintSize({ maxWidth: OgDim.MAXW })
         List({ space: 10 }) {
           ForEach((this.plan.rooms ?? []), (room: RoomRow) => {
             ListItem() {
@@ -398,6 +404,7 @@ struct RoomsPage {
         }
         .layoutWeight(1)
         .width('100%')
+        .constraintSize({ maxWidth: OgDim.MAXW })
         .scrollBar(BarState.Off)
       }
     }

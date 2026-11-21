@@ -11,7 +11,7 @@ import { ErrorView, LoadingView, PrimaryButton, SectionHeader, TitleBar } from '
 
 interface ScoresParams {
   exam: string;
-  entryReg: string;
+  entryReg?: string;
 }
 
 interface ScoreRow {
@@ -33,10 +33,16 @@ struct ManualScoresPage {
   @State failMsg: string = '';
   @State busy: boolean = false;
 
+  private scroller: Scroller = new Scroller();
+  private entryReg: string = '';
+
   aboutToAppear(): void {
     const p = router.getParams() as ScoresParams | null;
     if (p !== null && p !== undefined && p.exam !== undefined) {
       this.examId = p.exam;
+    }
+    if (p !== null && p !== undefined && p.entryReg !== undefined) {
+      this.entryReg = p.entryReg; // 从缺扫名单进入:定位到该生(评审 ManualScoresPage.ets:37)
     }
     this.load();
   }
@@ -63,6 +69,7 @@ struct ManualScoresPage {
       }
       this.rows = rows;
       this.failed = false;
+      this.scrollToEntry();
     } catch (e) {
       this.failed = true;
       this.failMsg = e instanceof OgError ? e.message : '加载失败';
@@ -99,7 +106,23 @@ struct ManualScoresPage {
     this.busy = false;
   }
 
+  private scrollToEntry(): void {
+    // 名册加载完成后滚动到缺扫名单选中的学生(评审 ManualScoresPage.ets:37)
+    if (this.entryReg === '') {
+      return;
+    }
+    for (let i = 0; i < this.rows.length; i++) {
+      if (this.rows[i].reg === this.entryReg) {
+        this.scroller.scrollToIndex(i);
+        return;
+      }
+    }
+  }
+
   private toggleAbsent(row: ScoreRow): void {
+    if (this.busy) {
+      return; // 保存在途禁改:请求体已固定,再改会被 load() 旧值覆盖(评审 ManualScoresPage.ets:166)
+    }
     row.absent = !row.absent;
     if (row.absent) {
       row.buf = '';
@@ -118,7 +141,9 @@ struct ManualScoresPage {
   }
 
   build() {
+    // 外层铺底色;内容列收口 800、宽屏居中(评审 ManualScoresPage.ets:185)
     Column() {
+      Column() {
       TitleBar({
         title: this.d !== null && this.d.manualMode === true ? '成绩直录' : '漏扫补录 / 缺考',
         subtitle: this.examId,
@@ -145,7 +170,7 @@ struct ManualScoresPage {
         }
         .width('100%')
         .padding({ left: OgDim.PAD, right: OgDim.PAD, top: 8 })
-        List({ space: 4 }) {
+        List({ space: 4, scroller: this.scroller }) {
           ForEach(this.rows, (r: ScoreRow) => {
             ListItem() {
               Row({ space: 8 }) {
@@ -163,7 +188,7 @@ struct ManualScoresPage {
                   TextInput({ text: r.buf, placeholder: '分数' })
                     .type(InputType.NUMBER_DECIMAL)
                     .fontSize(14).height(36).width(96)
-                    .enabled(!r.absent)
+                    .enabled(!r.absent && !this.busy) // 保存/回读期间禁用编辑(评审 ManualScoresPage.ets:166)
                     .onChange((v: string) => {
                       r.buf = v;
                     })
@@ -174,6 +199,7 @@ struct ManualScoresPage {
                   .padding({ left: 10, right: 10, top: 6, bottom: 6 })
                   .borderRadius(10)
                   .backgroundColor(r.absent ? OgC.BAD_BG : OgC.BG)
+                  .opacity(this.busy ? 0.5 : 1)
                   .onClick(() => this.toggleAbsent(r))
               }
               .width('100%')
@@ -195,9 +221,13 @@ struct ManualScoresPage {
         }
         .padding({ left: OgDim.PAD, right: OgDim.PAD, bottom: 12 })
       }
+      }
+      .width('100%')
+      .constraintSize({ maxWidth: OgDim.MAXW })
     }
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
+    .alignItems(HorizontalAlign.Center)
   }
 }

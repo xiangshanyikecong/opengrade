@@ -38,7 +38,11 @@ export default class EntryAbility extends UIAbility {
     // 淡入完成后拉锁屏,避免与窗口恢复竞态;锁定意图单次消费,与 Index 门禁互斥
     setTimeout(() => {
       if (AppLock.takeLockIntent()) {
-        router.pushUrl({ url: 'pages/common/LockPage' }).catch(() => {});
+        router.pushUrl({ url: 'pages/common/LockPage' }).catch(() => {
+          // 入栈失败(窗口未就绪/栈满)不吞意图:下次前台仍会锁,否则应用锁被静默放行
+          //(评审 EntryAbility.ets:39)
+          AppLock.restoreLockIntent();
+        });
       }
     }, 250);
   }

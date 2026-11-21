@@ -39,6 +39,8 @@ export struct OgImage {
       return;
     }
     const target = this.url;
+    // 评审 OgImage.ets:41 — 开始解码前清空旧图,避免加载中/失败时继续显示上一张
+    this.pm = null;
     this.loading = true;
     this.failed = false;
     OgImageCodec.decodeUrl(target, OgSession.imageCap(this.maxDim))

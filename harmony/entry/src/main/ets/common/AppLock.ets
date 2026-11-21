@@ -19,10 +19,16 @@ export class AppLock {
     if (AppLock.prefs !== null) {
       return;
     }
-    AppLock.prefs = await preferences.getPreferences(context, 'og_lock');
-    AppLock.enabledValue = (await AppLock.prefs.get('on', false)) as boolean;
-    AppLock.pinHash = (await AppLock.prefs.get('pin', '')) as string;
-    AppLock.bioValue = (await AppLock.prefs.get('bio', false)) as boolean;
+    // 先读进局部变量、全部成功后才落类字段:读取中途失败时 prefs 仍为 null,
+    // 下次调用可重试;并发调用者也不会拿到半初始化状态(评审 AppLock.ets:18)
+    const prefs = await preferences.getPreferences(context, 'og_lock');
+    const on = (await prefs.get('on', false)) as boolean;
+    const pin = (await prefs.get('pin', '')) as string;
+    const bio = (await prefs.get('bio', false)) as boolean;
+    AppLock.prefs = prefs;
+    AppLock.enabledValue = on;
+    AppLock.pinHash = pin;
+    AppLock.bioValue = bio;
   }
 
   static enabled(): boolean {
@@ -65,11 +71,58 @@ export class AppLock {
     await AppLock.persist();
   }
 
+  private static failCount: number = 0;
+  private static lockUntilMs: number = 0;
+  private static failsLoaded: boolean = false;
+
   static async verify(pin: string): Promise<boolean> {
     if (AppLock.pinHash === '') {
       return false;
     }
-    return (await AppLock.sha256(pin)) === AppLock.pinHash;
+    // 失败计数持久化:重启不清零,4~6 位 PIN 不能被无限穷举(评审 LockPage.ets:49/CWE-307)
+    if (!AppLock.failsLoaded && AppLock.prefs !== null) {
+      try {
+        AppLock.failCount = (await AppLock.prefs.get('fails', 0)) as number;
+        AppLock.lockUntilMs = (await AppLock.prefs.get('lockUntil', 0)) as number;
+      } catch (e) {
+        // 读取失败按 0 处理
+      }
+      AppLock.failsLoaded = true;
+    }
+    const ok = (await AppLock.sha256(pin)) === AppLock.pinHash;
+    if (ok) {
+      AppLock.resetFails();
+    }
+    return ok;
+  }
+
+  // 连错后的临时锁定剩余毫秒(0 = 未锁定)。
+  static lockedRemainMs(): number {
+    return Math.max(0, AppLock.lockUntilMs - Date.now());
+  }
+
+  // 一次 PIN 校验失败:计数 +1,连错 5 次起指数等待(30s 起,封顶 15 分钟)。
+  static recordFail(): void {
+    AppLock.failCount++;
+    if (AppLock.failCount >= 5) {
+      const step = AppLock.failCount - 5;
+      AppLock.lockUntilMs = Date.now() + Math.min(15 * 60 * 1000, 30 * 1000 * Math.pow(2, step));
+    }
+    if (AppLock.prefs !== null) {
+      AppLock.prefs.put('fails', AppLock.failCount).catch(() => {});
+      AppLock.prefs.put('lockUntil', AppLock.lockUntilMs).catch(() => {});
+      AppLock.prefs.flush().catch(() => {});
+    }
+  }
+
+  private static resetFails(): void {
+    AppLock.failCount = 0;
+    AppLock.lockUntilMs = 0;
+    if (AppLock.prefs !== null) {
+      AppLock.prefs.put('fails', 0).catch(() => {});
+      AppLock.prefs.put('lockUntil', 0).catch(() => {});
+      AppLock.prefs.flush().catch(() => {});
+    }
   }
 
   // 拉起系统生物识别弹窗(指纹/人脸);结果经回调返回。
@@ -111,6 +164,11 @@ export class AppLock {
     const v = AppLock.pendingLock;
     AppLock.pendingLock = false;
     return v;
+  }
+
+  // 恢复锁定意图:锁屏页入栈失败时不吞意图,下次前台仍会锁(评审 EntryAbility.ets:39)。
+  static restoreLockIntent(): void {
+    AppLock.pendingLock = true;
   }
 
   private static async persist(): Promise<void> {

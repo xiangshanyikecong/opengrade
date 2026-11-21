@@ -30,7 +30,8 @@ export struct StudentTrendsView {
 
   private childQ(): string {
     if (OgSession.me() !== null && OgSession.me()!.role === 'parent' && this.childOf !== '') {
-      return '?child=' + this.childOf;
+      // 评审 StudentHomePage.ets:42 — child 查询参数 URL 编码,含 + 等字符时不再失配
+      return '?child=' + encodeURIComponent(this.childOf);
     }
     return '';
   }
@@ -90,7 +91,8 @@ export struct StudentTrendsView {
         series: [
           {
             name: '得分率', color: color,
-            values: this.ptsOf(subject).map((p: TrendPoint) => p.rate)
+            // 评审 StudentTrendsPage.ets:93 — 缺考场次映射为 NaN,得分率曲线在此断开(班级均分线不变)
+            values: this.ptsOf(subject).map((p: TrendPoint) => p.absent ? NaN : p.rate)
           },
           {
             name: '班级均分', color: OgC.INK_SUB,

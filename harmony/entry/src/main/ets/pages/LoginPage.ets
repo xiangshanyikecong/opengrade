@@ -49,6 +49,10 @@ struct LoginPage {
   }
 
   private async doLogin(): Promise<void> {
+    // 评审 LoginPage.ets:51 — busy 守卫防止密码框 onSubmit 连按重复触发登录
+    if (this.busy) {
+      return;
+    }
     const url = this.server.trim();
     const user = this.username.trim();
     if (url === '') {
@@ -85,6 +89,8 @@ struct LoginPage {
       }
     } catch (e) {
       this.msg = e instanceof OgError ? e.message : '登录失败';
+      // 评审 LoginPage.ets:86 — /auth/me 失败时回滚已持久化的令牌,避免留下半登录态
+      OgSession.clearToken();
     }
     this.busy = false;
   }

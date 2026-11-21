@@ -100,10 +100,14 @@ struct UserListPage {
         body['class'] = this.newClass.trim();
       }
       if (this.newGrades.trim() !== '') {
-        body['grades'] = this.newGrades.trim().split(/[|、,]/);
+        // 评审 UserListPage.ets:103 — 拆分后逐项 trim 并过滤空项,避免带空格/空串导致精确匹配失配
+        body['grades'] = this.newGrades.trim().split(/[|、,]/)
+          .map((v: string) => v.trim()).filter((v: string) => v !== '');
       }
       if (this.newChildren.trim() !== '') {
-        body['children'] = this.newChildren.trim().split(/[|、,]/);
+        // 评审 UserListPage.ets:106 — 拆分后逐项 trim 并过滤空项,避免带空格/空串导致绑定失配
+        body['children'] = this.newChildren.trim().split(/[|、,]/)
+          .map((v: string) => v.trim()).filter((v: string) => v !== '');
       }
       await OgNet.jpost<Record<string, string>>('/api/v1/users', body);
       promptAction.showToast({ message: '已创建 ' + username + '(首登将强制改密)' });
@@ -129,7 +133,8 @@ struct UserListPage {
     }
     this.busy = true;
     try {
-      await OgNet.jpost<Record<string, string>>('/api/v1/users/' + this.resetUser + '/password', {
+      // 评审 UserListPage.ets:132 — 路径段编码,用户名含 #/?/ / 时不再截断或改变路由
+      await OgNet.jpost<Record<string, string>>('/api/v1/users/' + encodeURIComponent(this.resetUser) + '/password', {
         'newPassword': this.resetPwd
       } as Record<string, string>);
       promptAction.showToast({ message: this.resetUser + ' 密码已重置(其会话已全部吊销)' });
@@ -167,7 +172,8 @@ struct UserListPage {
   private async deleteUser(u: PublicUser): Promise<void> {
     this.busy = true;
     try {
-      await OgNet.jdel<Record<string, string>>('/api/v1/users/' + u.username);
+      // 评审 UserListPage.ets:170 — 路径段编码,用户名含 #/?/ / 时不再截断或改变路由
+      await OgNet.jdel<Record<string, string>>('/api/v1/users/' + encodeURIComponent(u.username));
       promptAction.showToast({ message: '已删除 ' + u.username });
       await this.load();
     } catch (e) {

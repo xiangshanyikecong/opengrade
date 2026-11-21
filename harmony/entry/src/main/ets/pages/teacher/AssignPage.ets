@@ -107,23 +107,36 @@ struct AssignPage {
       return;
     }
     this.busy = true;
+    // 评审 AssignPage.ets:121 — 发第一个请求前取同一份快照,保存期间输入的日期不混入本次提交
+    const teacher = row.teacher;
+    const due = row.due.trim();
     try {
       if (this.d !== null && this.d.taskMode === 'class') {
         await OgNet.jpost<Record<string, Object>>('/api/v1/exams/' + this.examId + '/tasks', {
-          'class': row.key, 'teacher': row.teacher
+          'class': row.key, 'teacher': teacher
         } as Record<string, Object>);
       } else {
         await OgNet.jpost<Record<string, Object>>('/api/v1/exams/' + this.examId + '/tasks', {
           'question': parseInt(row.key.substring(1), 10),
-          'teacher': row.teacher
+          'teacher': teacher
         } as Record<string, Object>);
       }
-      if (row.due.trim() !== '') {
-        await OgNet.jpost<Record<string, string>>('/api/v1/exams/' + this.examId + '/task-due', {
-          'key': row.key, 'due': row.due.trim()
-        } as Record<string, string>);
+      // 评审 AssignPage.ets:127 — 分配与截止日期分开判定:任务已生效但截止日期失败时分开提示
+      let dueSaved = true;
+      if (due !== '') {
+        try {
+          await OgNet.jpost<Record<string, string>>('/api/v1/exams/' + this.examId + '/task-due', {
+            'key': row.key, 'due': due
+          } as Record<string, string>);
+        } catch (e) {
+          dueSaved = false;
+        }
       }
-      promptAction.showToast({ message: row.label + ' 已保存' });
+      if (dueSaved) {
+        promptAction.showToast({ message: row.label + ' 已保存' });
+      } else {
+        promptAction.showToast({ message: row.label + ' 分配已生效,但截止日期保存失败,可再次保存以重试截止日期', duration: 3000 });
+      }
     } catch (e) {
       promptAction.showToast({ message: e instanceof OgError ? e.message : '保存失败', duration: 3000 });
     }
@@ -201,7 +214,11 @@ struct AssignPage {
           .padding({ left: 10, right: 10, top: 5, bottom: 5 })
           .borderRadius(13)
           .margin({ right: 6, bottom: 6 })
+          // 评审 AssignPage.ets:234 — 非管理员为只读视图,芯片不再改变所显示的分配
           .onClick(() => {
+            if (!this.canAssign()) {
+              return;
+            }
             row.teacher = name;
             this.rows = this.rows.slice(0);
           })
@@ -213,7 +230,11 @@ struct AssignPage {
         .padding({ left: 10, right: 10, top: 5, bottom: 5 })
         .borderRadius(13)
         .margin({ right: 6, bottom: 6 })
+        // 评审 AssignPage.ets:235 — 同上:非管理员「不分配」芯片只读
         .onClick(() => {
+          if (!this.canAssign()) {
+            return;
+          }
           row.teacher = '';
           this.rows = this.rows.slice(0);
         })
@@ -236,6 +257,8 @@ struct AssignPage {
         Row({ space: 8 }) {
           TextInput({ text: row.due, placeholder: '截止 YYYY-MM-DD(可选)' })
             .fontSize(12).height(36).layoutWeight(1)
+            // 评审 AssignPage.ets:123 — 保存期间禁用该行编辑,保证快照一致性
+            .enabled(!this.busy)
             .onChange((v: string) => {
               row.due = v;
             })
@@ -286,6 +309,8 @@ struct AssignPage {
             .padding({ left: OgDim.PAD, right: OgDim.PAD, top: 8 })
         }
         .width('100%')
+        // 评审 AssignPage.ets:297 — 任务说明与详情列表同考试选择列表一样收口 800(OgDim.MAXW)
+        .constraintSize({ maxWidth: OgDim.MAXW })
         List({ space: 8 }) {
           ForEach(this.rows, (row: AssignRow) => {
             ListItem() {
@@ -295,6 +320,7 @@ struct AssignPage {
         }
         .layoutWeight(1)
         .width('100%')
+        .constraintSize({ maxWidth: OgDim.MAXW })
         .scrollBar(BarState.Off)
       }
     }

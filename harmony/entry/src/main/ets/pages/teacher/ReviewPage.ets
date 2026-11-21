@@ -37,6 +37,7 @@ struct ReviewPage {
   @State sheetKind: string = ''; // '' | reply
   @State sheetOpen: boolean = false;
   @State appealReply: string = '';
+  @State appealNo: number = 0; // 被点击申请的考试内序号(裁决提交用,评审 ReviewPage.ets:570)
   @State pageUrls: string[] = [];
 
   aboutToAppear(): void {
@@ -108,8 +109,11 @@ struct ReviewPage {
           if (v < 0) {
             continue; // 该问未输入,跳过
           }
-          if (v > parts[i].score) {
-            promptAction.showToast({ message: '第 ' + (i + 1) + ' 问 ' + v + ' 超过满分 ' + parts[i].score });
+          // 上限用小问满分(PartState.score 是当前得分,拿它当上限会让零分小问无法提分,
+          // 评审 ReviewPage.ets:111);旧服务端无 max 时回退题满分
+          const pmax = typeof parts[i].max === 'number' && parts[i].max > 0 ? parts[i].max : st.max;
+          if (v > pmax + 1e-9) {
+            promptAction.showToast({ message: '第 ' + (i + 1) + ' 问 ' + v + ' 超过满分 ' + pmax });
             this.saving = false;
             return;
           }
@@ -506,6 +510,9 @@ struct ReviewPage {
                         Text('回复裁决 ›').fontSize(12).fontColor(OgC.BRAND)
                           .onClick(() => {
                             this.appealReply = '';
+                            // 记住被点击的是哪一条申请:提交时用它,不再按"第一条待处理"猜
+                            const no = typeof a.n === 'number' && a.n > 0 ? a.n : 0;
+                            this.appealNo = no;
                             this.sheetKind = 'reply';
                             this.sheetOpen = true;
                           })
@@ -567,8 +574,9 @@ struct ReviewPage {
               promptAction.showToast({ message: '请填写回复内容' });
               return;
             }
-            let no = 0;
-            if (this.d !== null) {
+            // 优先用点击卡片时记录的申请序号;接口未带 n(旧服务端)才回退"第一条待处理"
+            let no = this.appealNo;
+            if (no === 0 && this.d !== null) {
               const aps: StudentAppealItem[] = this.d.appeals ?? [];
               for (let i = 0; i < aps.length; i++) {
                 if (aps[i].status !== 'resolved') {

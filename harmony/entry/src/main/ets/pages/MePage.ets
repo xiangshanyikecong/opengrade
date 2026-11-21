@@ -5,6 +5,7 @@ import { router } from '@kit.ArkUI';
 import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError, OgStats } from '../common/OgNet';
 import { OgSession } from '../common/OgSession';
+import { PdfSweep } from '../common/PdfSweep';
 import { AppLock } from '../common/AppLock';
 import { OgCache } from '../common/OgCache';
 import { OgC, OgDim } from '../common/OgTheme';
@@ -55,9 +56,16 @@ export struct MeView {
     this.lockCanBio = AppLock.canBiometric();
   }
 
-  private setTheme(mode: string): void {
+  private async setTheme(mode: string): Promise<void> {
+    const prev = this.themeMode;
     this.themeMode = mode;
-    OgSession.setThemeMode(mode);
+    try {
+      await OgSession.setThemeMode(mode); // 评审 OgSession.ets:53 — 写盘完成后再报成功,失败回滚选择并提示
+    } catch (e) {
+      this.themeMode = prev;
+      promptAction.showToast({ message: '设置保存失败,请重试' });
+      return;
+    }
     OgC.setMode(mode);
     promptAction.showToast({ message: '深色模式已切换,页面刷新后全部生效' });
   }
@@ -74,12 +82,19 @@ export struct MeView {
       return;
     }
     this.lockBusy = true;
-    await AppLock.ensure(OgSession.context());
-    await AppLock.setPin(p1);
-    if (this.lockCanBio) {
-      await AppLock.setBiometric(this.lockBio);
+    try {
+      // 评审 MePage.ets:76 — try/catch/finally 保证异常时 lockBusy 复位并可重试
+      await AppLock.ensure(OgSession.context());
+      await AppLock.setPin(p1);
+      if (this.lockCanBio) {
+        await AppLock.setBiometric(this.lockBio);
+      }
+    } catch (e) {
+      this.lockMsg = '开启应用锁失败,请重试';
+      return;
+    } finally {
+      this.lockBusy = false;
     }
-    this.lockBusy = false;
     this.lockSetup = false;
     this.lockPin1 = '';
     this.lockPin2 = '';
@@ -94,14 +109,20 @@ export struct MeView {
       return;
     }
     this.lockBusy = true;
-    const ok = await AppLock.verify(this.lockVerify.trim());
-    if (!ok) {
-      this.lockBusy = false;
-      this.lockMsg = 'PIN 不正确';
+    try {
+      // 评审 MePage.ets:96 — try/catch/finally 保证异常时 lockBusy 复位并可重试
+      const ok = await AppLock.verify(this.lockVerify.trim());
+      if (!ok) {
+        this.lockMsg = 'PIN 不正确';
+        return;
+      }
+      await AppLock.clearPin();
+    } catch (e) {
+      this.lockMsg = '操作失败,请重试';
       return;
+    } finally {
+      this.lockBusy = false;
     }
-    await AppLock.clearPin();
-    this.lockBusy = false;
     this.lockVerify = '';
     this.lockMsg = '';
     this.refreshLock();
@@ -137,6 +158,7 @@ export struct MeView {
   private doLogout(): void {
     OgNet.jpost<Record<string, string>>('/api/v1/auth/logout', null)
       .catch(() => {});
+    PdfSweep.sweep(); // 登出清扫成绩单 PDF 沙箱副本(评审 PdfViewerPage.ets:76/CWE-459)
     OgSession.clearToken();
     router.clear();
     router.replaceUrl({ url: 'pages/LoginPage' }).catch(() => {});
@@ -226,8 +248,13 @@ export struct MeView {
     promptAction.showToast({ message: '缓存已清理(图片内存/磁盘缓存 + 离线数据 + 沙箱临时文件)' });
   }
 
-  private toggleLowData(on: boolean): void {
-    OgSession.setLowData(on);
+  private async toggleLowData(on: boolean): Promise<void> {
+    try {
+      await OgSession.setLowData(on); // 评审 OgSession.ets:82 — 写盘完成后再报成功,失败提示重试
+    } catch (e) {
+      promptAction.showToast({ message: '设置保存失败,请重试' });
+      return;
+    }
     this.lowData = on;
     if (on) {
       OgNet.clearAppCache(); // 切入省流:顺手清掉高分辨率位图缓存

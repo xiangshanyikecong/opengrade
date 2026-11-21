@@ -24,15 +24,27 @@ struct StaffTrendsPage {
     this.load();
   }
 
+  private loadSeq: number = 0; // 评审 StaffTrendsPage.ets:27 — 请求代次计数
+
   private async load(): Promise<void> {
+    // 评审 StaffTrendsPage.ets:27 — 快速切换筛选时只接受最新请求的结果,旧响应不覆盖新数据
+    this.loadSeq++;
+    const seq = this.loadSeq;
     this.loading = this.resp === null;
     this.failed = false;
     try {
-      this.resp = await OgNet.jget<StaffTrendsResp>('/api/v1/trends' + OgNet.qs({
+      const resp = await OgNet.jget<StaffTrendsResp>('/api/v1/trends' + OgNet.qs({
         'class': this.selClass,
         'subject': this.selSubject
       }));
+      if (seq !== this.loadSeq) {
+        return;
+      }
+      this.resp = resp;
     } catch (e) {
+      if (seq !== this.loadSeq) {
+        return;
+      }
       this.failed = true;
       this.failMsg = e instanceof OgError ? e.message : '加载失败';
     }
@@ -40,21 +52,25 @@ struct StaffTrendsPage {
   }
 
   private latestPoint(st: TrendStudentView): TrendPoint | null {
-    for (let i = (st.points ?? []).length - 1; i >= 0; i--) {
-      if (!st.points[i].absent) {
-        return st.points[i];
+    // 评审 StaffTrendsPage.ets:43 — 先落类型化局部变量再遍历,守卫内不再直接访问原字段
+    const pts: TrendPoint[] = st.points ?? [];
+    for (let i = pts.length - 1; i >= 0; i--) {
+      if (!pts[i].absent) {
+        return pts[i];
       }
     }
     return null;
   }
 
   private prevPoint(st: TrendStudentView): TrendPoint | null {
+    // 评审 StaffTrendsPage.ets:53 — 同 latestPoint:先落类型化局部变量再遍历
     let seen = 0;
-    for (let i = (st.points ?? []).length - 1; i >= 0; i--) {
-      if (!st.points[i].absent) {
+    const pts: TrendPoint[] = st.points ?? [];
+    for (let i = pts.length - 1; i >= 0; i--) {
+      if (!pts[i].absent) {
         seen++;
         if (seen === 2) {
-          return st.points[i];
+          return pts[i];
         }
       }
     }

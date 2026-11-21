@@ -109,9 +109,10 @@ struct UploadScansPage {
     this.busy = true;
     this.logLines.unshift('ℹ 正在拆分 PDF…');
     let pdfPath = '';
+    let doc: pdfService.PdfDocument | null = null;
     try {
       pdfPath = await OgNet.copyUriToCache(uri, 'pdf_' + Date.now() + '.pdf');
-      const doc = new pdfService.PdfDocument();
+      doc = new pdfService.PdfDocument();
       const loadResult = doc.loadDocument(pdfPath, '');
       if (loadResult !== pdfService.ParseResult.PARSE_SUCCESS) {
         throw new OgError(0, '无法解析该 PDF(可能已加密或损坏)');
@@ -133,12 +134,13 @@ struct UploadScansPage {
           const bh = w >= h ? Math.max(400, Math.round(target * h / w)) : target;
           pm = page.getAreaPixelMap(matrix, bw, bh, false, false);
           const packing: image.PackingOption = { format: 'image/jpeg', quality: 88 };
-          const jpg = await packer.packToData(pm, packing);
           const name = 'pdfpg_' + Date.now() + '_' + this.picked.length + '.jpg';
           const outPath = OgSession.context().cacheDir + '/' + name;
           const f = fs.openSync(outPath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
           try {
-            fs.writeSync(f.fd, jpg);
+            // packToData 是 API 13 才有的接口(项目 compatibleSdkVersion 12):
+            // packToFile(fd) API 12 即可用,直接编码落盘(评审 UploadScansPage.ets:136)
+            await packer.packToFile(f.fd, pm, packing);
           } finally {
             fs.closeSync(f.fd);
           }
@@ -161,11 +163,18 @@ struct UploadScansPage {
           }
         }
       }
-      doc.releaseDocument();
       this.logLines.unshift('✓ 拆页完成,共待上传 ' + this.picked.length + ' 张');
     } catch (e) {
       this.logLines.unshift('✗ PDF 导入失败:' + (e instanceof OgError ? e.message : '文件不可读'));
     } finally {
+      // 文档释放入 finally:getPage 等中途抛异常也不再泄漏(评审 UploadScansPage.ets:164)
+      if (doc !== null) {
+        try {
+          doc.releaseDocument();
+        } catch (e) {
+          // 忽略
+        }
+      }
       if (pdfPath !== '') {
         try {
           fs.unlinkSync(pdfPath);
@@ -178,8 +187,15 @@ struct UploadScansPage {
   }
 
   private async addUris(uris: string[]): Promise<void> {
+    if (this.busy) {
+      promptAction.showToast({ message: '上传进行中,新选的图片请等本轮结束后再选' });
+      return; // 选择与上传不重叠,批次读取固定队列(评审 UploadScansPage.ets:200)
+    }
     for (let i = 0; i < uris.length; i++) {
-      const name = 'scan_' + Date.now() + '_' + this.picked.length + '.jpg';
+      // 保留原始扩展名:copyUriToCache 只复制字节,统一 .jpg 会把 PNG 声明成 image/jpeg(评审 UploadScansPage.ets:182)
+      const dot = uris[i].lastIndexOf('.');
+      const ext = dot >= 0 ? uris[i].slice(dot).toLowerCase() : '.jpg';
+      const name = 'scan_' + Date.now() + '_' + i + (ext === '.jpeg' ? '.jpg' : ext);
       try {
         const path = await OgNet.copyUriToCache(uris[i], name);
         this.picked.push(path);
@@ -194,24 +210,31 @@ struct UploadScansPage {
       promptAction.showToast({ message: '请先选择或拍摄扫描件' });
       return;
     }
+    // 上传开始时固定待发送队列快照:相册复制仍在继续也不会混进本批(评审 UploadScansPage.ets:200)
+    const queue: string[] = [...this.picked];
     this.busy = true;
     this.uploaded = 0;
     let totalAdded = 0;
-    for (let start = 0; start < this.picked.length; start += BATCH) {
+    let sent = 0; // 已确认入库的前缀张数
+    for (let start = 0; start < queue.length; start += BATCH) {
       const files: UploadFile[] = [];
-      const end = Math.min(start + BATCH, this.picked.length);
+      const end = Math.min(start + BATCH, queue.length);
       for (let i = start; i < end; i++) {
+        const dot = queue[i].lastIndexOf('.');
+        const ext = dot >= 0 ? queue[i].slice(dot) : '.jpg';
         files.push({
           field: 'images',
-          fileName: 'scan_' + (i + 1) + '.jpg',
-          contentType: this.contentTypeOf(this.picked[i]),
-          filePath: this.picked[i]
+          fileName: 'scan_' + (i + 1) + ext,
+          contentType: this.contentTypeOf(queue[i]),
+          filePath: queue[i]
         } as UploadFile);
       }
       try {
         const resp = await OgNet.upload('/api/v1/exams/' + this.examId + '/scans', {}, files);
         const m = JSON.parse(resp) as ScanBatchResp;
-        totalAdded += m.added ?? 0;
+        const added = m.added ?? 0;
+        totalAdded += added;
+        sent = start + added; // 批内按服务端确认数量推进前缀(服务器按序入库)
         this.uploaded = end;
         if (m.failed !== undefined && m.failed.length > 0) {
           for (const f of m.failed) {
@@ -228,14 +251,24 @@ struct UploadScansPage {
         }
       } catch (e) {
         this.logLines.unshift('✗ 第 ' + (start + 1) + '~' + end + ' 张上传失败:' +
-          (e instanceof OgError ? e.message : '网络异常') + '(已入库的批次不受影响,可重试续传)');
-        break; // 断点续传:失败即停,已入库批次保留
+          (e instanceof OgError ? e.message : '网络异常') + '(失败与未发送项已保留,可重试续传)');
+        break; // 断点续传:失败即停
       }
     }
+    // 只清掉已确认入库的前缀(并删除其沙箱副本):失败/未发送项保留可续传
+    //(评审 UploadScansPage.ets:235/237)
+    for (let i = 0; i < sent && i < queue.length; i++) {
+      try {
+        fs.unlinkSync(queue[i]);
+      } catch (e) {
+        // 忽略
+      }
+    }
+    this.picked = queue.slice(sent);
+    this.uploaded = 0;
     if (totalAdded > 0) {
-      this.logLines.unshift('✓ 本次共入库 ' + totalAdded + ' 卷');
-      this.picked = [];
-      this.uploaded = 0;
+      this.logLines.unshift('✓ 本次共入库 ' + totalAdded + ' 卷' +
+        (this.picked.length > 0 ? '(剩 ' + this.picked.length + ' 张待续传)' : ''));
     }
     this.busy = false;
   }

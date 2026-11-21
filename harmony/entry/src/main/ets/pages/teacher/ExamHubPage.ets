@@ -62,7 +62,6 @@ struct ExamHubPage {
   @State appealReply: string = '';
   @State appealNo: number = 0;
   // 审计日志
-  @State auditOpen: boolean = false;
   @State audit: AuditEntry[] = [];
   @State auditLoading: boolean = false;
   // 长列表卡片折叠/页码(键:progress/warnings/dup/missing/voided/flagged/appeal)
@@ -75,6 +74,14 @@ struct ExamHubPage {
       this.examId = p.exam;
     }
     this.load();
+  }
+
+  onPageShow(): void {
+    // 子页(补录/阅卷/复核)返回后刷新详情:router.back 不会重建页面,
+    // aboutToAppear 不再触发,已扫数量/缺扫名单停留在旧值(评审 ExamHubPage.ets:77)
+    if (this.d !== null) {
+      this.load();
+    }
   }
 
   private async load(): Promise<void> {
@@ -158,15 +165,24 @@ struct ExamHubPage {
     this.sheetKind = '';
   }
 
+  private assignSeq: number = 0;
+
   private async openSuggest(student: number): Promise<void> {
+    const seq = ++this.assignSeq;
     this.assignStudent = student;
     this.suggestions = [];
     this.customReg = '';
     this.openSheet('assign');
     try {
       const resp = await OgNet.jget<SuggestResp>('/api/v1/exams/' + this.examId + '/suggest/' + student);
+      if (seq !== this.assignSeq || this.assignStudent !== student) {
+        return; // 旧请求晚到:不得覆盖当前卷的推荐(确认会把卷 1 考号指给卷 2,评审 ExamHubPage.ets:168)
+      }
       this.suggestions = resp.suggestions ?? [];
     } catch (e) {
+      if (seq !== this.assignSeq) {
+        return;
+      }
       promptAction.showToast({ message: e instanceof OgError ? e.message : '推荐获取失败' });
     }
   }
@@ -224,21 +240,44 @@ struct ExamHubPage {
     });
   }
 
+  private dupBusy: Record<string, boolean> = {};
+
   private async keepSheet(group: number[], keep: number): Promise<void> {
+    const gk = String(group[0]);
+    if (this.dupBusy[gk] === true) {
+      promptAction.showToast({ message: '该组正在裁决中,请稍候' });
+      return; // 两次并发裁决可把两卷都作废(评审 ExamHubPage.ets:673)
+    }
+    this.dupBusy[gk] = true;
     try {
+      let done = 0;
+      let failed = false;
       for (const s of group) {
         if (s === keep) {
           continue;
         }
-        await OgNet.jpost<Record<string, string>>(
-          '/api/v1/exams/' + this.examId + '/results/' + s + '/void', {
-            'voided': true
-          } as Record<string, Object>);
+        try {
+          await OgNet.jpost<Record<string, string>>(
+            '/api/v1/exams/' + this.examId + '/results/' + s + '/void', {
+              'voided': true
+            } as Record<string, Object>);
+          done++;
+        } catch (e) {
+          failed = true;
+          break;
+        }
       }
-      promptAction.showToast({ message: '已保留卷 ' + keep + ',组内其余已作废' });
-      await this.load();
-    } catch (e) {
-      promptAction.showToast({ message: e instanceof OgError ? e.message : '裁决失败' });
+      if (done > 0) {
+        // 部分成功也要刷新详情:已作废列表/剩余重复组立即反映实际状态(评审 ExamHubPage.ets:240)
+        promptAction.showToast({
+          message: failed ? '已作废 ' + done + ' 张,其余失败,已刷新详情' : '已保留卷 ' + keep + ',组内其余已作废'
+        });
+        await this.load();
+      } else {
+        promptAction.showToast({ message: failed ? '裁决失败' : '该组无需裁决' });
+      }
+    } finally {
+      this.dupBusy[gk] = false;
     }
   }
 
@@ -250,10 +289,16 @@ struct ExamHubPage {
   }
 
   private async deleteExam(): Promise<void> {
+    let ok = false;
     await this.act('删除', (): Promise<Object> => {
-      return OgNet.jdel<Record<string, string>>('/api/v1/exams/' + this.examId);
+      // act 吞错不抛:用删除后的存在性回查判定成败,失败不退出详情(评审 ExamHubPage.ets:256)
+      await OgNet.jdel<Record<string, string>>('/api/v1/exams/' + this.examId);
+      ok = true;
+      return {} as Record<string, string>;
     });
-    router.back();
+    if (ok) {
+      router.back();
+    }
   }
 
   private async download(it: ExportItem): Promise<void> {
@@ -671,12 +716,12 @@ struct ExamHubPage {
             .border({ width: 1, color: OgC.BRAND, radius: 10 })
             .padding({ left: 8, right: 8, top: 3, bottom: 3 })
             .onClick(() => this.keepSheet(g, sheet))
-        }, (sheet: number) => 'k' + sheet)
+        }, (sheet: number) => 'k' + g[0] + '-' + sheet) // 键含组内卷号:换页后不复用旧组按钮(评审 ExamHubPage.ets:679)
       }
       .width('100%')
       .padding({ top: 6, bottom: 6 })
       .border({ width: { bottom: 1 }, color: OgC.LINE })
-    }, (g: number[], gi: number) => 'g' + gi)
+    }, (g: number[], gi: number) => 'g' + g.join('-')) // 键用组内容而非页内下标(评审 ExamHubPage.ets:679)
   }
 
   @Builder
@@ -699,8 +744,10 @@ struct ExamHubPage {
               } as Record<string, Object>);
             });
           })
-        Text('补录成绩 ›').fontSize(12).fontColor(OgC.BRAND)
+        Text((this.d !== null && this.d.manual > 0 ? '补录成绩 ›' : '缺考登记 ›')).fontSize(12).fontColor(OgC.BRAND)
           .onClick(() => {
+            // 扫描考试在 ManualScoresPage 只支持缺考登记(完整补录在电脑端):
+            // 入口按实际能力标注,不再一律叫"补录成绩"(评审 ExamHubPage.ets:702)
             router.pushUrl({
               url: 'pages/teacher/ManualScoresPage',
               params: { 'exam': this.examId, 'entryReg': r.reg } as Record<string, Object>
@@ -874,11 +921,21 @@ struct ExamHubPage {
         Text('审计日志').fontSize(12).fontColor(OgC.BRAND)
           .onClick(() => {
             this.loadAudit();
-            this.auditOpen = true;
+            this.openSheet('audit'); // 审计是共享弹层的一种 sheetKind(此前 auditOpen 不控弹层显示,评审 ExamHubPage.ets:876)
           })
         Blank()
         Text('删除考试').fontSize(12).fontColor(OgC.BAD)
-          .onClick(() => this.deleteExam())
+          .onClick(() => {
+            // 误触一次就发删除请求太危险:先确认(评审 ExamHubPage.ets:881)
+            AlertDialog.show({
+              title: '删除考试',
+              message: '将删除该考试及其全部数据(评分/切片/报告),不可恢复。确认删除?',
+              autoCancel: true,
+              alignment: DialogAlignment.Center,
+              primaryButton: { value: '取消', action: () => {} },
+              secondaryButton: { value: '删除', fontColor: OgC.BAD, action: () => this.deleteExam() }
+            });
+          })
       }
     }
     .width('100%')
@@ -923,7 +980,6 @@ struct ExamHubPage {
       : formSheetOptions('');
     opts.onWillDisappear = (): void => {
       this.closeSheet();
-      this.auditOpen = false;
     };
     return opts;
   }
@@ -1027,7 +1083,7 @@ struct ExamHubPage {
 
   @Builder
   anySheetBuilder() {
-    if (this.auditOpen) {
+    if (this.sheetKind === 'audit') {
       this.auditSheet()
     } else if (this.sheetKind === 'nav') {
       StaffNavGrid({ current: 'exams', onClose: () => {
@@ -1161,9 +1217,10 @@ struct ExamHubPage {
         label: '保存并重统',
         onTap: () => {
           const arr: string[] = this.keyBuf.trim().split(/\s+/).filter((s: string) => s !== '');
-          if (this.d !== null && arr.length !== (this.d.key ?? []).length) {
+          // 客观题数取 objective 定义长度:key 为空占位时长度不可靠(评审 ExamHubPage.ets:1164)
+          if (this.d !== null && arr.length !== this.d.objective.length) {
             promptAction.showToast({
-              message: '答案数 ' + arr.length + ' 与客观题数 ' + (this.d.key ?? []).length + ' 不一致'
+              message: '答案数 ' + arr.length + ' 与客观题数 ' + this.d.objective.length + ' 不一致'
             });
             return;
           }

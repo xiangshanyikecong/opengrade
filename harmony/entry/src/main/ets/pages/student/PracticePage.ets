@@ -36,7 +36,8 @@ struct PracticePage {
 
   private childQ(): string {
     if (OgSession.me() !== null && OgSession.me()!.role === 'parent' && this.child !== '') {
-      return '?child=' + this.child;
+      // 评审 StudentHomePage.ets:42 — child 查询参数 URL 编码,含 + 等字符时不再失配
+      return '?child=' + encodeURIComponent(this.child);
     }
     return '';
   }
@@ -109,6 +110,8 @@ struct PracticePage {
         }
         .padding(OgDim.PAD)
         .width('100%')
+        // 评审 PracticePage.ets:111 — 重练卡内容列收口 800(OgDim.MAXW),窄屏仍用可用宽度
+        .constraintSize({ maxWidth: OgDim.MAXW })
         .alignItems(HorizontalAlign.Start)
       }
     }

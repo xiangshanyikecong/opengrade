@@ -14,6 +14,7 @@ import { StaffNavGrid, navSheetOptions } from '../../components/StaffNav';
 @Component
 struct WorkloadPage {
   @State items: WorkloadRow[] = [];
+  @State maxGradedValue: number = 1; // 评审 WorkloadPage.ets:75 — 进度条上限随数据更新算一次
   @State loading: boolean = true;
   @State failed: boolean = false;
   @State failMsg: string = '';
@@ -27,7 +28,9 @@ struct WorkloadPage {
     this.loading = this.items.length === 0;
     this.failed = false;
     try {
+      // 评审 WorkloadPage.ets:75 — 每批工作量进度条上限只计算一次,不再每张卡片遍历全部记录
       this.items = (await OgNet.jget<WorkloadRow[]>('/api/v1/workload')) ?? [];
+      this.maxGradedValue = this.maxGraded();
     } catch (e) {
       this.failed = true;
       this.failMsg = e instanceof OgError ? e.message : '加载失败';
@@ -72,7 +75,7 @@ struct WorkloadPage {
           .fontSize(16).fontWeight(FontWeight.Bold).fontColor(OgC.BRAND)
       }
       .width('100%')
-      Progress({ value: r.graded, total: this.maxGraded(), type: ProgressType.Linear })
+      Progress({ value: r.graded, total: this.maxGradedValue, type: ProgressType.Linear })
         .color(OgC.BRAND).height(6).width('100%')
       Row({ space: 8 }) {
         Text('覆盖 ' + this.examCount(r) + ' 场考试').fontSize(11).fontColor(OgC.INK_SUB)

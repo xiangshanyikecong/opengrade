@@ -32,6 +32,7 @@ struct StudentExamDetailPage {
   @State onlyWrong: boolean = false;
   @State appealText: string = '';
   @State appealBusy: boolean = false;
+  @State saveBusy: boolean = false;
   @State pageUrls: string[] = [];
   @State offline: boolean = false;
 
@@ -46,7 +47,8 @@ struct StudentExamDetailPage {
 
   private childQ(): string {
     if (OgSession.me() !== null && OgSession.me()!.role === 'parent' && this.child !== '') {
-      return '?child=' + this.child;
+      // 评审 StudentHomePage.ets:42 — child 查询参数 URL 编码,含 + 等字符时不再失配
+      return '?child=' + encodeURIComponent(this.child);
     }
     return '';
   }
@@ -140,6 +142,11 @@ struct StudentExamDetailPage {
   }
 
   private async saveReportPdf(): Promise<void> {
+    // 评审 StudentExamDetailPage.ets:453 — 另存期间置 busy 并禁用按钮,防重复触发两次下载
+    if (this.saveBusy) {
+      return;
+    }
+    this.saveBusy = true;
     try {
       promptAction.showToast({ message: '正在生成成绩单…' });
       const uri = await OgNet.downloadToPicker(
@@ -147,6 +154,8 @@ struct StudentExamDetailPage {
       promptAction.showToast({ message: uri === '' ? '已取消' : '已保存,可在「文件」中查看打印' });
     } catch (e) {
       promptAction.showToast({ message: e instanceof OgError ? e.message : '下载失败', duration: 3000 });
+    } finally {
+      this.saveBusy = false;
     }
   }
 
@@ -160,7 +169,12 @@ struct StudentExamDetailPage {
       await OgNet.getBytes(url, 60000);
       this.pageUrls.push(url);
     } catch (e) {
-      promptAction.showToast({ message: '没有更多页了' });
+      // 评审 StudentExamDetailPage.ets:163 — 仅服务端明确 404 才算到末页;网络失败提示失败可重试
+      if (e instanceof OgError && e.status === 404) {
+        promptAction.showToast({ message: '没有更多页了' });
+      } else {
+        promptAction.showToast({ message: (e instanceof OgError ? e.message : '加载失败') + ',可点「加载下一页」重试' });
+      }
     }
   }
 
@@ -175,7 +189,10 @@ struct StudentExamDetailPage {
       await OgNet.jpost<Record<string, string>>('/api/v1/student/exams/' + this.examId + '/appeals' + this.childQ(), {
         'reason': reason
       } as Record<string, Object>);
-      this.appealText = '';
+      // 评审 StudentExamDetailPage.ets:178 — 仅当草稿仍是提交时的内容才清空,不清掉提交期间新输入的理由
+      if (this.appealText.trim() === reason) {
+        this.appealText = '';
+      }
       promptAction.showToast({ message: '复核申请已提交' });
       this.pageUrls = [];
       await this.load();
@@ -257,12 +274,21 @@ struct StudentExamDetailPage {
       .backgroundColor(OgC.CARD)
 
       if (this.offline) {
-        Text('⚠ 当前离线,展示缓存的成绩明细(联网后自动刷新)')
-          .fontSize(12).fontColor(OgC.WARN)
-          .width('100%')
-          .textAlign(TextAlign.Center)
-          .padding(8)
-          .backgroundColor(OgC.WARN_BG)
+        // 评审 StudentExamDetailPage.ets:260 — 离线提示提供实际可用的重试入口,移除“联网后自动刷新”承诺
+        Row({ space: 8 }) {
+          Text('⚠ 当前离线,展示缓存的成绩明细')
+            .fontSize(12).fontColor(OgC.WARN)
+            .layoutWeight(1)
+            .textAlign(TextAlign.Center)
+          Text('重试')
+            .fontSize(12).fontColor(OgC.WARN)
+            .border({ width: 1, color: OgC.WARN, radius: 10 })
+            .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+            .onClick(() => this.load())
+        }
+        .width('100%')
+        .padding(8)
+        .backgroundColor(OgC.WARN_BG)
       }
 
       if (this.loading) {
@@ -443,13 +469,15 @@ struct StudentExamDetailPage {
                 .fontSize(14)
                 .backgroundColor(OgC.BRAND)
                 .onClick(() => this.openReportPdf())
-              Button('另存成绩单 PDF')
+              Button(this.saveBusy ? '保存中…' : '另存成绩单 PDF')
                 .width('100%')
                 .height(42)
                 .fontSize(14)
                 .backgroundColor(OgC.CARD)
                 .fontColor(OgC.BRAND)
                 .border({ width: 1, color: OgC.BRAND, radius: 10 })
+                // 评审 StudentExamDetailPage.ets:453 — 另存期间禁用,取消/失败后恢复可重试
+                .enabled(!this.saveBusy)
                 .onClick(() => this.saveReportPdf())
 
               if (this.d.wrongQuestions.length > 0) {

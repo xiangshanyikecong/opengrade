@@ -39,7 +39,8 @@ struct StudentHomePage {
 
   private childQ(): string {
     if (OgSession.me() !== null && OgSession.me()!.role === 'parent' && this.curChild !== '') {
-      return '?child=' + this.curChild;
+      // 评审 StudentHomePage.ets:42 — child 查询参数 URL 编码,含 + 等字符时不再被解码为空格
+      return '?child=' + encodeURIComponent(this.curChild);
     }
     return '';
   }
@@ -60,17 +61,41 @@ struct StudentHomePage {
     }
   }
 
+  // 评审 StudentHomePage.ets:65 — 已读键加入子女维度(无子女参数用 self),避免子女间角标互相影响
+  private seenKey(id: string): string {
+    return (this.curChild === '' ? 'self' : this.curChild) + ':' + id;
+  }
+
   private async markSeen(id: string): Promise<void> {
     const m = await this.seenMap();
-    m[id] = true;
+    const key = this.seenKey(id);
+    m[key] = true;
     await OgSession.setJson('seenExams', JSON.stringify(m));
     const next: Record<string, boolean> = {};
     for (const k of Object.keys(this.newIds)) {
-      if (k !== id) {
+      if (k !== key) {
         next[k] = true;
       }
     }
     this.newIds = next;
+  }
+
+  // 评审 StudentHomePage.ets:86 — 偏好读取失败独立处理:保留已加载成绩,仅退化为不显示未读角标
+  private async applyFreshBadge(): Promise<void> {
+    try {
+      const seen = await this.seenMap();
+      const fresh: Record<string, boolean> = {};
+      for (const it of this.items) {
+        if (!it.absent && seen[this.seenKey(it.id)] !== true) {
+          fresh[this.seenKey(it.id)] = true;
+        }
+      }
+      this.newIds = fresh;
+    } catch (e) {
+      // 评审 StudentHomePage.ets:86 — 偏好读取失败:退化为不显示未读角标,不影响已加载成绩
+      const empty: Record<string, boolean> = {};
+      this.newIds = empty;
+    }
   }
 
   private async load(): Promise<void> {
@@ -82,15 +107,8 @@ struct StudentHomePage {
       const arr = resp['exams'] as StudentExamItem[];
       this.items = arr ?? [];
       OgCache.save(this.cacheKey(), JSON.stringify(resp));
-      // 新发布角标:本机未见过的考试(仅首次浏览标记,进详情即消)
-      const seen = await this.seenMap();
-      const fresh: Record<string, boolean> = {};
-      for (const it of this.items) {
-        if (!it.absent && seen[it.id] !== true) {
-          fresh[it.id] = true;
-        }
-      }
-      this.newIds = fresh;
+      // 新发布角标:本机未见过的考试(仅首次浏览标记,进详情即消);偏好失败不再进成绩错误分支
+      this.applyFreshBadge();
     } catch (e) {
       // 断网兜底:展示最近一次成功拉取的列表(带「离线数据」提示)
       const cached = OgCache.load(this.cacheKey());
@@ -121,7 +139,7 @@ struct StudentHomePage {
         Text((it.subject !== undefined && it.subject !== '') ? it.subject : '未标学科')
           .fontSize(15).fontWeight(FontWeight.Bold).fontColor(OgC.INK).layoutWeight(1)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        if (this.newIds[it.id] === true) {
+        if (this.newIds[this.seenKey(it.id)] === true) {
           Pill({ text: '新成绩', color: OgC.BAD })
         }
         if (it.absent) {
@@ -248,7 +266,8 @@ struct StudentHomePage {
       if (this.activeTab === 0) {
         Column() {
           if (this.offline) {
-            Text('⚠ 当前离线,展示最近一次加载的成绩(联网后自动刷新)')
+            // 评审 StudentHomePage.ets:251 — 离线提示改为实际可用的刷新方式(下拉刷新)
+            Text('⚠ 当前离线,展示最近一次加载的成绩(恢复联网后下拉刷新)')
               .fontSize(12).fontColor(OgC.WARN)
               .width('100%')
               .textAlign(TextAlign.Center)

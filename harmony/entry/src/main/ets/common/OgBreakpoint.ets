@@ -16,18 +16,35 @@ export class OgBreakpoint {
     if (OgBreakpoint.mdL !== null) {
       return;
     }
+    const apply = (): void => {
+      const lg: boolean = OgBreakpoint.lgL !== null && OgBreakpoint.lgL.matches;
+      const md: boolean = OgBreakpoint.mdL !== null && OgBreakpoint.mdL.matches;
+      AppStorage.setOrCreate('ogBp', lg ? 'lg' : (md ? 'md' : 'sm'));
+    };
     try {
       OgBreakpoint.mdL = mediaquery.matchMediaSync('(min-width: 600vp)');
       OgBreakpoint.lgL = mediaquery.matchMediaSync('(min-width: 840vp)');
-      const apply = (): void => {
-        const lg: boolean = OgBreakpoint.lgL !== null && OgBreakpoint.lgL.matches;
-        const md: boolean = OgBreakpoint.mdL !== null && OgBreakpoint.mdL.matches;
-        AppStorage.setOrCreate('ogBp', lg ? 'lg' : (md ? 'md' : 'sm'));
-      };
       OgBreakpoint.mdL.on('change', apply);
       OgBreakpoint.lgL.on('change', apply);
       apply();
     } catch (e) {
+      // 评审 OgBreakpoint.ets:30 — 注册失败时撤销已注册监听并清空句柄,保证下次 watch() 可重试
+      if (OgBreakpoint.mdL !== null) {
+        try {
+          OgBreakpoint.mdL.off('change', apply);
+        } catch (e2) {
+          // 忽略
+        }
+      }
+      if (OgBreakpoint.lgL !== null) {
+        try {
+          OgBreakpoint.lgL.off('change', apply);
+        } catch (e2) {
+          // 忽略
+        }
+      }
+      OgBreakpoint.mdL = null;
+      OgBreakpoint.lgL = null;
       AppStorage.setOrCreate('ogBp', 'sm');
     }
   }

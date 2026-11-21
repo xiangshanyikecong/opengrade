@@ -6,7 +6,6 @@ import { router } from '@kit.ArkUI';
 import { OgNet, OgError } from '../../common/OgNet';
 import { OgSession } from '../../common/OgSession';
 import { OgC, OgDim } from '../../common/OgTheme';
-import { OgBreakpoint } from '../../common/OgBreakpoint';
 
 import { OgFormat } from '../../common/OgFormat';
 import { ExamSummary, TaskItem } from '../../model/Api';
@@ -49,6 +48,8 @@ struct HomePage {
   @State failed: boolean = false;
   @State failMsg: string = '';
   @State navOpen: boolean = false;
+  // 评审 HomePage.ets:319 — 订阅断点,折叠/展开时 build 重建,bindSheet 选项随之更新
+  @StorageProp('ogBp') bp: string = 'sm';
 
   aboutToAppear(): void {
     this.load();
@@ -286,7 +287,8 @@ struct HomePage {
                     .margin({ top: 4, bottom: 2 })
                   ForEach(this.recentExams(), (e: ExamSummary) => {
                     this.recentRow(e)
-                  }, (e: ExamSummary) => e.id + e.stage + String(e.published))
+                  // 评审 HomePage.ets:289 — 键值加入未阅数等展示字段,下拉刷新后未阅数可正常更新
+                  }, (e: ExamSummary) => e.id + '|' + e.stage + '|' + String(e.published) + '|' + String(e.ungraded))
                   Text('共 ' + this.exams.length + ' 场 · 点右上角 ☰ 查看全部入口')
                     .fontSize(10).fontColor(OgC.INK_SUB)
                     .margin({ top: 6 })
@@ -316,7 +318,7 @@ struct HomePage {
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
-    .bindSheet($$this.navOpen, this.sheetBuilder(), navSheetOptions(OgBreakpoint.now(), '工作台导航'))
+    .bindSheet($$this.navOpen, this.sheetBuilder(), navSheetOptions(this.bp, '工作台导航'))
   }
 
   @State refreshingFlag: boolean = false;

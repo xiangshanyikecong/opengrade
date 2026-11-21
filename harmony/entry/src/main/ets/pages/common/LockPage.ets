@@ -30,7 +30,14 @@ struct LockPage {
     }
   }
 
+  private verifying: boolean = false;
+  private unlockedFlag: boolean = false;
+
   private unlock(): void {
+    if (this.unlockedFlag) {
+      return; // 只执行一次:重复导航会把业务页也弹掉(评审 LockPage.ets:45)
+    }
+    this.unlockedFlag = true;
     const target = this.nextUrl;
     AppLock.takeLockIntent(); // 清残留意图,避免解锁后又被前台回调锁回去
     if (target !== '') {
@@ -43,15 +50,31 @@ struct LockPage {
   }
 
   private async submit(): Promise<void> {
+    if (this.verifying || this.unlockedFlag) {
+      return; // 重入保护:异步校验期间连点/生物回调并发不重复执行(评审 LockPage.ets:45)
+    }
     if (this.pin.length < 4) {
       return;
     }
-    const ok = await AppLock.verify(this.pin);
-    if (ok) {
-      this.unlock();
-    } else {
-      this.msg = 'PIN 不正确,请重试';
+    const remain = AppLock.lockedRemainMs();
+    if (remain > 0) {
+      this.msg = '尝试次数过多,请 ' + Math.ceil(remain / 1000) + ' 秒后再试';
       this.pin = '';
+      return;
+    }
+    this.verifying = true;
+    try {
+      const ok = await AppLock.verify(this.pin);
+      if (ok) {
+        this.unlock();
+      } else {
+        AppLock.recordFail(); // PIN 空间只有 10^4~10^6:失败计数 + 指数锁定(评审 LockPage.ets:49/CWE-307)
+        const r2 = AppLock.lockedRemainMs();
+        this.msg = r2 > 0 ? 'PIN 不正确,已临时锁定 ' + Math.ceil(r2 / 1000) + ' 秒' : 'PIN 不正确,请重试';
+        this.pin = '';
+      }
+    } finally {
+      this.verifying = false;
     }
   }
 

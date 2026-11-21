@@ -42,6 +42,7 @@ struct BankListPage {
   @State fDifficulty: string = '';
   @State busy: boolean = false;
   @State stemPickedName: string = '';
+  private stemPickedPath: string = ''; // 本表单选中的截图副本路径(评审 BankListPage.ets:186)
 
   aboutToAppear(): void {
     this.load();
@@ -52,18 +53,32 @@ struct BankListPage {
     return me !== null && (OgSession.isManager() || me.username === it.createdBy);
   }
 
+  private loadSeq: number = 0;
+  private tick: number = 0; // 卡片键刷新代次(题干/截图变化后重建行,评审 BankListPage.ets:339)
+
   private async load(): Promise<void> {
+    const seq = ++this.loadSeq;
     this.loading = this.items.length === 0;
     this.failed = false;
     try {
-      this.items = (await OgNet.jget<BankQuestion[]>('/api/v1/bank' + OgNet.qs({
+      const arr = (await OgNet.jget<BankQuestion[]>('/api/v1/bank' + OgNet.qs({
         'subject': '', 'kind': '', 'q': this.q.trim()
       }))) ?? [];
+      if (seq !== this.loadSeq) {
+        return; // 旧查询晚到不得覆盖列表(评审 BankListPage.ets:59)
+      }
+      this.items = arr;
+      this.tick++;
     } catch (e) {
+      if (seq !== this.loadSeq) {
+        return;
+      }
       this.failed = true;
       this.failMsg = e instanceof OgError ? e.message : '加载失败';
     }
-    this.loading = false;
+    if (seq === this.loadSeq) {
+      this.loading = false;
+    }
   }
 
   private openForm(it: BankQuestion | null): void {
@@ -119,18 +134,28 @@ struct BankListPage {
     }
     this.busy = true;
     try {
+      let stemErr = '';
       if (this.editId === '') {
         const created = await OgNet.jpost<BankQuestion>('/api/v1/bank', body);
-        promptAction.showToast({ message: '已录入:' + created.id });
         if (this.stemPickedName !== '') {
-          await this.uploadStem(created.id);
+          try {
+            await this.uploadStem(created.id);
+          } catch (e) {
+            stemErr = '截图上传失败(题目已录入,可在题库重传截图)';
+          }
         }
+        promptAction.showToast({ message: stemErr === '' ? '已录入:' + created.id : '已录入:' + created.id + ';' + stemErr, duration: 3200 });
       } else {
         await OgNet.jpost<Record<string, Object>>('/api/v1/bank/' + this.editId, body);
         if (this.stemPickedName !== '') {
-          await this.uploadStem(this.editId);
+          try {
+            await this.uploadStem(this.editId);
+          } catch (e) {
+            stemErr = '截图上传失败(题目已保存,可重试截图,不必重提正文)';
+          }
         }
-        promptAction.showToast({ message: '已保存' });
+        // 题库保存成功与截图失败分开报告:截图失败不再报"保存失败"(评审 BankListPage.ets:129)
+        promptAction.showToast({ message: stemErr === '' ? '已保存' : '已保存;' + stemErr, duration: 3200 });
       }
       this.formOpen = false;
       this.stemPickedName = '';
@@ -172,7 +197,15 @@ struct BankListPage {
       return;
     }
     try {
-      await OgNet.copyUriToCache(uris[0], 'stem_' + Date.now() + '.jpg');
+      const path = await OgNet.copyUriToCache(uris[0], 'stem_' + Date.now() + '.jpg');
+      if (this.stemPickedPath !== '') {
+        try {
+          fs.unlinkSync(this.stemPickedPath); // 替换选择:旧副本不残留
+        } catch (e) {
+          // 忽略
+        }
+      }
+      this.stemPickedPath = path; // 记住本表单选中的那份副本(评审 BankListPage.ets:186)
       this.stemPickedName = '已选截图(保存时上传)';
       promptAction.showToast({ message: '截图已就绪,保存题目时上传' });
     } catch (e) {
@@ -181,23 +214,24 @@ struct BankListPage {
   }
 
   private async uploadStem(id: string): Promise<void> {
-    const files: UploadFile[] = [];
-    const ctx = OgSession.context();
-    const names: string[] = fsListNames(ctx.cacheDir);
-    for (const n of names) {
-      if (n.startsWith('stem_')) {
-        files.push({
-          field: 'image',
-          fileName: n,
-          contentType: 'image/jpeg',
-          filePath: ctx.cacheDir + '/' + n
-        } as UploadFile);
-      }
-    }
-    if (files.length === 0) {
+    if (this.stemPickedPath === '') {
       return;
     }
+    const files: UploadFile[] = [{
+      field: 'image',
+      fileName: 'stem.jpg',
+      contentType: 'image/jpeg',
+      filePath: this.stemPickedPath
+    } as UploadFile];
+    // 只上传本表单选中的那份截图:此前遍历缓存目录会把上一次表单的 stem_ 副本
+    // 一并发给当前题目(评审 BankListPage.ets:186)
     await OgNet.upload('/api/v1/bank/' + id + '/stem', {}, files);
+    try {
+      fs.unlinkSync(this.stemPickedPath); // 上传成功清理副本
+    } catch (e) {
+      // 忽略
+    }
+    this.stemPickedPath = '';
     // 只清理本次 stem 临时拷贝(不动全局图片缓存)
     for (const f of files) {
       try {
@@ -336,7 +370,7 @@ struct BankListPage {
           }
           ForEach(this.items, (it: BankQuestion) => {
             this.bankCard(it)
-          }, (it: BankQuestion) => it.id + String(it.answer))
+          }, (it: BankQuestion) => 'k' + it.id + '-' + String(it.answer) + '-' + (it.stemImage !== undefined ? it.stemImage : '') + '-' + this.tick)
           Text('').height(20)
         }
         .padding(OgDim.PAD)

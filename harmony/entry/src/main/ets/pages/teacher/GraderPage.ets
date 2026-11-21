@@ -158,14 +158,20 @@ struct GraderPage {
     return sp.score ?? 10;
   }
 
+  private loadSeq: number = 0;
+
   private async loadQuestion(q: number, keepStudent: number): Promise<void> {
     if (this.heldQ > 0 && this.heldQ !== q) {
       await this.releaseHeld(); // 切题释放旧题租约(409 同题重载不受影响)
     }
+    const seq = ++this.loadSeq;
     this.loading = true;
     try {
       const arr = await OgNet.jget<SliceItem[]>(
         '/api/v1/exams/' + this.examId + '/slices?q=' + q + '&grading=1');
+      if (seq !== this.loadSeq) {
+        return; // 已被后续切题请求取代:过期响应不改题号/切片(评审 GraderPage.ets:167)
+      }
       this.qIndex = q;
       this.slices = arr ?? [];
       this.curPart = 0;
@@ -236,8 +242,13 @@ struct GraderPage {
     return ver;
   }
 
+  // 端身份(本端唯一,进程内生成):领取时随请求上报,服务端按 (账号,端) 执行
+  // "每端至多持一张" —— 连续翻片丢释放请求时旧片不再占住其他端
+  private readonly endId: string =
+    'og' + Date.now().toString(36) + Math.floor(Math.random() * 1000000).toString(36);
+
   private claimReq(student: number): Promise<Record<string, Object>> {
-    const body: Record<string, Object> = { 'question': this.qIndex, 'student': student };
+    const body: Record<string, Object> = { 'question': this.qIndex, 'student': student, 'end': this.endId };
     return OgNet.jpost<Record<string, Object>>('/api/v1/exams/' + this.examId + '/slices/claim', body);
   }
 
@@ -383,8 +394,15 @@ struct GraderPage {
           'ink': ink,
           'ver': p.ver ?? 0
         };
-        const ver = await this.postGrade(body);
-        p.ver = ver;
+        try {
+          const ver = await this.postGrade(body);
+          p.ver = ver;
+        } catch (err) {
+          // 部分小问已带新 mark/ink 落库、本地还是旧值:重拉该卷同步服务端状态再抛错,
+          // 否则后续 savePart 会携带新版本+旧批注覆盖已存笔迹(评审 GraderPage.ets:386)
+          await this.loadQuestion(this.qIndex, s.student);
+          throw err as Error;
+        }
       }
     } else {
       const body: Record<string, Object> = {
@@ -549,12 +567,22 @@ struct GraderPage {
         this.curPart < s.parts.length - 1) {
         return; // 小问未评完不切卷(由 applyScore 推进 curPart)
       }
-      for (let i = this.cur + 1; i < this.slices.length; i++) {
-        if (!this.ungradedAt(i) || this.slices[i].locked === true) {
+      // 全圈扫描(从深链进入后半段/手动跳卷时,前面可能仍有未评卷,评审 GraderPage.ets:552)
+      const n = this.slices.length;
+      let sawUngraded = false, othersLocked = false;
+      for (let step = 1; step <= n; step++) {
+        const i = (this.cur + step) % n;
+        if (!this.ungradedAt(i)) {
+          continue;
+        }
+        sawUngraded = true;
+        if (this.slices[i].locked === true) {
+          othersLocked = true;
           continue;
         }
         const h = await this.ensureHeld(this.slices[i].student);
         if (h !== 'held' && h !== 'proceed') {
+          othersLocked = true;
           continue; // ensureHeld 已本地标记 graded/locked,继续找
         }
         this.cur = i;
@@ -562,7 +590,13 @@ struct GraderPage {
         this.preload();
         return;
       }
-      promptAction.showToast({ message: '本题已全部阅完' });
+      if (!sawUngraded) {
+        promptAction.showToast({ message: '本题已全部阅完' });
+      } else if (othersLocked) {
+        promptAction.showToast({ message: '剩余未评卷都被他人锁定,稍后会随租约过期释放' });
+      } else {
+        promptAction.showToast({ message: '本题没有可领取的未评卷' });
+      }
     } finally {
       this.jumping = false;
     }
@@ -585,10 +619,16 @@ struct GraderPage {
   }
 
   private jumpNextFlagged(): void {
+    if (this.saving) {
+      return; // 保存在途禁跳转(评审 GraderPage.ets:435)
+    }
     const n = this.slices.length;
     for (let k = 1; k <= n; k++) {
       const i = (this.cur + k) % n;
       if (this.slices[i].mark === 'flag' && i !== this.cur) {
+        if (this.heldStudent > 0) {
+          void this.releaseHeld(); // 跳卷离开当前卷即释放租约(评审 GraderPage.ets:603)
+        }
         this.cur = i;
         this.curPart = 0;
         this.preload();
@@ -599,7 +639,13 @@ struct GraderPage {
   }
 
   private next(): void {
+    if (this.saving) {
+      return; // 保存在途禁翻片:防止 A 卷分数写进 B 卷目标(评审 GraderPage.ets:435)
+    }
     if (this.cur < this.slices.length - 1) {
+      if (this.heldStudent > 0) {
+        void this.releaseHeld(); // 翻片离开当前卷即释放租约(评审 GraderPage.ets:603)
+      }
       this.cur++;
       this.curPart = 0;
       this.preload();
@@ -609,7 +655,13 @@ struct GraderPage {
   }
 
   private prev(): void {
+    if (this.saving) {
+      return; // 保存在途禁翻片(评审 GraderPage.ets:435)
+    }
     if (this.cur > 0) {
+      if (this.heldStudent > 0) {
+        void this.releaseHeld(); // 翻片离开当前卷即释放租约(评审 GraderPage.ets:603)
+      }
       this.cur--;
       this.curPart = 0;
     } else {
@@ -732,7 +784,9 @@ struct GraderPage {
   }
 
   build() {
+    // 外层铺底色;内容列收口 800、宽屏居中(评审 GraderPage.ets:863)
     Column() {
+      Column() {
       // 顶栏
       Row({ space: 8 }) {
         Text('‹').fontSize(26).fontColor(OgC.BRAND).width(34).height(36).textAlign(TextAlign.Center)
@@ -859,10 +913,14 @@ struct GraderPage {
         .align(Alignment.Top)
         this.opsArea()
       }
+      }
+      .width('100%')
+      .constraintSize({ maxWidth: OgDim.MAXW })
     }
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
+    .alignItems(HorizontalAlign.Center)
   }
 
   // 操作区(评分盘 + 标记 + 翻卷):窄屏沉底,宽屏右栏。

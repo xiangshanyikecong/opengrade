@@ -362,7 +362,8 @@ export struct RadarChart {
     const padT = 26;
     const cx = W / 2;
     const cy = padT + (H - padT - 10) / 2;
-    const R = Math.min(W / 2 - 46, H - padT - 24);
+    // 评审 Charts.ets:365 — 半径收进半高以内并留出标签(14px)+字高(~10px)余量,避免顶部标签/底部顶点被裁切
+    const R = Math.min(W / 2 - 46, (H - padT - 10) / 2 - 24);
     if (R <= 30) {
       return;
     }

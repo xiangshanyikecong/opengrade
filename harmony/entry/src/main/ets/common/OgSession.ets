@@ -46,11 +46,12 @@ export class OgSession {
     return OgSession.themeModeValue;
   }
 
-  static setThemeMode(v: string): void {
+  static async setThemeMode(v: string): Promise<void> {
     OgSession.themeModeValue = v;
     if (OgSession.prefs !== null) {
       OgSession.prefs.putSync(KEY_THEME, v);
-      OgSession.prefs.flush();
+      // 评审 OgSession.ets:53 — 等待设置写盘完成,失败时抛给调用方提示重试
+      await OgSession.prefs.flush();
     }
   }
 
@@ -75,11 +76,12 @@ export class OgSession {
     return OgSession.lowDataValue;
   }
 
-  static setLowData(v: boolean): void {
+  static async setLowData(v: boolean): Promise<void> {
     OgSession.lowDataValue = v;
     if (OgSession.prefs !== null) {
       OgSession.prefs.putSync(KEY_LOW_DATA, v);
-      OgSession.prefs.flush();
+      // 评审 OgSession.ets:82 — 等待设置写盘完成,失败时抛给调用方提示重试
+      await OgSession.prefs.flush();
     }
   }
 
@@ -185,10 +187,20 @@ export class OgSession {
     }
   }
 
+  // 评审 OgSession.ets:192 — 服务器列表读-合并-写串行化,防止并发 rememberServer 互相覆盖丢地址
+  private static serverWriteQ: Promise<void> = Promise.resolve();
+
   static async rememberServer(url: string): Promise<void> {
     if (OgSession.prefs === null) {
       return;
     }
+    const p = OgSession.prefs;
+    OgSession.serverWriteQ = OgSession.serverWriteQ
+      .then(() => OgSession.rememberServerLocked(p, url), () => undefined);
+    await OgSession.serverWriteQ;
+  }
+
+  private static async rememberServerLocked(p: preferences.Preferences, url: string): Promise<void> {
     const list = await OgSession.servers();
     const norm = url.replace(/\/+$/, '');
     const out: string[] = [norm];
@@ -197,7 +209,7 @@ export class OgSession {
         out.push(s);
       }
     }
-    await OgSession.prefs.put('servers', JSON.stringify(out));
-    await OgSession.prefs.flush();
+    await p.put('servers', JSON.stringify(out));
+    await p.flush();
   }
 }

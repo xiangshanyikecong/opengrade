@@ -49,6 +49,23 @@ struct CreateExamPage {
       }
       promptAction.showToast({ message: '已带入拍卷识别的版式,请核对分值后建考', duration: 3500 });
     }
+    // 消费拍卷识别快照(从建考页发起识别时回传):只覆盖版式/学科,其余已填字段保留
+    const scanRes = AppStorage.get<string>('ogScanResult');
+    if (scanRes !== undefined && scanRes !== '') {
+      try {
+        const obj = JSON.parse(scanRes) as Record<string, string>;
+        if (obj['layout'] !== undefined && obj['layout'] !== '') {
+          this.layoutText = obj['layout'];
+          if (obj['subject'] !== undefined && obj['subject'] !== '') {
+            this.subject = obj['subject'];
+          }
+          promptAction.showToast({ message: '已带回拍卷识别的版式,请核对分值后建考', duration: 3500 });
+        }
+      } catch (e) {
+        // 坏快照忽略
+      }
+      AppStorage.setOrCreate<string>('ogScanResult', '');
+    }
     this.load();
   }
 
@@ -122,8 +139,13 @@ struct CreateExamPage {
     try {
       const uris = await dp.select(opts);
       if (uris.length > 0) {
-        this.layoutText = await OgNet.readUriText(uris[0]);
-        promptAction.showToast({ message: '已载入版式 JSON(' + Math.round(this.layoutText.length / 1024) + 'KB)' });
+        try {
+          this.layoutText = await OgNet.readUriText(uris[0]);
+          promptAction.showToast({ message: '已载入版式 JSON(' + Math.round(this.layoutText.length / 1024) + 'KB)' });
+        } catch (e2) {
+          // 评审 CreateExamPage.ets:128 — 版式读取失败要提示(原版式仍保留),只有用户取消才静默
+          promptAction.showToast({ message: '版式 JSON 读取失败,原有版式仍保留', duration: 3000 });
+        }
       }
     } catch (e) {
       // 用户取消
@@ -151,9 +173,11 @@ struct CreateExamPage {
         'examGroup': this.examGroup.trim()
       };
       if (this.manualMode) {
-        const full = parseFloat(this.manualFull.trim());
-        if (isNaN(full) || full <= 0) {
-          promptAction.showToast({ message: '手工成绩考试请填写有效满分' });
+        // 评审 CreateExamPage.ets:154 — 拒绝不完整/非有限满分(如 100abc、1e999),仍允许 100/97.5
+        const fullRaw = this.manualFull.trim();
+        const full = parseFloat(fullRaw);
+        if (!/^[0-9]+(\.[0-9]+)?$/.test(fullRaw) || !isFinite(full) || full <= 0 || full > 10000) {
+          promptAction.showToast({ message: '手工成绩考试请填写有效满分(0~10000 的数字)' });
           this.busy = false;
           return;
         }
@@ -187,11 +211,29 @@ struct CreateExamPage {
     this.busy = false;
   }
 
+  private fieldValue(bindTo: string): string {
+    if (bindTo === 'subject') {
+      return this.subject;
+    } else if (bindTo === 'full') {
+      return this.manualFull;
+    } else if (bindTo === 'date') {
+      return this.examDate;
+    } else if (bindTo === 'term') {
+      return this.term;
+    } else if (bindTo === 'type') {
+      return this.examType;
+    } else if (bindTo === 'group') {
+      return this.examGroup;
+    }
+    return '';
+  }
+
   @Builder
   fieldRow(label: string, ph: string, bindTo: string) {
     Column({ space: 3 }) {
       Text(label).fontSize(11).fontColor(OgC.INK_SUB).width('100%')
-      TextInput({ placeholder: ph })
+      // 评审 CreateExamPage.ets:194 — 输入框显示实际将提交的值(presetSubject/重建后的满分等)
+      TextInput({ text: this.fieldValue(bindTo), placeholder: ph })
         .fontSize(14).height(40).width('100%')
         .onChange((v: string) => {
           if (bindTo === 'subject') {
@@ -301,7 +343,10 @@ struct CreateExamPage {
                   .fontSize(11).fontColor(OgC.INK_SUB)
                 Row({ space: 10 }) {
                   PrimaryButton({ label: '📷 拍试卷识别', onTap: () => {
-                    router.pushUrl({ url: 'pages/teacher/LayoutScanPage' }).catch(() => {});
+                    // 带 origin 进入:识别完成后结果经 AppStorage 快照回传,已填班级/日期不丢
+                    //(评审 LayoutScanPage.ets:287)
+                    router.pushUrl({ url: 'pages/teacher/LayoutScanPage',
+                      params: { 'origin': 'create' } as Record<string, string> }).catch(() => {});
                   } })
                   PrimaryButton({ label: '📂 导入版式文件', onTap: () => this.pickLayoutFile() })
                   GhostButton({ label: '清空', onTap: () => {

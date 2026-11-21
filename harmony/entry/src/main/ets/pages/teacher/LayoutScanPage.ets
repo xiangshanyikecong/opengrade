@@ -120,6 +120,15 @@ struct LayoutScanPage {
     await this.analyzePages(uris);
   }
 
+  private scanOrigin: string = ''; // 'create' = 从建考页进入,结果回传原表单
+
+  aboutToAppear(): void {
+    const p = router.getParams() as Record<string, string> | null;
+    if (p !== null && p !== undefined && p['origin'] === 'create') {
+      this.scanOrigin = 'create';
+    }
+  }
+
   private async analyzePages(uris: string[]): Promise<void> {
     if (uris.length === 0 || this.analyzing) {
       return;
@@ -129,8 +138,10 @@ struct LayoutScanPage {
     let added = 0;
     for (let i = 0; i < uris.length; i++) {
       this.progress = '识别第 ' + (this.pages + 1) + ' 页…';
+      let cachePath = '';
       try {
         const path = await OgNet.copyUriToCache(uris[i], 'paper_' + Date.now() + '_' + i + '.jpg');
+        cachePath = path;
         const files: UploadFile[] = [{
           field: 'image',
           fileName: 'page_' + (this.pages + 1) + '.jpg',
@@ -138,11 +149,20 @@ struct LayoutScanPage {
           filePath: path
         } as UploadFile];
         const resp = await OgNet.upload('/api/v1/layout/analyze', {}, files, 120000);
-        this.merge(JSON.parse(resp) as AnalyzeResp);
+        await this.merge(JSON.parse(resp) as AnalyzeResp); // 等待本页合并完成再判完成/继续下一页(评审 LayoutScanPage.ets:141)
         added++;
       } catch (e) {
         this.failed = '第 ' + (i + 1) + ' 张识别失败:' + (e instanceof OgError ? e.message : '网络异常');
         break;
+      } finally {
+        // 每页识别结束清理沙箱副本,连续拍卷不再累积试卷原图(相册原件不动,评审 LayoutScanPage.ets:133)
+        if (cachePath !== '') {
+          try {
+            fs.unlinkSync(cachePath);
+          } catch (e) {
+            // 清理失败忽略:副本在缓存目录,系统可回收
+          }
+        }
       }
     }
     this.analyzing = false;
@@ -274,8 +294,23 @@ struct LayoutScanPage {
   }
 
   private applyToCreate(): void {
+    if (this.analyzing) {
+      promptAction.showToast({ message: '识别进行中,请等待当前页完成' });
+      return; // 识别中不能导出:否则导出的是不完整版式(评审 LayoutScanPage.ets:660)
+    }
     if (this.draftQ.length === 0 && this.draftS.length === 0) {
       promptAction.showToast({ message: '还没有识别结果,先拍一页试卷' });
+      return;
+    }
+    // 识别结果经 AppStorage 快照带回建考表单:从建考发起(带 origin)时,原班级/日期
+    // 等已填字段不再丢失;从工作台独立进入仍走 replaceUrl 新建考页(评审 LayoutScanPage.ets:287)
+    if (this.scanOrigin !== '') {
+      AppStorage.setOrCreate('ogScanResult', JSON.stringify({
+        'layout': this.buildLayoutJson(),
+        'subject': this.bankSubject.trim(),
+        'nonce': Date.now()
+      } as Record<string, string> as Object));
+      router.back();
       return;
     }
     const params: Record<string, string> = {
@@ -289,6 +324,10 @@ struct LayoutScanPage {
 
   // 批量导入题库(客观题/主观题都进;题干截图随题上传;部分失败不回滚,对齐 Web 行为)。
   private async importToBank(): Promise<void> {
+    if (this.analyzing) {
+      promptAction.showToast({ message: '识别进行中,请等待当前页完成' });
+      return; // 识别中不能导入/清空:未返回的识别任务还会继续写草稿(评审 LayoutScanPage.ets:660)
+    }
     const total = this.draftQ.length + this.draftS.length;
     if (total === 0) {
       promptAction.showToast({ message: '还没有识别结果' });
@@ -298,9 +337,17 @@ struct LayoutScanPage {
       promptAction.showToast({ message: '请先填写学科' });
       return;
     }
+    // 开批前固定表单字段快照:中途改学科不再把一套题分进两个学科(评审 LayoutScanPage.ets:301)
+    const subject = this.bankSubject.trim();
+    const knowledge = this.bankKnowledge.trim();
+    if (subject === '') {
+      promptAction.showToast({ message: '请先填写学科' });
+      return;
+    }
     this.bankBusy = true;
     let ok = 0;
     let fail = 0;
+    let stemFail = 0;
     const ctx = OgSession.context();
     for (const q of this.draftQ) {
       try {
@@ -309,13 +356,16 @@ struct LayoutScanPage {
           'kind': q.kind,
           'options': Math.max(2, q.options),
           'score': isNaN(sc) || sc <= 0 ? 1 : sc,
-          'subject': this.bankSubject.trim(),
-          'knowledge': this.bankKnowledge.trim(),
+          'subject': subject,
+          'knowledge': knowledge,
           'stem': ''
         };
         const created = await OgNet.jpost<Record<string, string>>('/api/v1/bank', body);
-        await this.uploadStem(created['id'] ?? '', q.stem, q.stemPm, ctx);
-        ok++;
+        const stemOK = await this.uploadStem(created['id'] ?? '', q.stem, q.stemPm, ctx);
+        ok++; // 题目已入库即成功;截图失败单独计数(评审 LayoutScanPage.ets:367)
+        if (!stemOK) {
+          stemFail++;
+        }
       } catch (e) {
         fail++;
       }
@@ -326,25 +376,30 @@ struct LayoutScanPage {
         const body: Record<string, Object> = {
           'kind': 'subjective',
           'score': isNaN(sc) || sc <= 0 ? 10 : sc,
-          'subject': this.bankSubject.trim(),
-          'knowledge': this.bankKnowledge.trim(),
+          'subject': subject,
+          'knowledge': knowledge,
           'stem': ''
         };
         const created = await OgNet.jpost<Record<string, string>>('/api/v1/bank', body);
-        await this.uploadStem(created['id'] ?? '', s.stem, s.stemPm, ctx);
+        const stemOK = await this.uploadStem(created['id'] ?? '', s.stem, s.stemPm, ctx);
         ok++;
+        if (!stemOK) {
+          stemFail++;
+        }
       } catch (e) {
         fail++;
       }
     }
-    this.bankMsg = '已导入 ' + ok + ' 题' + (fail > 0 ? ',失败 ' + fail + ' 题(可到题库手工补录)' : '');
+    this.bankMsg = '已导入 ' + ok + ' 题'
+      + (stemFail > 0 ? ',' + stemFail + ' 题截图上传失败(题目已在题库,可重传截图)' : '')
+      + (fail > 0 ? ',失败 ' + fail + ' 题(可到题库手工补录)' : '');
     promptAction.showToast({ message: this.bankMsg });
     this.bankBusy = false;
   }
 
-  private async uploadStem(id: string, stemB64: string | undefined, pm: image.PixelMap | undefined, ctx: Context): Promise<void> {
+  private async uploadStem(id: string, stemB64: string | undefined, pm: image.PixelMap | undefined, ctx: Context): Promise<boolean> {
     if (id === '' || stemB64 === undefined || stemB64 === '') {
-      return;
+      return true;
     }
     const name = ctx.cacheDir + '/stem_' + Date.now() + '.jpg';
     try {
@@ -364,8 +419,10 @@ struct LayoutScanPage {
         filePath: name
       } as UploadFile];
       await OgNet.upload('/api/v1/bank/' + id + '/stem', {}, files);
+      return true;
     } catch (e) {
-      // 截图失败不阻断:题已入库
+      // 截图失败不阻断建题,但要向调用方报告(单独计数提示,评审 LayoutScanPage.ets:367)
+      return false;
     } finally {
       try {
         fs.unlinkSync(name);
@@ -375,7 +432,35 @@ struct LayoutScanPage {
     }
   }
 
+  private deleteDraftQ(i: number): void {
+    this.draftQ.splice(i, 1);
+    this.tick++;
+  }
+
+  private deleteDraftS(i: number): void {
+    this.draftS.splice(i, 1);
+    this.tick++;
+  }
+
+  private addManualQ(): void {
+    const row: DraftQ = {
+      kind: 'choice',
+      options: 4,
+      scoreStr: '1',
+      number: this.draftQ.length + 1,
+      note: '手工补题,请核对题号与选项数',
+      stem: undefined,
+      stemPm: undefined
+    };
+    this.draftQ.push(row);
+    this.tick++;
+  }
+
   private clearDraft(): void {
+    if (this.analyzing) {
+      promptAction.showToast({ message: '识别进行中,不能清空(评审 LayoutScanPage.ets:660)' });
+      return;
+    }
     this.draftQ = [];
     this.draftS = [];
     this.notes = [];
@@ -415,6 +500,8 @@ struct LayoutScanPage {
               this.showBig(q.stemPm!);
             })
         }
+        Text('移除').fontSize(11).fontColor(OgC.BAD)
+          .onClick(() => this.deleteDraftQ(i)) // 误检题可删(评审 LayoutScanPage.ets:582)
       }
       .width('100%')
       Row({ space: 8 }) {
@@ -465,6 +552,8 @@ struct LayoutScanPage {
       TextInput({ text: s.scoreStr })
         .type(InputType.NUMBER_DECIMAL).fontSize(12).width(48).height(30)
         .onChange((v: string) => this.setSScore(i, v))
+      Text('移除').fontSize(11).fontColor(OgC.BAD)
+        .onClick(() => this.deleteDraftS(i)) // 多识别的留白区可删(评审 LayoutScanPage.ets:582)
     }
     .width('100%')
     .padding({ top: 8, bottom: 8 })
@@ -579,10 +668,13 @@ struct LayoutScanPage {
 
             // 客观题
             Column({ space: 4 }) {
-              SectionHeader({ text: '客观题 ' + this.draftQ.length + ' 题', extra: '题型/选项/分值可改' })
+              SectionHeader({ text: '客观题 ' + this.draftQ.length + ' 题', extra: '题型/选项/分值可改,误检可移除' })
               ForEach(this.draftQ, (q: DraftQ, i: number) => {
                 this.qRow(q, i)
               }, (q: DraftQ, i: number) => 'q' + i + '-' + q.kind + '-' + q.options + '-' + this.tick)
+              Text('＋ 手工补一题(漏检时补,题号按序)')
+                .fontSize(12).fontColor(OgC.BRAND)
+                .onClick(() => this.addManualQ())
               if (this.draftQ.length === 0) {
                 Text('未检测到客观题').fontSize(12).fontColor(OgC.INK_SUB)
               }
@@ -663,12 +755,13 @@ struct LayoutScanPage {
               })
               PrimaryButton({
                 full: true,
+                usable: !this.analyzing,
                 label: '✓ 生成版式并去建考',
                 onTap: () => this.applyToCreate()
               })
               Text('清空本次识别结果')
                 .fontSize(12)
-                .fontColor(OgC.BAD)
+                .fontColor(this.analyzing ? OgC.INK_SUB : OgC.BAD)
                 .onClick(() => this.clearDraft())
             }
             .width('100%')
@@ -686,6 +779,14 @@ struct LayoutScanPage {
       .layoutWeight(1)
       .scrollBar(BarState.Off)
       .align(Alignment.Top)
+      .bindSheet($$this.zoomOpen, this.zoomBuilder(), {
+        height: '100%',
+        onWillDisappear: (): void => {
+          this.zoomOpen = false;
+          this.zoomIdx = -1;
+          this.zoomScale = 1;
+        }
+      } as SheetOptions)
     }
     .width('100%')
     .height('100%')

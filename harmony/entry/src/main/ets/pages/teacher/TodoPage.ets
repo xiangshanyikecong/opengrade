@@ -37,10 +37,16 @@ struct TodoPage {
   @State failed: boolean = false;
   @State failMsg: string = '';
   @State navOpen: boolean = false;
+  @StorageProp('ogBp') bp: string = 'sm';
   @State remindBusy: boolean = false;
   @State remindMsg: string = '';
 
   aboutToAppear(): void {
+    this.load();
+  }
+
+  onPageShow(): void {
+    // 返回本页时刷新:处理完待办 back 回来,router 不会重建页面(评审 TodoPage.ets:43)
     this.load();
   }
 
@@ -353,7 +359,7 @@ struct TodoPage {
             ForEach(this.items, (it: TodoItem) => {
               this.todoRow(it)
             }, (it: TodoItem) => it.key + '-' + String(it.done) + String(it.urgent))
-            Text('数据聚合自「我的任务 + 考试列表」,下拉重新进入即刷新。')
+            Text('数据聚合自「我的任务 + 考试列表」,处理完待办返回本页会自动刷新。')
               .fontSize(10).fontColor(OgC.INK_SUB).margin({ top: 10 })
           }
           .padding({ left: OgDim.PAD, right: OgDim.PAD, bottom: 20 })
@@ -368,7 +374,7 @@ struct TodoPage {
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
-    .bindSheet($$this.navOpen, this.sheetBuilder(), navSheetOptions(OgBreakpoint.now(), '工作台导航'))
+    .bindSheet($$this.navOpen, this.sheetBuilder(), navSheetOptions(this.bp, '工作台导航'))
   }
 
   @Builder

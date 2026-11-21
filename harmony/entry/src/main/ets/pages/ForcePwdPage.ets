@@ -4,7 +4,7 @@ import { router } from '@kit.ArkUI';
 import { promptAction } from '@kit.ArkUI';
 import { OgNet, OgError } from '../common/OgNet';
 import { OgSession } from '../common/OgSession';
-import { OgC } from '../common/OgTheme';
+import { OgC, OgDim } from '../common/OgTheme';
 import { Me } from '../model/Api';
 
 @Entry
@@ -47,43 +47,48 @@ struct ForcePwdPage {
   }
 
   build() {
-    Column({ space: 14 }) {
-      Text('修改初始密码').fontSize(20).fontWeight(FontWeight.Bold).fontColor(OgC.INK).margin({ top: 60 })
-      Text('当前账号仍在使用初始密码,修改后才能使用系统其它功能。')
-        .fontSize(13).fontColor(OgC.INK_SUB).textAlign(TextAlign.Center)
-      TextInput({ text: this.oldPwd, placeholder: '原密码(初始密码)' })
-        .type(InputType.Password)
-        .fontSize(15)
-        .height(44)
-        .onChange((v: string) => {
-          this.oldPwd = v;
-        })
-      TextInput({ text: this.newPwd, placeholder: '新密码(至少 5 位)' })
-        .type(InputType.Password)
-        .fontSize(15)
-        .height(44)
-        .onChange((v: string) => {
-          this.newPwd = v;
-        })
-      TextInput({ text: this.newPwd2, placeholder: '确认新密码' })
-        .type(InputType.Password)
-        .fontSize(15)
-        .height(44)
-        .onChange((v: string) => {
-          this.newPwd2 = v;
-        })
-      if (this.msg !== '') {
-        Text(this.msg).fontSize(13).fontColor(OgC.BAD)
+    // 评审 ForcePwdPage.ets:86 — 内容按断点收口 800(OgDim.MAXW),宽屏水平居中
+    Column() {
+      Column({ space: 14 }) {
+        Text('修改初始密码').fontSize(20).fontWeight(FontWeight.Bold).fontColor(OgC.INK).margin({ top: 60 })
+        Text('当前账号仍在使用初始密码,修改后才能使用系统其它功能。')
+          .fontSize(13).fontColor(OgC.INK_SUB).textAlign(TextAlign.Center)
+        TextInput({ text: this.oldPwd, placeholder: '原密码(初始密码)' })
+          .type(InputType.Password)
+          .fontSize(15)
+          .height(44)
+          .onChange((v: string) => {
+            this.oldPwd = v;
+          })
+        TextInput({ text: this.newPwd, placeholder: '新密码(至少 5 位)' })
+          .type(InputType.Password)
+          .fontSize(15)
+          .height(44)
+          .onChange((v: string) => {
+            this.newPwd = v;
+          })
+        TextInput({ text: this.newPwd2, placeholder: '确认新密码' })
+          .type(InputType.Password)
+          .fontSize(15)
+          .height(44)
+          .onChange((v: string) => {
+            this.newPwd2 = v;
+          })
+        if (this.msg !== '') {
+          Text(this.msg).fontSize(13).fontColor(OgC.BAD)
+        }
+        Button(this.busy ? '提交中…' : '确认修改')
+          .width('100%')
+          .height(46)
+          .fontSize(16)
+          .backgroundColor(OgC.BRAND)
+          .enabled(!this.busy)
+          .onClick(() => this.doChange())
       }
-      Button(this.busy ? '提交中…' : '确认修改')
-        .width('100%')
-        .height(46)
-        .fontSize(16)
-        .backgroundColor(OgC.BRAND)
-        .enabled(!this.busy)
-        .onClick(() => this.doChange())
+      .padding({ left: 24, right: 24 })
+      .width('100%')
+      .constraintSize({ maxWidth: OgDim.MAXW })
     }
-    .padding({ left: 24, right: 24 })
     .width('100%')
     .height('100%')
     .backgroundColor(OgC.BG)
