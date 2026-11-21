@@ -118,10 +118,12 @@ func TestAppealReworkE2E(t *testing.T) {
 		t.Fatalf("逐题明细数量 = %d,期望 %d", len(qs), len(fx.layout.Questions)+len(fx.layout.Subjectives))
 	}
 	subs := d["subjectives"].([]any)
-	if len(subs) == 0 || subs[0].(map[string]any)["sliceURL"] == "" {
+	// 字段必须是非空字符串:nil(nil=="" 为假)会溜过空串断言(评审 appeal_e2e_test.go:121)
+	su0, _ := subs[0].(map[string]any)
+	if su0["sliceURL"] == nil || su0["sliceURL"].(string) == "" {
 		t.Fatalf("主观题状态应含切片 URL:%v", subs)
 	}
-	if d["pages"].(float64) < 1 || d["pageURL"] == "" {
+	if d["pages"].(float64) < 1 || d["pageURL"] == nil || d["pageURL"].(string) == "" {
 		t.Fatalf("整卷回溯异常:pages=%v pageURL=%v", d["pages"], d["pageURL"])
 	}
 	if len(d["appeals"].([]any)) != 3 {
@@ -169,9 +171,19 @@ func TestAppealReworkE2E(t *testing.T) {
 		t.Fatalf("家长指定非绑定 child 应 403,得到 %d", got)
 	}
 	pc := parent.json("GET", "/api/v1/student/exams?child=00000002", nil, http.StatusOK)
-	for _, row := range pc["exams"].([]any) {
-		if row.(map[string]any)["id"] == examID && row.(map[string]any)["child"] != "00000002" {
-			t.Fatalf("child 过滤后不应出现其它子女:%v", row)
+	rowsPC, _ := pc["exams"].([]any)
+	hit := 0
+	for _, row := range rowsPC {
+		m := row.(map[string]any)
+		if m["id"] == examID {
+			hit++
+			if m["child"] != "00000002" {
+				t.Fatalf("child 过滤后不应出现其它子女:%v", row)
+			}
 		}
+	}
+	// 合法 child 必须恰好返回该子女的一行:空列表不能溜过循环(评审 appeal_e2e_test.go:172)
+	if hit != 1 {
+		t.Fatalf("child=00000002 应恰返回 1 行本场考试,得到 %d(%v)", hit, rowsPC)
 	}
 }

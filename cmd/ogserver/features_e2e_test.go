@@ -230,18 +230,39 @@ func TestNewFeaturesE2E(t *testing.T) {
 		// t301 只见三年一班的 2 卷(卷 4、5),给第 31 题(主观题 1)打分
 		// 通过切片列表确认其可见学生号,然后逐一评分
 		sl := t301.jsonArr("GET", fmt.Sprintf("/api/v1/exams/%s/slices?q=1&grading=1", examID), http.StatusOK)
+		scored := map[string]bool{} // 记录实际打分的考号:事后按学生明细核对分值,不只看已阅计数
 		for _, item := range sl {
 			studentNo := int(item["student"].(float64))
+			reg, _ := item["reg"].(string)
 			ver, _ := item["ver"].(float64) // 乐观锁:发布门禁补评过的卷携带当前版本改分
 			t301.json("POST", "/api/v1/grades", map[string]any{
 				"examId": examID, "student": studentNo, "question": 1, "score": 5, "ver": int(ver),
 			}, http.StatusOK)
-		} // 统计不受影响:第 31 题已阅数应 ≥ 2(仅这 2 卷被改)
+			scored[reg] = true
+		}
+		if len(scored) < 2 {
+			t.Fatalf("按班分配下 t301 应可见并评完 2 卷,实际 %d", len(scored))
+		}
 		a := admin.json("GET", "/api/v1/exams/"+examID+"/analytics", nil, http.StatusOK)
 		qs := a["questions"].([]any)
 		q31 := qs[30].(map[string]any)
 		if int(q31["graded"].(float64)) < 2 {
 			t.Fatalf("主观题 1 已阅 = %v,期望 >= 2", q31["graded"])
+		}
+		// 逐卷核对:本次改分的每个考号,其主观题 1 得分须为 5(评审 features_e2e_test.go:243)
+		for reg := range scored {
+			if reg == "" {
+				continue
+			}
+			det := admin.json("GET", fmt.Sprintf("/api/v1/exams/%s/students/%s", examID, reg), nil, http.StatusOK)
+			subs := det["subjectives"].([]any)
+			if len(subs) == 0 {
+				t.Fatalf("考号 %s 主观题状态缺失", reg)
+			}
+			s0 := subs[0].(map[string]any)
+			if s0["score"].(float64) != 5 || s0["graded"] != true {
+				t.Fatalf("考号 %s 主观题 1 应为已评 5 分:%v", reg, s0)
+			}
 		}
 	})
 

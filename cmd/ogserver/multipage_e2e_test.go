@@ -122,6 +122,22 @@ func TestMultipageE2E(t *testing.T) {
 		if len(items) != 2 {
 			t.Fatalf("第 %d 题切片数 = %d,期望 2(含第 2 页主观题)", q, len(items))
 		}
+		// 找不到文件的服务端也会返回条目:拒绝 missing,并实际取回图像(评审 multipage_e2e_test.go:122)
+		for _, m := range items {
+			if m["missing"] == true {
+				t.Fatalf("第 %d 题切片不应 missing:%v", q, m)
+			}
+		}
+	}
+	// 页 2 的主观题切片(全局第 5 题)实际取回,验证非空 JPEG
+	sl5 := admin.jsonArr("GET", fmt.Sprintf("/api/v1/exams/%s/slices?q=5&grading=1", examID), http.StatusOK)
+	for _, m := range sl5 {
+		if u, ok := m["sliceURL"].(string); ok && u != "" {
+			resp, data := admin.do("GET", u, nil, "")
+			if resp.StatusCode != http.StatusOK || len(data) < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+				t.Fatalf("页 2 切片取回异常:%d %s(%d 字节)", resp.StatusCode, u, len(data))
+			}
+		}
 	}
 
 	// 张数不是页数整数倍:不再报错 —— 按考号归组,乙缺第 2 页 → 建考成功 + 页级缺页告警

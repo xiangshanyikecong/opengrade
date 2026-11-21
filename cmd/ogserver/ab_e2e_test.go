@@ -9,6 +9,7 @@ package main
 //   - 个性化出卡 cards.pdf(A/B 卷按名册,卷头复合码)。
 
 import (
+	"sort"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -193,11 +194,19 @@ func TestABVariantsE2E(t *testing.T) {
 	// —— 人工指派卷种(学生3 = A 卷):重读客观题,恢复进报告且满分 ——
 	admin.json("POST", "/api/v1/exams/"+examID+"/assign-variant", map[string]any{"student": 3, "variant": "A"}, http.StatusOK)
 	rep = admin.json("GET", "/api/v1/exams/"+examID+"/report", nil, http.StatusOK)
+	found3 := false
 	for _, s := range rep["students"].([]any) {
 		sm := s.(map[string]any)
-		if sm["regNumber"] == "00000003" && sm["objective"].(float64) != 6 {
-			t.Fatalf("指派 A 卷后客观题应 6 分:%v", sm)
+		if sm["regNumber"] == "00000003" {
+			found3 = true
+			if sm["objective"].(float64) != 6 {
+				t.Fatalf("指派 A 卷后客观题应 6 分:%v", sm)
+			}
 		}
+	}
+	// 存在性断言:指派后 00000003 必须重新进入报告(评审 ab_e2e_test.go:198)
+	if !found3 {
+		t.Fatal("指派 A 卷后 00000003 未重新进入报告")
 	}
 
 	// —— 个性化出卡(A/B 卷按名册,卷头复合码)——
@@ -224,7 +233,14 @@ func mustJSON(v any) string {
 
 // writeScanMultipart 构造 images[] 文件 multipart(扫描上传用)。
 func writeScanMultipart(buf *bytes.Buffer, files map[string][]byte) {
-	for name, data := range files {
+	// 文件按名字排序写入:map 遍历顺序不定,乱序会让"第 3 张"语义漂移(评审 ab_e2e_test.go:227)
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		data := files[name]
 		fmt.Fprintf(buf, "--%s\r\nContent-Disposition: form-data; name=\"images\"; filename=\"%s\"\r\nContent-Type: image/jpeg\r\n\r\n", multipartBoundary, name)
 		buf.Write(data)
 		fmt.Fprint(buf, "\r\n")

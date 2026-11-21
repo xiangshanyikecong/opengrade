@@ -62,20 +62,33 @@ func newClient(t *testing.T, base string) *e2eClient {
 
 func (c *e2eClient) do(method, path string, body io.Reader, contentType string) (*http.Response, []byte) {
 	c.t.Helper()
+	resp, data, err := c.doErr(method, path, body, contentType)
+	if err != nil {
+		c.t.Fatalf("%s %s: %v", method, path, err)
+	}
+	return resp, data
+}
+
+// doErr 传输层错误以返回值交给调用方:并发协程里不能调用非本协程的 testing.T
+//(FailNow 只能从对应测试的 goroutine 调用,评审 concurrent_grade_e2e_test.go:92)。
+func (c *e2eClient) doErr(method, path string, body io.Reader, contentType string) (*http.Response, []byte, error) {
 	req, err := http.NewRequest(method, c.base+path, body)
 	if err != nil {
-		c.t.Fatal(err)
+		return nil, nil, err
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		c.t.Fatalf("%s %s: %v", method, path, err)
+		return nil, nil, err
 	}
-	data, _ := io.ReadAll(resp.Body)
+	data, rerr := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	return resp, data
+	if rerr != nil {
+		return nil, nil, rerr
+	}
+	return resp, data, nil
 }
 
 // code 只取状态码;5xx 直接判失败(复核测试不允许服务端内部错误)。
@@ -692,8 +705,10 @@ func TestFullSystemReview(t *testing.T) {
 		if d["pageURL"] == nil || d["pageURL"] == "" {
 			t.Fatal("学生应有整卷回溯")
 		}
-		if len(d["byClass"].([]any)) != 2 {
-			t.Fatal("班级参照缺失")
+		// 学生端班级参照只含本人班级(评审 student.go:399/CWE-200:他班 count+mean
+		// 在一人班级场景=精确分数泄露;教师端聚合 G 步仍看全量 2 班,口径不变)
+		if len(d["byClass"].([]any)) != 1 {
+			t.Fatalf("学生班级参照应只含本人班级,得到 %d", len(d["byClass"].([]any)))
 		}
 	})
 	t.Run("I3_学生答卷回溯", func(t *testing.T) {
@@ -836,12 +851,14 @@ func TestFullSystemReview(t *testing.T) {
 	// ---------- K. 重启持久化与会话失效 ----------
 	t.Run("K_重启持久化与会话失效", func(t *testing.T) {
 		srv.Exams.FlushAll() // 评分类走去抖落盘:重启前冲刷(生产由优雅关停完成)
+		srv.Exams.Stop()     // 先停旧 Store 的后台冲刷循环,再同目录开新实例(评审 e2e_test.go:839)
 		srv2, err := newServer(dir, false) // 模拟重启:同数据目录,全新进程状态
 		if err != nil {
 			t.Fatal(err)
 		}
 		ts2 := httptest.NewServer(srv2.Handler)
 		defer ts2.Close()
+		defer srv2.Exams.Stop() // 新实例的冲刷循环同样随测试退出(评审 e2e_test.go:839)
 		// 显式把 ts1 的旧会话令牌发到新实例(端口不同但 Cookie 同域共享)
 		u1, _ := url.Parse(ts.URL)
 		oldToken := ""
@@ -935,8 +952,12 @@ func mustZipParts(t *testing.T, data []byte) map[string]string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		b, _ := io.ReadAll(rc)
+		b, rerr := io.ReadAll(rc)
 		rc.Close()
+		// CRC 等读取错误不可吞:损坏条目不得当有效内容(评审 e2e_test.go:938)
+		if rerr != nil {
+			t.Fatalf("zip 条目 %s 读取失败: %v", f.Name, rerr)
+		}
 		out[f.Name] = string(b)
 	}
 	return out

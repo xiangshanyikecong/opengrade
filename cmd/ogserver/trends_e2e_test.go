@@ -30,6 +30,8 @@ func TestTrendsAndSupplements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Store 后台冲刷循环随测试退出:HTTP 先关、再冲刷并停循环(评审 trends_e2e_test.go:34)
+	t.Cleanup(func() { srv.Exams.Stop() })
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 
@@ -225,14 +227,22 @@ func TestTrendsAndSupplements(t *testing.T) {
 		if len(p5) != 1 || p5[0].(map[string]any)["absent"] != true {
 			t.Fatalf("考号 5 应为 examA 缺考点: %v", p5)
 		}
-		// 班级过滤:只出三年二班学生,两场都含该班
+		// 班级过滤:只出三年二班学生,两场都含该班;空响应也要显式失败(评审 trends_e2e_test.go:229)
 		trc := admin.json("GET", "/api/v1/trends?class="+url.QueryEscape("三年二班"), nil, http.StatusOK)
-		for _, s := range trc["students"].([]any) {
+		sList, _ := trc["students"].([]any)
+		eList, _ := trc["exams"].([]any)
+		if len(eList) != 2 {
+			t.Fatalf("班级筛选应保留两场考试,得到 %d 场", len(eList))
+		}
+		if len(sList) != 3 {
+			t.Fatalf("班级筛选应保留三名学生,得到 %d 名", len(sList))
+		}
+		for _, s := range sList {
 			if s.(map[string]any)["class"] != "三年二班" {
 				t.Fatalf("班级过滤失效: %v", s)
 			}
 		}
-		for _, e := range trc["exams"].([]any) {
+		for _, e := range eList {
 			if e.(map[string]any)["classCount"].(float64) != 3 {
 				t.Fatalf("本班人数应为 3: %v", e)
 			}
@@ -282,6 +292,15 @@ func TestTrendsAndSupplements(t *testing.T) {
 			if m["id"] == examA {
 				examAItem = m
 			}
+		}
+		// examB 无卷:不得出现在列表中;unmatched 恰为 1(评审 trends_e2e_test.go:279)
+		for _, it := range list5 {
+			if it.(map[string]any)["id"] == examB {
+				t.Fatalf("无卷的 examB 不应出现在学生列表: %v", it)
+			}
+		}
+		if u5, ok := lr5["unmatched"].(float64); !ok || u5 != 1 {
+			t.Fatalf("unmatched 应恰为 1,得到 %v", lr5["unmatched"])
 		}
 		if examAItem == nil || examAItem["found"] != true || examAItem["absent"] != true {
 			t.Fatalf("s0005 应在 examA 显示缺考: %v", list5)

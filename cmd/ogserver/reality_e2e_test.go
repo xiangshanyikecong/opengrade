@@ -97,6 +97,21 @@ func TestRealityAlignmentE2E(t *testing.T) {
 	if r2.StatusCode != http.StatusOK {
 		t.Fatalf("正确 ver 应 200,得到 %d", r2.StatusCode)
 	}
+	// 同一卷同一题的改分只保留一条评分记录:此时 admin 仅在本场改过这一题,
+	// byExam 应为 1(改分不重复计数;bulk 评分之前口径隔离,评审 reality_e2e_test.go:300)
+	wlEarly := admin.jsonArr("GET", "/api/v1/workload", http.StatusOK)
+	earlyOK := false
+	for _, row := range wlEarly {
+		if row["username"] == "admin" {
+			earlyOK = true
+			if be, ok := row["byExam"].(map[string]any)[examID].(float64); !ok || be != 1 {
+				t.Fatalf("admin 对本场 byExam 应为 1(改分不重复计数):%v", row)
+			}
+		}
+	}
+	if !earlyOK {
+		t.Fatalf("工作量统计缺 admin:%v", wlEarly)
+	}
 
 	// —— 卷生命周期:重扫同一考号 → 重复告警 → 作废其一 ——
 	var dup bytes.Buffer
@@ -234,7 +249,19 @@ func TestRealityAlignmentE2E(t *testing.T) {
 	if aggLei == nil {
 		t.Fatalf("总表缺考号 00000001:%v", aggStudents)
 	}
-	// 总分 = 默认卷得分 + 体育 92.5;名次按总分并列规则
+	// 总分 = 默认卷得分 + 体育 92.5;名次按总分并列规则。
+	// 总分本身也要断言:rank=1 而 total=0 的错数不能溜过(评审 reality_e2e_test.go:237)
+	defRep := admin.json("GET", "/api/v1/exams/"+examID+"/report", nil, http.StatusOK)
+	var defScore float64
+	for _, st := range defRep["students"].([]any) {
+		if sm, _ := st.(map[string]any); sm != nil && sm["regNumber"] == "00000001" {
+			defScore = sm["score"].(float64)
+		}
+	}
+	wantTotal := defScore + 92.5
+	if got, _ := aggLei["total"].(float64); got < wantTotal-1e-6 || got > wantTotal+1e-6 {
+		t.Fatalf("李雷总分 = %v,期望默认卷 %v + 体育 92.5 = %v", aggLei["total"], defScore, wantTotal)
+	}
 	if aggLei["rank"].(float64) != 1 {
 		t.Fatalf("李雷应年级第 1:%v", aggLei)
 	}
@@ -297,12 +324,12 @@ func TestRealityAlignmentE2E(t *testing.T) {
 		t.Fatalf("成绩条 PDF 异常:%d %s", pResp.StatusCode, string(pdf[:minInt(60, len(pdf))]))
 	}
 
-	// —— 阅卷工作量统计(teacher1 评了卷 1 第 1 题 + 已记录 By)——
+	// —— 阅卷工作量统计(admin 评了卷 1 第 1 题 + 已记录 By)——
 	wl := admin.jsonArr("GET", "/api/v1/workload", http.StatusOK)
 	found := false
 	for _, row := range wl {
-		if row["username"] == "admin" && row["graded"].(float64) >= 2 {
-			found = true // admin 评了 student1 q1 两次(3 分→4 分)
+		if row["username"] == "admin" {
+			found = true
 		}
 	}
 	if !found {

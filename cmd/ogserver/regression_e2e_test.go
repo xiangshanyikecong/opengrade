@@ -8,6 +8,7 @@ package main
 //   - A-1 读写并发冒烟(配 go test -race 验证快照隔离)。
 
 import (
+	"sync/atomic"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -261,6 +262,9 @@ func TestConcurrentReadWriteSmoke(t *testing.T) {
 	}
 	_ = book
 	var wg sync.WaitGroup
+	var writes, reads atomic.Int64
+	var mu sync.Mutex
+	var rwErrs []error
 	for w := 0; w < 2; w++ {
 		wg.Add(1)
 		go func() {
@@ -269,6 +273,12 @@ func TestConcurrentReadWriteSmoke(t *testing.T) {
 			for i := 0; i < 150; i++ {
 				if v, err := s.SetGrade(ex.ID, 1, 1, score.Grade{Score: 5, Graded: true}, "writer", ver); err == nil {
 					ver = v
+					writes.Add(1)
+				} else if _, isConflict := err.(*ConflictError); !isConflict {
+					// 非版本冲突错误交给主测试报告(评审 regression_e2e_test.go:270)
+					mu.Lock()
+					rwErrs = append(rwErrs, err)
+					mu.Unlock()
 				}
 			}
 		}()
@@ -280,13 +290,24 @@ func TestConcurrentReadWriteSmoke(t *testing.T) {
 			for i := 0; i < 3000; i++ {
 				snap, ok := s.Get(ex.ID)
 				if !ok {
+					mu.Lock()
+					rwErrs = append(rwErrs, fmt.Errorf("Get 失败"))
+					mu.Unlock()
 					return
 				}
 				_ = examStage(snap)
 				_ = flaggedQueue(snap)
 				_ = scopeExamToClasses(snap, []string{"三年二班"})
+				reads.Add(1)
 			}
 		}()
 	}
 	wg.Wait()
+	// 冒烟必须至少产生一次有效读写,否则测试在空转通过(评审 regression_e2e_test.go:270)
+	if writes.Load() == 0 || reads.Load() == 0 {
+		t.Fatalf("并发冒烟未产生有效读写:writes=%d reads=%d errs=%v", writes.Load(), reads.Load(), rwErrs)
+	}
+	for _, e := range rwErrs {
+		t.Error(e)
+	}
 }

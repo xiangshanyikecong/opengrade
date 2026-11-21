@@ -81,6 +81,7 @@ func TestConcurrentGradingE2E(t *testing.T) {
 	var wg sync.WaitGroup
 	mu := sync.Mutex{}
 	var bad []string
+	writeOK := 0
 	for ei, id := range examIDs {
 		for q := 1; q <= 2; q++ {
 			for st := 1; st <= 5; st++ {
@@ -89,12 +90,22 @@ func TestConcurrentGradingE2E(t *testing.T) {
 					defer wg.Done()
 					payload := fmt.Sprintf(`{"examId":%q,"student":%d,"question":%d,"score":%d,"graded":true}`,
 						id, st, q, (st+q+ei)%10+1)
-					resp, data := admin.do("POST", "/api/v1/grades", strings.NewReader(payload), "application/json")
+					resp, data, err := admin.doErr("POST", "/api/v1/grades", strings.NewReader(payload), "application/json")
+					if err != nil {
+						mu.Lock()
+						bad = append(bad, fmt.Sprintf("评分 %s s%d q%d 传输失败: %v", id, st, q, err))
+						mu.Unlock()
+						return
+					}
 					if resp.StatusCode != http.StatusOK {
 						mu.Lock()
 						bad = append(bad, fmt.Sprintf("评分 %s s%d q%d → %d: %s", id, st, q, resp.StatusCode, data))
 						mu.Unlock()
+						return
 					}
+					mu.Lock()
+					writeOK++
+					mu.Unlock()
 				}(id, st, q, ei)
 			}
 		}
@@ -109,7 +120,13 @@ func TestConcurrentGradingE2E(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				admin.do("GET", "/api/v1/exams", nil, "")
+				// 并发读取的 HTTP 状态必须 200:错误响应带路径记录(评审 concurrent_grade_e2e_test.go:112)
+				resp, data, err := admin.doErr("GET", "/api/v1/exams", nil, "")
+				if err == nil && resp.StatusCode != http.StatusOK {
+					mu.Lock()
+					bad = append(bad, fmt.Sprintf("列表读 → %d: %s", resp.StatusCode, data))
+					mu.Unlock()
+				}
 			}
 		}
 	}()
@@ -120,7 +137,12 @@ func TestConcurrentGradingE2E(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				admin.do("GET", "/api/v1/exams/"+examIDs[0], nil, "")
+				resp, data, err := admin.doErr("GET", "/api/v1/exams/"+examIDs[0], nil, "")
+				if err == nil && resp.StatusCode != http.StatusOK {
+					mu.Lock()
+					bad = append(bad, fmt.Sprintf("详情读 → %d: %s", resp.StatusCode, data))
+					mu.Unlock()
+				}
 			}
 		}
 	}()
@@ -128,6 +150,10 @@ func TestConcurrentGradingE2E(t *testing.T) {
 	wg.Wait()
 	close(stop)
 	readers.Wait()
+	// 并发冒烟必须至少完成一次有效评分写(评审 concurrent_grade_e2e_test.go:155)
+	if writeOK == 0 {
+		t.Fatalf("并发评分无一成功(bad=%v)", bad)
+	}
 	for _, b := range bad {
 		t.Error(b)
 	}
