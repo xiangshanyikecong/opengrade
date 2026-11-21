@@ -1,0 +1,22 @@
+language: zh-CN
+
+chat:
+  auto_reply: true
+
+reviews:
+  profile: chill
+  path_filters:
+    - "!**/build/**"
+    - "!demo_output/**"
+    - "!**/*.exe"
+    - "!omr_*.json"
+  path_instructions:
+    - path: "**/*.go"
+      instructions: |
+        重点看并发安全(内存 store 读写锁、rev 乐观锁)与错误处理。
+        协作阅卷租约三条红线:软闸不拦 SetGrade、graded 放行改分、每端至多持一张,勿建议破坏。
+        评分落盘走 1s 去抖;存储口径以 summaries 摘要索引为准;勿建议引入 SQLite(已评审否决)。
+    - path: "harmony/**/*.ets"
+      instructions: |
+        ArkTS 注意折叠屏断点适配(OgBreakpoint sm/md/lg + AppStorage ogBp,内容收口 800)。
+        ?? [] 守卫不窄化类型,守卫内使用原字段须保留 !== undefined 或落类型化本地变量。
