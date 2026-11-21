@@ -91,7 +91,12 @@ func wrongSetOfStudent(ex *Exam, idx int) map[int]bool {
 		}
 	}
 	base := len(ex.ObjectiveKey)
+	groups := score.ElectiveGroups(ex.Layout.Subjectives)
+	excluded := score.ElectiveExcluded(groups, ex.Layout.Subjectives, ex.Grades, res, idx)
 	for qi, spec := range ex.Layout.Subjectives {
+		if excluded[qi+1] {
+			continue // 未被所选的选做题:即使残留已评成绩也不进练习卡(与逐题明细同口径,评审 practice.go:96)
+		}
 		max := score.SubjectiveMax(spec)
 		if s, done, _ := score.SubjectiveScore(spec, ex.Grades, idx, qi+1); done && s < max {
 			wrong[base+qi+1] = true

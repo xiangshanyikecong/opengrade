@@ -39,25 +39,28 @@ import (
 // loadPageGroups 从 pages/ 目录装回某生的矫正图组(第 1 页 sNN.jpg,第 k>1 页 sNN_pKK.jpg;
 // 卷种指派重读/跨批合并用)。无图返回空(如手工补录卷)。
 // 页号可能跳号(缺页残卷按真实页号命名,如只有第 1、3 页):逐号探测到 60,不做
-// "遇缺即停"——否则缺第 2 页的卷会把第 3 页也丢掉。返回按页号升序的图组。
-func (s *Store) loadPageGroups(id string, student int) []*image.Gray {
+// "遇缺即停"——否则缺第 2 页的卷会把第 3 页也丢掉。缺第 1 页也不再整体放弃:
+// 残卷可能只有第 2+ 页,仍有可重读的内容(评审 ab.go:54)。
+// 返回图组与逐图的真实页号(文件名即页号,是唯一可靠对应 —— 位置索引会在
+// 中间页解码失败时错位,评审 ab.go:48)。
+func (s *Store) loadPageGroups(id string, student int) ([]*image.Gray, []int) {
 	dir := s.PageDir(id)
 	var out []*image.Gray
-	appendIf := func(name string) bool {
+	var nos []int
+	appendIf := func(name string, no int) bool {
 		g, err := loadGrayJPEG(filepath.Join(dir, name))
 		if err != nil {
 			return false
 		}
 		out = append(out, g)
+		nos = append(nos, no)
 		return true
 	}
-	if !appendIf(fmt.Sprintf("s%02d.jpg", student)) {
-		return nil
-	}
+	appendIf(fmt.Sprintf("s%02d.jpg", student), 1)
 	for k := 2; k <= 60; k++ {
-		appendIf(fmt.Sprintf("s%02d_p%02d.jpg", student, k))
+		appendIf(fmt.Sprintf("s%02d_p%02d.jpg", student, k), k)
 	}
-	return out
+	return out, nos
 }
 
 func loadGrayJPEG(path string) (*image.Gray, error) {

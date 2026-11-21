@@ -65,13 +65,14 @@ func handleSheetAck(w http.ResponseWriter, r *http.Request, store *Store, u *aut
 		return
 	}
 	var req struct {
-		Ack *bool `json:"ack"`
+		Ack   *bool `json:"ack"`
+		Pages *int  `json:"pages"` // 可选:操作员核对时看到的页数;补传替换同一卷位后不一致则拒绝(评审 lifecycle.go:74)
 	}
 	if err := decodeJSON(r, &req); err != nil || req.Ack == nil {
 		httpError(w, http.StatusBadRequest, fmt.Errorf("缺少 ack 字段"))
 		return
 	}
-	if err := store.SetSheetAck(ex.ID, student, *req.Ack, u.Username); err != nil {
+	if err := store.SetSheetAck(ex.ID, student, *req.Ack, u.Username, req.Pages); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}

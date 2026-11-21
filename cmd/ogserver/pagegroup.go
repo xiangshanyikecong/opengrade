@@ -63,12 +63,18 @@ type pageIdent struct {
 // base 是本批之前的存量卷数:补传场景切片/回溯图的全局卷号 = base + 批内序号。
 // impose = 2 时(拼版考试)每张 A3 先按角标聚类切回左右两份单卡再判读,
 // 切分必须发生在定位之前 —— 拼版纸 8 个角标整图直喂 findLocators 会四象限错配。
-func ingestScanImages(imgs []image.Image, book []*card.Sheet, opt omr.Options, base int, ab *abSupport, impose int) ingestResult {
+func ingestScanImages(imgs []image.Image, origIdx []int, book []*card.Sheet, opt omr.Options, base int, ab *abSupport, impose int) ingestResult {
 	out := ingestResult{failed: []scanFail{}, notes: []string{}}
 	pageCount := len(book)
 
+	// fail 的 idx 是判读批内序(1-based):解码失败剔除后批内序会错位,
+	// 经 origIdx 映射回上传原始序号(评审 pagegroup.go:70)
 	fail := func(idx int, err error) {
-		out.failed = append(out.failed, scanFail{idx, err.Error()})
+		n := idx
+		if idx >= 1 && idx <= len(origIdx) {
+			n = origIdx[idx-1]
+		}
+		out.failed = append(out.failed, scanFail{n, err.Error()})
 	}
 
 	// 拼版切分:每张纸先展开为 1~2 份单卡子图(omr.SplitImpose 自动剔除空白半版并带 note),
@@ -78,15 +84,19 @@ func ingestScanImages(imgs []image.Image, book []*card.Sheet, opt omr.Options, b
 		var expanded []image.Image
 		tags := make([]string, 0, len(imgs)*2)
 		for i, img := range imgs {
+			paper := i + 1 // 补传解码剔除后批内序错位:取原始上传序号
+			if i < len(origIdx) {
+				paper = origIdx[i]
+			}
 			l, r, spNotes := omr.SplitImpose(img)
 			out.notes = append(out.notes, spNotes...)
 			if l != nil {
 				expanded = append(expanded, l)
-				tags = append(tags, fmt.Sprintf("第 %d 张纸左半", i+1))
+				tags = append(tags, fmt.Sprintf("第 %d 张纸左半", paper))
 			}
 			if r != nil {
 				expanded = append(expanded, r)
-				tags = append(tags, fmt.Sprintf("第 %d 张纸右半", i+1))
+				tags = append(tags, fmt.Sprintf("第 %d 张纸右半", paper))
 			}
 		}
 		imgs = expanded
@@ -277,13 +287,15 @@ func ingestScanImages(imgs []image.Image, book []*card.Sheet, opt omr.Options, b
 				k = m.pageNo - 1
 			}
 			sheet := ab.variantBook(book, variant, k) // AB:B 卷页用 B 版式几何(客观题网格随卷种不同)
-			res, _, err := omr.ReadRectified(sheet, id.rect, opt)
+			res, dbg, err := omr.ReadRectified(sheet, id.rect, opt)
 			if err != nil {
-				fail(m.idx+1, fmt.Errorf("考号 %s 第 %d 页判读失败: %w", reg, pos+1, err))
+				fail(m.idx+1, fmt.Errorf("考号 %s 判读失败: %w", reg, err))
 				batchFail = true
 				break
 			}
-			pages = append(pages, pageScan{res: res, dbg: &omr.Debug{Rectified: id.rect}, sheet: sheet, subOffset: subjectiveOffset(book, k)})
+			// 保留判读返回的 Debug(含逐题涂点率):叠加图靠它渲染 ——
+			// 此前只存 Rectified,该路径异常卷不出叠加图(评审 pagegroup.go:280)
+			pages = append(pages, pageScan{res: res, dbg: dbg, sheet: sheet, subOffset: subjectiveOffset(book, k)})
 		}
 		if batchFail || len(pages) == 0 {
 			continue
@@ -327,7 +339,7 @@ func ingestScanImages(imgs []image.Image, book []*card.Sheet, opt omr.Options, b
 // warns 随卷落库(缺页/页序/B 卡混入等,进异常清单驱动阶段机),pageNos 记录逐页真实页号。
 // studentNo 为全局学生号(存量卷数 + 批内序号),切片文件名/评分键以它对齐。
 func (io *ingestResult) appendStudent(pages []pageScan, base int, ab *abSupport, opt omr.Options, warns []string, pageNos []int) {
-	merged := mergePageScans(pages)
+	merged := mergePageScans(pages, pageNos)
 	if ab != nil && ab.hasB && len(ab.booksB) > 0 && merged.Variant == "B" {
 		// B 卷页若仍以 A 版式判读(单页/位置分组回退路径),在同一矫正图上按 B 版式补读后重合并;
 		// 补读失败的页保持 A 几何结果并挂告警(作答可疑,交人工复核)。
@@ -345,8 +357,14 @@ func (io *ingestResult) appendStudent(pages []pageScan, base int, ab *abSupport,
 				continue
 			}
 			if pages[k].sheet != ab.booksB[pageNo-1] && pages[k].dbg != nil && pages[k].dbg.Rectified != nil {
-				if r2, _, err2 := omr.ReadRectified(ab.booksB[pageNo-1], pages[k].dbg.Rectified, opt); err2 == nil {
-					pages[k] = pageScan{res: r2, dbg: pages[k].dbg, sheet: ab.booksB[pageNo-1], subOffset: pages[k].subOffset}
+				if r2, dbg2, err2 := omr.ReadRectified(ab.booksB[pageNo-1], pages[k].dbg.Rectified, opt); err2 == nil {
+					// 换用补读返回的 Debug:作答与叠加图必须来自同一次判读,
+					// 沿用旧 dbg 会拿 B 卷坐标画 A 卷涂点(评审 pagegroup.go:348)
+					dbg := dbg2
+					if dbg == nil {
+						dbg = pages[k].dbg
+					}
+					pages[k] = pageScan{res: r2, dbg: dbg, sheet: ab.booksB[pageNo-1], subOffset: pages[k].subOffset}
 					swapped = true
 				} else {
 					fellBack = true
@@ -354,7 +372,7 @@ func (io *ingestResult) appendStudent(pages []pageScan, base int, ab *abSupport,
 			}
 		}
 		if swapped {
-			merged = mergePageScans(pages)
+			merged = mergePageScans(pages, pageNos)
 		}
 		if fellBack {
 			merged.Warnings = append(merged.Warnings, "B 卷按 A 几何回退判读(补读失败),客观题作答可疑——请人工核对")

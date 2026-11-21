@@ -50,12 +50,18 @@ func StartBackupLoop(srcDir, destDir string, interval time.Duration, keep int, b
 func backupOnce(srcDir, destRoot string, keep int) error {
 	stamp := time.Now().Format("20060102-150405")
 	dest := filepath.Join(destRoot, stamp)
+	// 先写 .partial 目录,全部复制成功后再发布为正式时间戳快照(评审 backup.go:52):
+	// 半截快照不匹配 backupStampRe,不占保留名额,失败重试不会把完整历史挤掉。
+	tmpDest := dest + ".partial"
+	_ = os.RemoveAll(tmpDest)
 	absDest, _ := filepath.Abs(destRoot)
 
 	var files []string
 	err := filepath.WalkDir(srcDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return nil // 读不了的跳过
+			// 读不了的目录/条目终止本次备份:宁可不产出快照,也不留缺文件的
+			// 快照顶替完整历史(评审 backup.go:58)
+			return err
 		}
 		if d.IsDir() {
 			name := d.Name()
@@ -85,14 +91,23 @@ func backupOnce(srcDir, destRoot string, keep int) error {
 		if err != nil {
 			continue
 		}
-		dst := filepath.Join(dest, rel)
+		dst := filepath.Join(tmpDest, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			_ = os.RemoveAll(tmpDest)
 			return err
 		}
 		if err := copyFile(src, dst); err != nil {
+			_ = os.RemoveAll(tmpDest)
 			return err
 		}
 		copied++
+	}
+	if err := os.MkdirAll(destRoot, 0o755); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpDest, dest); err != nil {
+		_ = os.RemoveAll(tmpDest)
+		return err
 	}
 	// 裁剪:只保留最近 keep 份(按时间戳名排序,旧的后删)。
 	// 只认本工具命名的时间戳目录(20060102-150405):-backup-dir 配到含其它数据的
@@ -114,19 +129,37 @@ func backupOnce(srcDir, destRoot string, keep int) error {
 	return nil
 }
 
+// copyFile 原子复制:先写同目录临时文件,复制+关闭全部成功后再顶替目标 ——
+// 恢复备份时目标已存在的 org.json 不会因 Copy 中途失败而被截断破坏(评审 backup.go:123)。
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.Create(dst)
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".tmp-"+filepath.Base(dst)+"-*")
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+	tmpName := tmp.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			tmp.Close()
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := io.Copy(tmp, in); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		return err
+	}
+	ok = true
+	return nil
 }
 
 // RestoreBackup 把备份快照目录里的 JSON 拷回数据目录(覆盖现状),返回恢复的文件数。

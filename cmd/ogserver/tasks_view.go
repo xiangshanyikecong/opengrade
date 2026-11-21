@@ -56,8 +56,11 @@ func handleMyTasks(w http.ResponseWriter, r *http.Request, store *Store, school 
 			}
 		}
 		if sm.TaskMode == "class" && sm.ClassTasks != nil {
+			seenCls := map[string]bool{}
 			for _, c2 := range append(append([]string(nil), u.AllClasses()...), u.HeadClasses...) {
-				if sm.ClassTasks[c2] == u.Username {
+				// 任教班与班主任班可能重合:去重,否则同一任务返回两行(评审 tasks_view.go:59)
+				if sm.ClassTasks[c2] == u.Username && !seenCls[c2] {
+					seenCls[c2] = true
 					c.classes = append(c.classes, c2)
 				}
 			}
@@ -74,14 +77,43 @@ func handleMyTasks(w http.ResponseWriter, r *http.Request, store *Store, school 
 		if !ok {
 			continue // 盘上缺失(外部破坏):跳过,与启动口径一致
 		}
+		// 摘要粗筛与加载之间任务可能被改派/撤回:用载入快照重新确认可见性与归属,
+		// 进度/截止日期一律以新快照为准(评审 tasks_view.go:37)
+		if !canOpenExam(u, ex, school) {
+			continue
+		}
+		questionals := map[int]bool{}
+		if ex.Tasks != nil {
+			for qi := 1; qi <= len(ex.Layout.Subjectives); qi++ {
+				if ex.Tasks[fmt.Sprintf("q%d", qi)] == u.Username {
+					questionals[qi] = true
+				}
+			}
+		}
+		var classes []string
+		if ex.TaskMode == "class" && ex.ClassTasks != nil {
+			seenCls := map[string]bool{}
+			for _, c2 := range append(append([]string(nil), u.AllClasses()...), u.HeadClasses...) {
+				if ex.ClassTasks[c2] == u.Username && !seenCls[c2] {
+					seenCls[c2] = true
+					classes = append(classes, c2)
+				}
+			}
+		}
 		stage := examStage(ex)
+		mine := ex.CreatedBy == u.Username &&
+			((stage.Total > 0 && stage.Ungraded > 0) ||
+				stage.Stage == stageAwaiting || stage.Stage == stageScanning || stage.Stage == stageAnomaly)
+		if len(questionals) == 0 && len(classes) == 0 && !mine {
+			continue // 载入后任务已不归我(改派/撤回/已评完):剔除
+		}
 		base := taskItem{Exam: ex.ID, Subject: ex.Subject,
 			CreatedAt: ex.CreatedAt.Format("2006-01-02 15:04"), Stage: stage.Stage, StageLabel: stage.Label}
 		objN := len(ex.Layout.Questions)
 
-		// 按题分配
+		// 按题分配(归属以载入快照为准)
 		for qi := range ex.Layout.Subjectives {
-			if !c.questionals[qi+1] {
+			if !questionals[qi+1] {
 				continue
 			}
 			graded := 0
@@ -100,8 +132,8 @@ func handleMyTasks(w http.ResponseWriter, r *http.Request, store *Store, school 
 			it.Due = ex.TaskDue[fmt.Sprintf("q%d", qi+1)]
 			items = append(items, it)
 		}
-		// 按班分配:我被分到的班(任教班 ∪ 班主任班任一命中)
-		for _, cls := range c.classes {
+		// 按班分配:我被分到的班(任教班 ∪ 班主任班任一命中,已去重)
+		for _, cls := range classes {
 			graded, total := 0, 0
 			byReg := map[string][]string{}
 			for _, st := range ex.Roster {
@@ -131,7 +163,7 @@ func handleMyTasks(w http.ResponseWriter, r *http.Request, store *Store, school 
 			items = append(items, it)
 		}
 		// 我建的考试兜底:建卷人全程跟进 —— 可评(未评完)、待扫/扫图中、异常待裁决都给入口
-		if c.mine {
+		if mine {
 			it := base
 			it.Kind = "mine"
 			switch {

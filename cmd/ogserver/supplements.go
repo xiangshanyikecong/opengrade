@@ -74,6 +74,7 @@ func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *
 	opt := ex.omrOptions()
 	var failed []scanFail
 	var imgs []image.Image
+	var imgOrig []int // 与 imgs 对齐的原始上传序号:解码剔除后判读批内序会错位(评审 pagegroup.go:70)
 	for i, fh := range files {
 		f, err := fh.Open()
 		if err != nil {
@@ -87,12 +88,18 @@ func handleAppendScans(w http.ResponseWriter, r *http.Request, store *Store, u *
 			continue
 		}
 		imgs = append(imgs, img)
+		imgOrig = append(imgOrig, i+1)
+	}
+	if len(files) > 0 && len(imgs) == 0 {
+		// 全部文件解码失败:不进 Store、不写补传审计、不置变更标记(评审 supplements.go:100)
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"added": 0, "failed": failed, "notes": []string{}})
+		return
 	}
 	// 按考号逐页归组:每页独立判读考号+页点页号,不再要求张数是页数的整数倍;
 	// 单页判读失败只丢那一张,缺页只告警对应学生,不再连坐整批。
 	// 拼版考试(ex.Imposition=2)先按角标聚类切回单卡再判读,空白半版自动剔除。
 	oldBase := len(ex.Results)
-	ing := ingestScanImages(imgs, book, opt, oldBase, ab, ex.Imposition)
+	ing := ingestScanImages(imgs, imgOrig, book, opt, oldBase, ab, ex.Imposition)
 	applyKeyCards(store, ex.ID, &ing, u.Username) // 答案卡录入(在 notes 捕获前,反馈随响应返回)
 	results, slices, pageGroups, pageNos := ing.results, ing.slices, ing.pageGroups, ing.pageNos
 	failed = append(failed, ing.failed...)
@@ -166,7 +173,7 @@ func crossBatchMerge(store *Store, ex *Exam, ing *ingestResult, book []*card.She
 			continue
 		}
 		old := ex.Results[j-1]
-		oldRects := store.loadPageGroups(ex.ID, j)
+		oldRects, oldNos := store.loadPageGroups(ex.ID, j)
 		if len(oldRects) == 0 {
 			continue // 存量是手工补录或没有矫正图:走重复卷裁决路径
 		}
@@ -202,9 +209,10 @@ func crossBatchMerge(store *Store, ex *Exam, ing *ingestResult, book []*card.She
 			if rect == nil {
 				continue
 			}
+			// 页号取文件名编码的真实页号:位置索引在中间页解码失败时错位(评审 ab.go:48)
 			pn := 0
-			if old != nil && k < len(old.PageNos) {
-				pn = old.PageNos[k]
+			if k < len(oldNos) {
+				pn = oldNos[k]
 			}
 			cands = append(cands, cand{rect: rect, no: pn})
 		}
@@ -216,7 +224,9 @@ func crossBatchMerge(store *Store, ex *Exam, ing *ingestResult, book []*card.She
 			if k < len(ing.pageNos[i]) {
 				pn = ing.pageNos[i][k]
 			}
-			c := cand{ps: &newPages[k], no: pn, isNew: true}
+			// 新批页候选带上自己的矫正图:槽位几何不一致时按槽位版式用"这一页"的图重读,
+			// 而不是拿到 nil(此前 rect 未设置,重读必失败后退回原判读,版式错配)(评审 supplements.go:271)
+			c := cand{rect: ps.dbg.Rectified, ps: &newPages[k], no: pn, isNew: true}
 			cands = append(cands, c)
 		}
 		// 槽位装配:已知页号新批优先 → 已知页号存量 → 未知页号按到达序填空槽
@@ -270,10 +280,11 @@ func crossBatchMerge(store *Store, ex *Exam, ing *ingestResult, book []*card.She
 				ordered = append(ordered, *c.ps)
 			} else if r, _, err := omr.ReadRectified(sheet, c.rect, opt); err == nil {
 				ordered = append(ordered, pageScan{res: r, dbg: &omr.Debug{Rectified: c.rect}, sheet: sheet, subOffset: subjectiveOffset(book, s)})
-			} else if c.isNew {
-				ordered = append(ordered, *c.ps) // 新页按槽位重读失败:退回原判读
 			} else {
-				okAll = false // 存量页重读失败:不动旧卷,走追加+重答告警的老路
+				// 按槽位版式重读失败:终止合并、保留旧卷走追加+重答告警的老路 ——
+				// 退回原判读会拿批内第 1 页的版式判读并记成第 s+1 页,版式错配静默入库
+				//(评审 supplements.go:271)
+				okAll = false
 				break
 			}
 			orderedNos = append(orderedNos, s+1)

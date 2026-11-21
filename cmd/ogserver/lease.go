@@ -28,8 +28,10 @@ import (
 var sliceLeaseTTL = 3 * time.Minute
 
 // sliceLease 一张分片的阅卷租约(纯内存会话态)。
+// End 为端身份(客户端生成,同一账号可多端):"每端至多持一张"红线按 (账号,端) 判定。
 type sliceLease struct {
 	By    string
+	End   string
 	Until time.Time
 }
 
@@ -60,7 +62,10 @@ type SliceClaim struct {
 //   - 无租约/已过期 → 新领;同账号持有中 → 续期(claim 即心跳);
 //   - 他人持有且未过期 → LeaseHeldError;
 //   - 该片已评完(整题或全部小问已阅)→ 不建租约,返回 graded。
-func (s *Store) ClaimSlice(id string, student, question int, by string) (SliceClaim, error) {
+// end 为端身份:非空时成功领取会原子替换同端旧租约 —— 连续翻片而旧释放请求
+// 丢失时旧片不再占住其他端(评审 lease.go:88);失败的抢领在到达此处前已返回,
+// 不会撤销当前租约;同账号其他端(end 不同)的租约不受影响;SetGrade 不检查租约。
+func (s *Store) ClaimSlice(id string, student, question int, by, end string) (SliceClaim, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ex, ok := s.getLocked(id)
@@ -85,7 +90,14 @@ func (s *Store) ClaimSlice(id string, student, question int, by string) (SliceCl
 	if s.leases[id] == nil {
 		s.leases[id] = map[string]sliceLease{}
 	}
-	s.leases[id][key] = sliceLease{By: by, Until: now.Add(sliceLeaseTTL)}
+	if end != "" {
+		for k, l := range s.leases[id] {
+			if k != key && l.By == by && l.End == end {
+				delete(s.leases[id], k) // 同端旧租约原子让位(每端至多持一张)
+			}
+		}
+	}
+	s.leases[id][key] = sliceLease{By: by, End: end, Until: now.Add(sliceLeaseTTL)}
 	return SliceClaim{Status: "ok"}, nil
 }
 
@@ -134,8 +146,9 @@ func sliceCurrentGrade(ex *Exam, student, question int) (float64, int, string) {
 // {"question":N,"student":S} → 200 {"status":"ok"|"graded",...} / 409 {"error","lockedBy"}。
 func handleSliceClaim(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	var req struct {
-		Question int `json:"question"`
-		Student  int `json:"student"`
+		Question int    `json:"question"`
+		Student  int    `json:"student"`
+		End      string `json:"end"` // 端身份(客户端生成,可选):带端身份时"每端至多持一张"生效
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, err)
@@ -147,7 +160,7 @@ func handleSliceClaim(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
-	claim, err := store.ClaimSlice(ex.ID, req.Student, req.Question, u.Username)
+	claim, err := store.ClaimSlice(ex.ID, req.Student, req.Question, u.Username, req.End)
 	if err != nil {
 		var held *LeaseHeldError
 		if errors.As(err, &held) {

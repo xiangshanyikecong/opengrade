@@ -7,6 +7,7 @@ package main
 //   - 教师在考试详情的成绩录入表逐格打分,或整表粘贴「考号 分数」批量导入。
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -17,7 +18,6 @@ import (
 	"github.com/opengrade/opengrade/card"
 	"github.com/opengrade/opengrade/omr"
 	"github.com/opengrade/opengrade/roster"
-	"github.com/opengrade/opengrade/score"
 )
 
 // manualScoreQuestion 是手工成绩考试的固定主观题号(1)。
@@ -28,7 +28,8 @@ const manualScoreQuestion = 1
 func createManualExam(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	subject := strings.TrimSpace(r.FormValue("subject"))
 	full, err := strconv.ParseFloat(strings.TrimSpace(r.FormValue("full")), 64)
-	if err != nil || full <= 0 || full > 10000 {
+	// NaN 与任何比较都为假,会同时绕过 full<=0 与 full>10000:必须正区间判断(评审 manual.go:31)
+	if err != nil || !(full > 0 && full <= 10000) {
 		httpError(w, http.StatusBadRequest, fmt.Errorf("满分 full 须为 0~10000 的数值"))
 		return
 	}
@@ -113,6 +114,7 @@ func handleManualScores(w http.ResponseWriter, r *http.Request, store *Store, u 
 			Reg    string   `json:"reg"`
 			Score  *float64 `json:"score"`
 			Absent *bool    `json:"absent"`
+			Ver    int      `json:"ver"` // 可选:读取时看到的评分版本;携带且不一致则 409 式冲突(防旧编辑覆盖新分)
 		} `json:"scores"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
@@ -120,10 +122,12 @@ func handleManualScores(w http.ResponseWriter, r *http.Request, store *Store, u 
 		return
 	}
 	type result struct {
-		Reg  string `json:"reg"`
-		OK   bool   `json:"ok"`
-		Name string `json:"name,omitempty"`
-		Err  string `json:"error,omitempty"`
+		Reg     string  `json:"reg"`
+		OK      bool    `json:"ok"`
+		Name    string  `json:"name,omitempty"`
+		Err     string  `json:"error,omitempty"`
+		Ver     int     `json:"ver,omitempty"`           // 写入后的新版本(成功)或服务器当前版本(冲突)
+		Current float64 `json:"currentScore,omitempty"` // 冲突时服务器当前分数,前端提示刷新口径
 	}
 	out := []result{}
 	anyOK := false
@@ -136,27 +140,19 @@ func handleManualScores(w http.ResponseWriter, r *http.Request, store *Store, u 
 			continue
 		}
 		res.Name = nameOfReg(ex, sc.Reg)
-		if sc.Absent != nil {
-			if err := store.SetAbsent(ex.ID, idx, *sc.Absent, u.Username); err != nil && !strings.Contains(err.Error(), "无变化") {
-				res.Err = err.Error()
-				out = append(out, res)
-				continue
+		// 行级原子直录:缺考与成绩同锁校验同锁应用,超满分不再出现"缺考已生效、成绩被拒"的半提交
+		newVer, err := store.SetManualRow(ex.ID, idx, sc.Score, sc.Absent, u.Username, sc.Ver)
+		if err != nil {
+			res.Err = err.Error()
+			var ce *ConflictError
+			if errors.As(err, &ce) {
+				res.Ver = ce.Current.Ver
+				res.Current = ce.Current.Score
 			}
+			out = append(out, res)
+			continue
 		}
-		if sc.Score != nil {
-			g := score.Grade{Score: *sc.Score, Graded: true}
-			// 直录改分是常态:携带当前版本号通过乐观锁(真正的并发互写仍会 409 提示)
-			ver := 0
-			if old, exists := ex.Grades[score.GradeKey(idx, manualScoreQuestion)]; exists && old.Graded {
-				ver = old.Ver
-			}
-			if _, err := store.SetGrade(ex.ID, idx, manualScoreQuestion, g, u.Username, ver); err != nil {
-				res.Err = err.Error()
-				out = append(out, res)
-				continue
-			}
-		}
-		res.OK = true
+		res.OK, res.Ver = true, newVer
 		anyOK = true
 		out = append(out, res)
 	}

@@ -55,10 +55,15 @@ func handleSetKey(w http.ResponseWriter, r *http.Request, store *Store, u *auth.
 // 一律 422 拒绝并说明差什么 —— 未评按 0 分进排名与错题本,是最伤学生的错数。
 func handlePublish(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
 	var req struct {
-		Published bool `json:"published"`
+		Published *bool `json:"published"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Published == nil {
+		// 发布决定必须显式给出:提交 {} 会把缺失字段当 false 悄悄撤回成绩(评审 analytics.go:58)
+		httpError(w, http.StatusBadRequest, fmt.Errorf("缺少发布决定:请求体须包含 published(true 发布 / false 撤回)"))
 		return
 	}
 	ex, ok := store.Get(r.PathValue("id"))
@@ -74,36 +79,35 @@ func handlePublish(w http.ResponseWriter, r *http.Request, store *Store, u *auth
 		httpError(w, http.StatusForbidden, fmt.Errorf("仅管理员、年级组长或建卷教师可控制成绩发布"))
 		return
 	}
-	if req.Published && ex.ManualFull == 0 { // 手工成绩科目没有异常/主观/答案概念,不设门禁
-		stage := examStage(ex)
+	// 门禁闭包在 Store 锁内对最新快照执行:检查与提交原子,不再可能发布出
+	// "检查通过后又被撤评分"的未完卷(评审 analytics.go:102)。手工成绩科目没有
+	// 异常/主观/答案概念,不设门禁。
+	gate := func(cur *Exam) error {
+		if cur.ManualFull != 0 {
+			return nil
+		}
+		stage := examStage(cur)
 		if stage.Students == 0 {
-			httpError(w, http.StatusUnprocessableEntity,
-				fmt.Errorf("这场考试还没有任何卷(已扫 0/名册 %d 人),发布空考试没有意义——先上传扫描件,或对全员登记缺考", stage.Expected))
-			return
+			return fmt.Errorf("这场考试还没有任何卷(已扫 0/名册 %d 人),发布空考试没有意义——先上传扫描件,或对全员登记缺考", stage.Expected)
 		}
 		if stage.Warnings > 0 {
-			httpError(w, http.StatusUnprocessableEntity,
-				fmt.Errorf("还有 %d 张异常卷未裁决(%s),处理完才能发布——考试详情「异常清单」", stage.Warnings, examBlockingWarningSamples(ex, 3)))
-			return
+			return fmt.Errorf("还有 %d 张异常卷未裁决(%s),处理完才能发布——考试详情「异常清单」", stage.Warnings, examBlockingWarningSamples(cur, 3))
 		}
 		if stage.Ungraded > 0 {
-			httpError(w, http.StatusUnprocessableEntity,
-				fmt.Errorf("主观题还有 %d 份切片未评完(含半阅),评完才能发布——未评按 0 分进排名与错题本会误导学生", stage.Ungraded))
-			return
+			return fmt.Errorf("主观题还有 %d 份切片未评完(含半阅),评完才能发布——未评按 0 分进排名与错题本会误导学生", stage.Ungraded)
 		}
-		for i, k := range ex.ObjectiveKey {
+		for i, k := range cur.ObjectiveKey {
 			if k == "" {
-				httpError(w, http.StatusUnprocessableEntity,
-					fmt.Errorf("第 %d 题客观题参考答案未录入,补齐后才能发布(考试详情「客观题参考答案」;空答案题不判分)", i+1))
-				return
+				return fmt.Errorf("第 %d 题客观题参考答案未录入,补齐后才能发布(考试详情「客观题参考答案」;空答案题不判分)", i+1)
 			}
 		}
+		return nil
 	}
-	if err := store.SetPublished(ex.ID, req.Published, u.Username); err != nil {
-		httpError(w, http.StatusBadRequest, err)
+	if err := store.SetPublishedChecked(ex.ID, *req.Published, u.Username, gate); err != nil {
+		httpError(w, http.StatusUnprocessableEntity, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"published": req.Published, "dirty": false})
+	writeJSON(w, http.StatusOK, map[string]any{"published": *req.Published, "dirty": false})
 }
 
 // handleAudit 操作审计日志:GET /api/v1/exams/{id}/audit(管理员/年级组长)。
@@ -151,8 +155,13 @@ func handleGradeConvert(w http.ResponseWriter, r *http.Request, store *Store, u 
 		score.GradeScale
 		Fine bool `json:"fine"` // true=21 级细分档
 	}
-	if r.ContentLength > 0 {
-		_ = decodeJSON(r, &req)
+	// ContentLength==-1 表示长度未知而非空:按实际读取结果区分空正文与有效配置;
+	// 非空正文解码失败返回 400,不再吞错后静默用默认档(评审 analytics.go:154/155)
+	if r.ContentLength != 0 {
+		if err := decodeJSON(r, &req); err != nil {
+			httpError(w, http.StatusBadRequest, fmt.Errorf("赋分配置无法解码: %w", err))
+			return
+		}
 	}
 	scale := req.GradeScale
 	if req.Fine && len(scale.Bands) == 0 {
@@ -255,6 +264,29 @@ func perClassQuestionRates(ex *Exam) map[string][]float64 {
 		}
 		// 选做口径同统分层(涂点 + 批阅回退,自带涂点下标防护),替代裸 marks 下标比对
 		excluded := score.ElectiveExcluded(groups, ex.Layout.Subjectives, ex.Grades, res, si+1)
+		// 全体基准桶(评审 analytics.go:258):每张有效卷只累计一次(多班归属学生
+		// 不重复计入全体),班级桶仍逐班累计 —— 前端按「全体」键取全体得分率
+		all := get("全体")
+		for qi := 0; qi < nObj && qi < len(res.Answers); qi++ {
+			if ex.ObjectiveKey[qi] == "" {
+				continue
+			}
+			_, verdict := score.Evaluate(ex.Layout.Questions[qi], ex.Layout.Scoring.RuleFor(qi+1),
+				res.Answers[qi], ex.ObjectiveKey[qi])
+			all[qi].count++
+			if verdict == score.VerdictCorrect {
+				all[qi].correct++
+			}
+		}
+		for qi := 0; qi < nSub; qi++ {
+			if excluded[qi+1] {
+				continue
+			}
+			if sc, done, _ := score.SubjectiveScore(ex.Layout.Subjectives[qi], ex.Grades, si+1, qi+1); done {
+				all[nObj+qi].graded++
+				all[nObj+qi].sum += sc
+			}
+		}
 		for _, c := range cls {
 			accs := get(c)
 			for qi := 0; qi < nObj && qi < len(res.Answers); qi++ {
@@ -272,11 +304,12 @@ func perClassQuestionRates(ex *Exam) map[string][]float64 {
 			}
 			for qi := 0; qi < nSub; qi++ {
 				spec := ex.Layout.Subjectives[qi]
-				qNo := nObj + qi + 1
 				if excluded[qi+1] {
 					continue // 未被所选(含漏涂/多涂且无批阅回退):不进本题统计
 				}
-				if sc, done, _ := score.SubjectiveScore(spec, ex.Grades, si+1, qNo); done {
+				// 评分键按主观题序号 qi+1 查(评分存储键即主观题序号);nObj+qi 只是
+				// 输出数组定位 —— 此前传 qNo(nObj+qi+1)查分,样本恒空(评审 analytics.go:279)
+				if sc, done, _ := score.SubjectiveScore(spec, ex.Grades, si+1, qi+1); done {
 					accs[nObj+qi].graded++
 					accs[nObj+qi].sum += sc
 				}

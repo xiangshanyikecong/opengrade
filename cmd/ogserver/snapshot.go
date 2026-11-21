@@ -81,6 +81,10 @@ func cloneResult(res *omr.Result) *omr.Result {
 // snapshot 返回考试会话的深拷贝(调用方持 Store.mu)。
 func (ex *Exam) snapshot() *Exam {
 	cp := *ex
+	if ex.PublishedAt != nil {
+		t := *ex.PublishedAt // 可写指针同步复制,防快照改写穿透缓存(评审 snapshot.go:93)
+		cp.PublishedAt = &t
+	}
 	cp.ObjectiveKey = cloneStrSlice(ex.ObjectiveKey)
 	cp.KeyB = cloneStrSlice(ex.KeyB)
 	cp.OrderB = cloneIntSlice(ex.OrderB)
@@ -93,6 +97,11 @@ func (ex *Exam) snapshot() *Exam {
 	if ex.Grades != nil {
 		cp.Grades = make(map[string]score.Grade, len(ex.Grades))
 		for k, v := range ex.Grades {
+			// Grade 值拷贝不复制 Ink 底层数组:改快照批注会穿透缓存并随下次保存落盘
+			//(评审 snapshot.go:93)
+			if len(v.Ink) > 0 {
+				v.Ink = append([]score.Stroke(nil), v.Ink...)
+			}
 			cp.Grades[k] = v
 		}
 	}
@@ -104,7 +113,12 @@ func (ex *Exam) snapshot() *Exam {
 	cp.TaskDue = cloneStrMap(ex.TaskDue)
 	if ex.Roster != nil {
 		cp.Roster = make([]roster.Student, len(ex.Roster))
-		copy(cp.Roster, ex.Roster)
+		for i, st := range ex.Roster {
+			if len(st.Classes) > 0 {
+				st.Classes = append([]string(nil), st.Classes...) // 走班班级列表同步脱离缓存(评审 snapshot.go:93)
+			}
+			cp.Roster[i] = st
+		}
 	}
 	if ex.Audit != nil {
 		cp.Audit = make([]AuditEntry, len(ex.Audit))
@@ -112,7 +126,13 @@ func (ex *Exam) snapshot() *Exam {
 	}
 	if ex.Appeals != nil {
 		cp.Appeals = make([]Appeal, len(ex.Appeals))
-		copy(cp.Appeals, ex.Appeals)
+		for i, a := range ex.Appeals {
+			if a.ResolvedAt != nil {
+				t := *a.ResolvedAt // 裁决时间指针同步复制(评审 snapshot.go:113)
+				a.ResolvedAt = &t
+			}
+			cp.Appeals[i] = a
+		}
 	}
 	if ex.Rooms != nil {
 		rp := *ex.Rooms

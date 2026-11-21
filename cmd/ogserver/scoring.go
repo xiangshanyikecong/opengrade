@@ -5,6 +5,7 @@ package main
 // score.Merge 现场重算,无缓存失效问题。
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -49,13 +50,26 @@ func handleScoringSet(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		return
 	}
 	var req struct {
-		Scoring *card.ScoringScheme `json:"scoring"`
+		Scoring json.RawMessage `json:"scoring"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := store.SetScoring(ex.ID, req.Scoring, u.Username); err != nil {
+	var scheme *card.ScoringScheme
+	if len(req.Scoring) == 0 {
+		// 字段缺失 ≠ 显式 null:请求体 {} 会把缺字段当 nil 静默清除已有部分分规则(评审 scoring.go:52)
+		httpError(w, http.StatusBadRequest, fmt.Errorf("缺少 scoring 字段(显式传 null 恢复传统精确匹配语义)"))
+		return
+	}
+	if string(req.Scoring) != "null" {
+		scheme = &card.ScoringScheme{}
+		if err := json.Unmarshal(req.Scoring, scheme); err != nil {
+			httpError(w, http.StatusBadRequest, fmt.Errorf("scoring 不是合法评分方案: %w", err))
+			return
+		}
+	}
+	if err := store.SetScoring(ex.ID, scheme, u.Username); err != nil {
 		httpError(w, http.StatusBadRequest, err)
 		return
 	}

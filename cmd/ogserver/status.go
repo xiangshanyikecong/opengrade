@@ -50,6 +50,22 @@ type stageView struct {
 // 卷种仍待定(PendingVariant)时一律未裁决:合并重判会重新挂起客观题作答,
 // 残留的历史指派记录不是"已处理"的证据 —— 否则该生静默从报告/排名消失且无待办。
 func sheetResolved(ex *Exam, student int) bool {
+	return sheetResolvedFor(ex, student, nil)
+}
+
+// pageOrderWarning 报告是否为缺页/页序类阻断告警:考号人工确认不消除这类告警,
+// 只能补扫或整卷「接受残卷」(评审 status.go:62)。
+func pageOrderWarning(w string) bool {
+	for _, kw := range []string{"仅识别到", "合并后仍只有", "未并入", "页点不可信", "缺第"} {
+		if strings.Contains(w, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// sheetResolvedFor 判定一张异常卷是否已被人工裁决(warnings 缺省时维持旧放行口径)。
+func sheetResolvedFor(ex *Exam, student int, warnings []string) bool {
 	if student >= 1 && student <= len(ex.Results) && ex.Results[student-1] != nil && ex.Results[student-1].PendingVariant {
 		return false
 	}
@@ -60,6 +76,13 @@ func sheetResolved(ex *Exam, student int) bool {
 		return true
 	}
 	if ex.Assignments != nil && ex.Assignments[fmt.Sprintf("s%d", student)] != "" {
+		// 考号确认只消除考号类告警:缺页/页序类仍阻断,需补扫或「接受残卷」;
+		// 已确认且只有考号类告警的卷放行(评审 status.go:62)
+		for _, w := range warnings {
+			if blockingWarning(w) && pageOrderWarning(w) {
+				return false
+			}
+		}
 		return true
 	}
 	if ex.AssignVariant != nil && ex.AssignVariant[fmt.Sprintf("s%d", student)] != "" {
@@ -110,7 +133,7 @@ func examBlockingWarningSamples(ex *Exam, n int) string {
 	var out []string
 	for i := range ex.Results {
 		res := ex.Results[i]
-		if res == nil || res.Voided || !hasBlockingWarning(res.Warnings) || sheetResolved(ex, i+1) {
+		if res == nil || res.Voided || !hasBlockingWarning(res.Warnings) || sheetResolvedFor(ex, i+1, res.Warnings) {
 			continue
 		}
 		for _, w := range res.Warnings {
@@ -184,15 +207,13 @@ func examStage(ex *Exam) stageView {
 		if res.Manual {
 			v.Manual++
 		}
-		if hasBlockingWarning(res.Warnings) && !sheetResolved(ex, si+1) {
+		if hasBlockingWarning(res.Warnings) && !sheetResolvedFor(ex, si+1, res.Warnings) {
 			v.Warnings++
 		}
 	}
-	for _, g := range ex.Grades {
-		if g.Mark == "flag" {
-			v.Flagged++
-		}
-	}
+	// Flagged 与复核队列同一口径(按卷+题聚合、排除作废卷):拆分题两问都标 ⚑ 时
+	// 队列只有一行,阶段计数不应显示 2(评审 status.go:191)
+	v.Flagged = len(flaggedQueue(ex))
 	v.Ungraded = v.Total - gradedTotal
 	v.Graded = v.Total == 0 || v.Ungraded == 0
 	v.Dirty = ex.Dirty
@@ -207,7 +228,9 @@ func examStage(ex *Exam) stageView {
 			// 发布后补扫/半阅残留:阶段色保持已发布,但标签点出未收口的部分
 			v.Label = fmt.Sprintf("已发布·有变更(未评 %d 异常 %d)", v.Ungraded, v.Warnings)
 		}
-	case len(ex.Results) == 0:
+	case v.Students == 0:
+		// 按有效卷数而非 len(Results):无名册考试唯一答卷被作废后,阶段应回到待扫描
+		// 而非"待发布"(发布实际会 422;评审 status.go:210)。缺考占位计入 Students,不受影响
 		v.Stage, v.Label = stageAwaiting, "待扫描"
 	case v.Expected > 0 && v.Students < v.Expected:
 		v.Stage, v.Label = stageScanning, fmt.Sprintf("扫描中 %d/%d", v.Students, v.Expected)

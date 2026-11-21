@@ -5,6 +5,7 @@ package main
 // 历史数据(未记录操作人)归入 "(历史)" 桶,新评分自动记录 By。
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 
@@ -37,18 +38,36 @@ func handleWorkload(w http.ResponseWriter, r *http.Request, store *Store, authSt
 		if !canOpenExam(u, ex, store.School) {
 			return true
 		}
-		for _, g := range ex.Grades {
-			if !g.Graded {
+		studentOf := func(key string) int {
+			var n int
+			if _, err := fmt.Sscanf(key, "s%d", &n); err != nil {
+				return 0
+			}
+			return n
+		}
+		for key, g := range ex.Grades {
+			// 作废卷的评分记录不计入(SetVoid 口径:作废卷不进统计;恢复后自然重新计入,
+			// 评审 workload.go:40)
+			if n := studentOf(key); n >= 1 && n <= len(ex.Results) && ex.Results[n-1] != nil && ex.Results[n-1].Voided {
 				continue
 			}
-			name := g.By
-			if name == "" {
-				name = "(历史)"
+			// flagged 与 graded 独立统计:未评完的 flag 标记也是一条待复核,
+			// 此前先按 Graded 跳过,半阅 flag 被漏计(评审 workload.go:43)
+			if g.Graded {
+				name := g.By
+				if name == "" {
+					name = "(历史)"
+				}
+				row := get(name)
+				row.Graded++
+				row.ByExam[ex.ID]++
 			}
-			row := get(name)
-			row.Graded++
-			row.ByExam[ex.ID]++
 			if g.Mark == "flag" {
+				name := g.By
+				if name == "" {
+					name = "(历史)"
+				}
+				row := get(name)
 				row.Flagged++
 			}
 		}

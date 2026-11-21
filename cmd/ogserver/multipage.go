@@ -46,16 +46,37 @@ func readPageScan(book []*card.Sheet, k int, img image.Image, opt omr.Options) (
 }
 
 // mergePageScans 把一名学生的多页判读合并为一条 Result。
-func mergePageScans(pages []pageScan) *omr.Result {
+// pageNos 为逐页真实页号(页点不可信时为 0/缺省):告警页号用它标注,
+// 页号未知才回退到组内位置并注明"按扫描顺序"(评审 multipage.go:95)。
+func mergePageScans(pages []pageScan, pageNos []int) *omr.Result {
+	pageLabel := func(k int) string {
+		if k < len(pageNos) && pageNos[k] >= 1 {
+			return fmt.Sprintf("第 %d 页", pageNos[k])
+		}
+		return fmt.Sprintf("第 %d 张(按扫描顺序)", k+1)
+	}
 	if len(pages) == 1 {
 		cp := *pages[0].res // 副本:组级告警(缺页等)要挂在合并结果上,不能写进逐页 res
 		return &cp          // (逐页 res 是跨批合并的素材,被污染会把已消解的告警带进新卷)
 	}
 	primary := pages[0]
-	for _, p := range pages {
+	primaryIdx := 0
+	for k, p := range pages {
 		if p.res.RegValid { // 考号取第一个判读成功的页
 			primary = p
+			primaryIdx = k
 			break
+		}
+	}
+	// 卷种取任一判出页:主页卷种未判出、其他页判出 B 时,合并卷种为空会让
+	// B 版式补读分支不执行、整卷被暂扣待人工指派(评审 pagegroup.go:331)
+	variant := primary.res.Variant
+	if variant == "" {
+		for _, p := range pages {
+			if p.res.Variant != "" {
+				variant = p.res.Variant
+				break
+			}
 		}
 	}
 	merged := &omr.Result{
@@ -64,7 +85,7 @@ func mergePageScans(pages []pageScan) *omr.Result {
 		RegSource:   primary.res.RegSource,
 		RegMarks:    primary.res.RegMarks,
 		Answers:     []string{},
-		Variant:     primary.res.Variant,     // 卷种点判读(全卡一致,取首判成功页)
+		Variant:     variant,                 // 卷种点判读(取任一判出页,评审 pagegroup.go:331)
 		CodeShort:   primary.res.CodeShort,   // AB 复合码携带的考试短号
 		CodeVariant: primary.res.CodeVariant, // 复合码卷种位
 	}
@@ -88,13 +109,13 @@ func mergePageScans(pages []pageScan) *omr.Result {
 		for k, p := range pages {
 			if p.res != primary.res && p.res.RegValid && p.res.RegNumber != primary.res.RegNumber {
 				merged.Warnings = append(merged.Warnings,
-					fmt.Sprintf("第 %d 页考号 %s 与第 %d 页 %s 不一致,已按后者", k+1, p.res.RegNumber, primaryPageNo(pages, primary), primary.res.RegNumber))
+					fmt.Sprintf("%s考号 %s 与%s %s 不一致,已按后者", pageLabel(k), p.res.RegNumber, pageLabel(primaryIdx), primary.res.RegNumber))
 			}
 		}
 	}
 	for k, p := range pages {
 		for _, w := range p.res.Warnings {
-			merged.Warnings = append(merged.Warnings, fmt.Sprintf("第 %d 页 %s", k+1, w))
+			merged.Warnings = append(merged.Warnings, fmt.Sprintf("%s %s", pageLabel(k), w))
 		}
 	}
 	return merged
