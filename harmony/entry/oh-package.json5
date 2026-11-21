@@ -1,7 +1,0 @@
-{
-  "name": "entry",
-  "version": "1.0.0",
-  "description": "OpenGrade 鸿蒙客户端入口模块",
-  "main": "",
-  "dependencies": {}
-}

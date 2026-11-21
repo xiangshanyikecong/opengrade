@@ -1,2 +1,0 @@
-# 混淆规则(release 关闭混淆,保留占位)
--enable-property-obfuscation
