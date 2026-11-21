@@ -73,8 +73,12 @@ func (u *User) AllClasses() []string {
 	return nil
 }
 
-// IsStaff 报告是否为教职员(非学生)。
-func (u *User) IsStaff() bool { return u != nil && u.Role != RoleStudent }
+// IsStaff 报告是否为教职员(管理员/年级组长/教师)。
+// 不用 Role!=Student 的否定式:家长角色是"仅绑定子女只读查分",不是教职员,
+// 否则未来任何依赖此方法的检查都会把家长当教职员放行(评审 auth.go:77 / CWE-863)。
+func (u *User) IsStaff() bool {
+	return u != nil && (u.Role == RoleAdmin || u.Role == RoleLeader || u.Role == RoleTeacher)
+}
 
 // CanManageUsers 报告是否可管理账号(仅管理员)。
 func (u *User) CanManageUsers() bool { return u != nil && u.Role == RoleAdmin }
@@ -327,7 +331,14 @@ func (s *Store) saveLocked() error {
 }
 
 // saveSessionsLocked 会话落盘(调用方持锁);失败只影响重启后的会话延续,不影响当前请求。
+// 落盘快照剔除过期会话并同步回收内存:长驻进程不再反复序列化陈年令牌、持锁时间不随之增长。
 func (s *Store) saveSessionsLocked() error {
+	now := time.Now()
+	for tok, se := range s.Sessions {
+		if !now.Before(se.Expires) {
+			delete(s.Sessions, tok)
+		}
+	}
 	b, err := json.MarshalIndent(s.Sessions, "", "  ")
 	if err != nil {
 		return err
@@ -355,8 +366,13 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		// Windows 上目标被并发持有(备份拷贝等)时 rename 可能共享冲突:退回直接覆盖
-		return os.WriteFile(path, data, perm)
+		// Windows 上目标被并发持有(备份拷贝等)时 rename 可能共享冲突:退回直接覆盖。
+		// os.WriteFile 对已存在文件只截断不改权限 —— 新令牌/口令散列不能落进宽权限旧文件,
+		// 覆盖后显式收紧一次(CWE-732;Windows 下受 ACL 模型限制,属尽力而为)。
+		if err2 := os.WriteFile(path, data, perm); err2 != nil {
+			return err2
+		}
+		return os.Chmod(path, perm)
 	}
 	return nil
 }

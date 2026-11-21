@@ -81,6 +81,28 @@ type ClassStat struct {
 	MeanRate float64 `json:"meanRate"`
 }
 
+// ownClassStats 返回班级统计中本人(或子女)本场所属班级的子集:
+// 另一班只有一名学生实考时,他班的 count+mean 即该生的精确分数,
+// 学生端不得看到非本人班级的统计(评审 student.go:399 / CWE-200)。
+func ownClassStats(ex *Exam, reg string, rep *score.Report) []ClassStat {
+	all := computeClassStats(ex, rep)
+	mine := map[string]bool{}
+	for _, st := range ex.Roster {
+		if st.Reg == reg {
+			for _, c := range st.AllClasses() {
+				mine[c] = true
+			}
+		}
+	}
+	out := make([]ClassStat, 0, len(all))
+	for _, cs := range all {
+		if mine[cs.Class] {
+			out = append(out, cs)
+		}
+	}
+	return out
+}
+
 // computeClassStats 依据名册班级与最终考号聚合班级统计。
 // 走班双归属:学生计入其所属的每一个班(行政班+教学班)——按教学班看走班课的
 // 均分,按行政班看整班对比,同一份成绩两种口径。
@@ -188,6 +210,11 @@ func handleStudentExams(w http.ResponseWriter, r *http.Request, store *Store, u 
 		ex, ok := store.Get(id)
 		if !ok {
 			continue // 盘上缺失(外部破坏):跳过
+		}
+		// 摘要粗筛后考试可能已被撤发布并改答案:以载入快照为准,未发布不出分
+		//(评审 student.go:188 / CWE-863)
+		if !ex.Published {
+			continue
 		}
 		var rep *score.Report // 懒算:同场多孩只统分一次
 		for _, reg := range regs {
@@ -396,7 +423,7 @@ func handleStudentExam(w http.ResponseWriter, r *http.Request, store *Store, u *
 		"questions":      questions,
 		"wrongQuestions": wrongs,
 		"classRates":     classRates,
-		"byClass":        computeClassStats(ex, rep),
+		"byClass":        ownClassStats(ex, reg, rep),
 	}
 
 	// 主观题作答切片与整卷回溯(仅本人/绑定子女)
@@ -576,7 +603,7 @@ func handleStudentReportPDF(w http.ResponseWriter, r *http.Request, store *Store
 	card := export.ReportCard{
 		Title: ex.Layout.Title, Subject: ex.Subject,
 		Student: nameOfReg(ex, reg), Reg: reg, Class: nonEmptyStr(cls, "-"),
-		Date:      ex.CreatedAt.Format("2006-01-02"),
+		Date:      examDateOf(ex), // 考试日期优先,未填回退创建日期(与列表/成绩条口径一致,评审 student.go:579)
 		Score:     fmt.Sprintf("%s / %s", trimMaxF(line.Score), trimMaxF(line.Total)),
 		Rank:      rankText,
 		ClassRank: rankStr(classRank),
@@ -652,7 +679,7 @@ func handleStudentSlice(w http.ResponseWriter, r *http.Request, store *Store, u 
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
-	http.ServeFile(w, r, p)
+	serveFileNoStore(w, r, p)
 }
 
 // handleStudentPage GET /api/v1/student/exams/{id}/page → 我的整卷回溯(矫正原图)
@@ -677,7 +704,7 @@ func handleStudentPage(w http.ResponseWriter, r *http.Request, store *Store, u *
 		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
-	http.ServeFile(w, r, p)
+	serveFileNoStore(w, r, p)
 }
 
 // handleExamPageStaff 教师查看任一学生整卷(讲评用):GET /api/v1/exams/{id}/page/{student}
@@ -698,7 +725,7 @@ func handleExamPageStaff(w http.ResponseWriter, r *http.Request, store *Store, u
 		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
-	http.ServeFile(w, r, p)
+	serveFileNoStore(w, r, p)
 }
 
 // pageImagePath 多页版式的整卷回溯文件名:第 1 页兼容旧名,第 2+ 页带 _p 页号。
@@ -738,5 +765,5 @@ func handleExamOverlayStaff(w http.ResponseWriter, r *http.Request, store *Store
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
-	http.ServeFile(w, r, p)
+	serveFileNoStore(w, r, p)
 }

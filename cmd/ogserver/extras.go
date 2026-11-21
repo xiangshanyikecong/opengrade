@@ -88,7 +88,14 @@ func handleRosterSearch(w http.ResponseWriter, r *http.Request, store *Store, u 
 }
 
 // handleDeleteExam 删除考试及全部数据。
+// 路由层 manage 只认角色:任何组长都可到达,必须再做考试级授权 ——
+// 只管三年级的组长不得凭 ID 删其他年级的考试(评审 extras.go:92 / CWE-862)。
 func handleDeleteExam(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
+	ex, ok := store.Get(r.PathValue("id"))
+	if !ok || !canOpenExam(u, ex, store.School) {
+		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
+		return
+	}
 	if err := store.Delete(r.PathValue("id")); err != nil {
 		httpError(w, http.StatusNotFound, err)
 		return
@@ -162,13 +169,9 @@ func injectRosterInfo(ex *Exam, rep *score.Report) {
 //     「第 N 名」也是全卷名次,与成绩条/组长导出对得上(此前成绩册是班内名次,两份材料打架);
 //   - 匿名阅卷下,非建卷人/组长/管理员的导出抹去考号与姓名(阅卷面板的导出链接不再击穿匿名)。
 func (s *Store) exportReport(r *http.Request, u *auth.User) (*Exam, *score.Report, []string, bool) {
-	ex, ok := s.openExamFor(r, u, false) // 行按任教班级过滤
+	ex, full, ok := s.openExamForSnap(r, u, false) // 行按任教班级过滤;排名用同快照全卷
 	if !ok {
 		return nil, nil, nil, false
-	}
-	full, ok2 := s.Get(r.PathValue("id"))
-	if !ok2 {
-		full = ex
 	}
 	repFull := score.Merge(full.Layout.Questions, full.ObjectiveKey, assignedResults(full), full.Layout.Subjectives, full.Grades, full.Layout.Scoring)
 	rankByReg := map[string]int{}
@@ -285,14 +288,21 @@ func handleExportCSV(w http.ResponseWriter, r *http.Request, store *Store, u *au
 // handleExportFullZip 开放数据协议 v1:一键打包全部原始数据(版式/答案/OMR 结果/
 // 评分日志/报告/名册/切片原图),学校数据随时可整包带走、迁移、审计。
 func handleExportFullZip(w http.ResponseWriter, r *http.Request, store *Store, u *auth.User) {
-	ex, ok := store.openExamFor(r, u, false) // 导出按任教班级过滤
+	ex, _, ok := store.openExamForSnap(r, u, false) // 导出按任教班级过滤(ex 为裁剪视图)
 	if !ok {
 		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
-	dir := store.Dir(ex.ID)
 	privileged := u.Role == auth.RoleAdmin || u.Role == auth.RoleLeader || ex.CreatedBy == u.Username
 	anon := ex.Anonymous && !privileged
+	// 是否全卷视图:决定 README 的"部分导出"标注口径(评审 extras.go:320/321)
+	fullView := u.Role == auth.RoleAdmin
+	if u.Role == auth.RoleLeader {
+		fullView = len(u.Grades) == 0 || store.School == nil || len(store.School.Snapshot()) == 0
+	} else if u.Role == auth.RoleTeacher {
+		classes := append(append([]string(nil), u.AllClasses()...), u.HeadClasses...)
+		fullView = len(classes) == 0 // 未配置任教班级 = 仅本人创建的考试 = 全量
+	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=opengrade-%s-full.zip", ex.ID))
 	zw := zip.NewWriter(w)
@@ -304,21 +314,17 @@ func handleExportFullZip(w http.ResponseWriter, r *http.Request, store *Store, u
 		}
 	}()
 
-	addFile := func(rel string) error {
-		p := filepath.Join(dir, rel)
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		fh, err := zw.Create("opengrade/" + rel)
-		if err != nil {
-			return err
-		}
-		_, err = fh.Write(b)
-		return err
-	}
 	if !anon {
-		_ = addFile("exam.json") // 匿名模式下对普通阅卷教师不含原始考号明细
+		// exam.json 直接序列化本次加载的考试快照:与下方 report.json 出自同一评分状态 ——
+		// 此前读盘文件可能仍在评分去抖窗口内,包内原始数据与报告口径错位(评审 extras.go:326);
+		// 教师视图下即"从授权视图生成裁剪后的原始数据",不再泄出全场名册与评分(评审 extras.go:320)。
+		if b, err := json.MarshalIndent(ex, "", "  "); err == nil {
+			if fh, err2 := zw.Create("opengrade/exam.json"); err2 == nil {
+				_, _ = fh.Write(b)
+			}
+		} else {
+			log.Printf("全量数据包 exam.json 序列化失败 exam=%s: %v", ex.ID, err)
+		}
 	}
 	// 版式与答案独立成文件,便于第三方工具直接消费
 	layoutJSON, _ := json.MarshalIndent(ex.Layout, "", "  ")
@@ -341,7 +347,14 @@ func handleExportFullZip(w http.ResponseWriter, r *http.Request, store *Store, u
 			_, _ = fh.Write(content)
 		}
 	}
-	// 切片原图
+	// 切片原图:只包含裁剪视图下的有效卷位 —— 单班教师导出不得带走他班学生
+	// 的主观题作答(评审 extras.go:348)。切片文件名 s%02d_*,卷号 = Results 下标+1。
+	allow := map[string]bool{}
+	for i := range ex.Results {
+		if ex.Results[i] != nil {
+			allow[fmt.Sprintf("%02d", i+1)] = true
+		}
+	}
 	sliceDir := store.SliceDir(ex.ID)
 	entries, _ := os.ReadDir(sliceDir)
 	names := make([]string, 0, len(entries))
@@ -352,6 +365,9 @@ func handleExportFullZip(w http.ResponseWriter, r *http.Request, store *Store, u
 	}
 	sort.Strings(names)
 	for _, n := range names {
+		if !fullView && !sliceOwnedBy(n, allow) {
+			continue
+		}
 		b, err := os.ReadFile(filepath.Join(sliceDir, n))
 		if err != nil {
 			continue
@@ -371,9 +387,28 @@ slices/       主观题作答切片原图(PNG,300 DPI 矫正后)
 
 本数据包由学校本机系统导出,归学校所有;任何工具均可按上述结构读取,无厂商锁定。
 `
+	if !fullView {
+		// 按权限裁剪过的包明确标注为部分导出:README 不再承诺"全部原始数据"(评审 extras.go:321)
+		readme += "\n注:本次导出按导出者的数据范围裁剪(部分导出),exam.json 与 slices/ 仅含其可见卷位。\n"
+	}
 	if fh, err := zw.Create("opengrade/README.txt"); err == nil {
 		_, _ = fh.Write([]byte(readme))
 	}
+}
+
+// sliceOwnedBy 判定切片文件是否属于允许列表中的卷号(文件名 s%02d_*.png/jpg)。
+func sliceOwnedBy(name string, allow map[string]bool) bool {
+	if len(name) < 4 || name[0] != 's' {
+		return false
+	}
+	i := 1
+	for i < len(name) && name[i] >= '0' && name[i] <= '9' {
+		i++
+	}
+	if i <= 1 || i >= len(name) || name[i] != '_' {
+		return false
+	}
+	return allow[name[1:i]]
 }
 
 // handleReviewPPTX 讲评课件一键生成(开源基础版):
@@ -387,7 +422,8 @@ func handleReviewPPTX(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		return
 	}
 	low, err := strconv.ParseFloat(r.URL.Query().Get("low"), 64)
-	if err != nil || low <= 0 || low >= 1 {
+	// NaN 与比较恒假会绕过区间检查,概览显示 NaN%:正区间判断,非法值回退默认(评审 extras.go:390)
+	if err != nil || !(low > 0 && low < 1) {
 		low = 0.6
 	}
 	rep := score.Merge(ex.Layout.Questions, ex.ObjectiveKey, assignedResults(ex), ex.Layout.Subjectives, ex.Grades, ex.Layout.Scoring)
@@ -493,7 +529,13 @@ func pickTypicalSlices(ex *Exam, question int, anon bool) (best, worst struct {
 	}
 	sort.Slice(graded, func(i, j int) bool { return graded[i].s > graded[j].s })
 	best.student = graded[0].student
-	best.label = typicalLabel(ex, graded[0].student, graded[0].s, anon, "典型满分")
+	// 只有实际达到满分才叫"典型满分",否则是"最高分样本"(满分 10、最高已阅 5 的
+	// 卷子不该顶着满分标签进讲评课件,评审 extras.go:496)
+	bestLabel := "最高分样本"
+	if graded[0].s >= score.SubjectiveMax(ex.Layout.Subjectives[question-1])-0.001 {
+		bestLabel = "典型满分"
+	}
+	best.label = typicalLabel(ex, graded[0].student, graded[0].s, anon, bestLabel)
 	worst.student = graded[len(graded)-1].student
 	worst.label = typicalLabel(ex, graded[len(graded)-1].student, graded[len(graded)-1].s, anon, "待改进")
 	return

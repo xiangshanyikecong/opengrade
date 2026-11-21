@@ -84,11 +84,13 @@ func handleStudentDetailStaff(w http.ResponseWriter, r *http.Request, store *Sto
 	out["appealBlocked"] = blocked
 	// 该生的复核申请(含裁决人/时间,复核页裁决联动用)
 	mine := []map[string]any{}
-	for _, a := range ex.Appeals {
+	for i, a := range ex.Appeals {
 		if a.By != reg {
 			continue
 		}
-		m := map[string]any{"time": a.Time.Format("2006-01-02 15:04"), "reason": a.Reason,
+		// n 是考试内申请序号(1-based,与 /appeals/{n}/resolve 一致):客户端必须
+		// 裁决被点击的那一条,而不是"第一条待处理"(评审 ReviewPage.ets:570)
+		m := map[string]any{"n": i + 1, "time": a.Time.Format("2006-01-02 15:04"), "reason": a.Reason,
 			"status": a.Status, "reply": a.Reply, "resolvedBy": a.ResolvedBy}
 		if a.ResolvedAt != nil {
 			m["resolvedAt"] = a.ResolvedAt.Format("2006-01-02 15:04")
@@ -132,7 +134,7 @@ func handleStudentDetailStaff(w http.ResponseWriter, r *http.Request, store *Sto
 			st.Parts = make([]partState, len(spec.Parts))
 			var sum float64
 			for pi := range spec.Parts {
-				ps := partState{Part: pi + 1}
+				ps := partState{Part: pi + 1, Max: spec.Parts[pi].Score} // 小问满分随状态下发(客户端逐问校验)
 				if g, ok := ex.Grades[score.GradePartKey(idx, qi+1, pi+1)]; ok {
 					ps.Score, ps.Graded, ps.Ver = g.Score, g.Graded, g.Ver
 					if g.Graded {
@@ -155,22 +157,39 @@ func handleStudentDetailStaff(w http.ResponseWriter, r *http.Request, store *Sto
 	}
 	out["subjectives"] = states
 
-	// 整卷回溯:探测页数(第 1 页旧名 sNN.jpg,第 2+ 页 sNN_pKK.jpg)
+	// 整卷回溯:返回实际存在的页码列表(评审 review.go:167)—— 残卷可能缺第 2 页
+	// 而有第 3 页,此前在缺页处停止只回 pages:1,复核页无法发现第 3 页
+	pageDir := store.PageDir(ex.ID)
+	pageNos := sheetPageNos(pageDir, idx)
+	if pageNos == nil {
+		pageNos = []int{}
+	}
 	pages := 0
-	if fileExists(filepath.Join(store.PageDir(ex.ID), fmt.Sprintf("s%02d.jpg", idx))) {
-		pages = 1
-		for p := 2; p < 100; p++ {
-			if fileExists(filepath.Join(store.PageDir(ex.ID), fmt.Sprintf("s%02d_p%02d.jpg", idx, p))) {
-				pages = p
-				continue
-			}
-			break
-		}
+	if len(pageNos) > 0 {
+		pages = pageNos[len(pageNos)-1] // 兼容旧字段:最大存在页号
 	}
 	out["pages"] = pages
+	out["pageNos"] = pageNos
 	out["pageURL"] = fmt.Sprintf("/api/v1/exams/%s/page/%d", ex.ID, idx)
 	if fileExists(filepath.Join(store.OverlayDir(ex.ID), fmt.Sprintf("s%02d.png", idx))) {
 		out["overlayURL"] = fmt.Sprintf("/api/v1/exams/%s/overlay/%d", ex.ID, idx)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// sheetPageNos 探测某卷在盘上的整卷回溯页码(第 1 页 sNN.jpg,第 k>1 页 sNN_pKK.jpg),
+// 升序返回;整卷缺失返回 nil。供复核详情与「接受残卷」的版本核对共用。
+func sheetPageNos(pageDir string, student int) []int {
+	var nos []int
+	if fileExists(filepath.Join(pageDir, fmt.Sprintf("s%02d.jpg", student))) {
+		nos = append(nos, 1)
+	}
+	for p := 2; p < 100; p++ {
+		if fileExists(filepath.Join(pageDir, fmt.Sprintf("s%02d_p%02d.jpg", student, p))) {
+			nos = append(nos, p)
+			continue
+		}
+		break
+	}
+	return nos
 }

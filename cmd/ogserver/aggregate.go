@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/opengrade/opengrade/auth"
+	"github.com/opengrade/opengrade/score"
 )
 
 // aggregateExam 是工表的一列(一场考试)。
@@ -73,9 +74,18 @@ func handleAggregate(w http.ResponseWriter, r *http.Request, store *Store, u *au
 		}
 	})
 	for _, id := range ids {
-		if ex, ok := store.Get(id); ok {
-			exams = append(exams, ex)
+		ex, ok := store.Get(id)
+		if !ok {
+			continue
 		}
+		// 摘要扫描与全量加载之间,考试可能被移组/撤发布:以载入的快照为准重验
+		//(评审 aggregate.go:76)。
+		if ex.ExamGroup != group || !ex.Published {
+			continue
+		}
+		// 总表按名册建行:教师/组长视图连名册一并裁剪,乙班学生的姓名/考号/成绩
+		// 不得出现在只教甲班的响应里(评审 aggregate.go:77 / CWE-863)
+		exams = append(exams, scopeExamStatsView(ex, u, store.School))
 	}
 	sort.Slice(exams, func(i, j int) bool { // 日期升序(未填日期按创建时间)
 		di, dj := examDateOf(exams[i]), examDateOf(exams[j])
@@ -137,7 +147,14 @@ func handleAggregate(w http.ResponseWriter, r *http.Request, store *Store, u *au
 	// (Found=false,总分不计)——零值即语义,无需回填。
 	for ci, ex := range exams {
 		rep := mergeReport(ex)
+		// 同考号两份有效卷(重扫并存):每场只计一份(后一份=重扫替代旧卷)——
+		// 此前逐行累加,两卷都进总分(60+70=130),单元格却只显示其一(store.go 双卷注释口径,
+		// 评审 aggregate.go:145)。
+		byReg := map[string]score.StudentLine{}
 		for _, l := range rep.Students {
+			byReg[l.RegNumber] = l
+		}
+		for _, l := range byReg {
 			st := rows[l.RegNumber]
 			if st == nil {
 				continue

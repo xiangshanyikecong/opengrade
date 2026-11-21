@@ -168,7 +168,7 @@ func visibleExamOrderAsc(store *Store, u *auth.User, subject string) []trendOrde
 		rows = append(rows, trendOrderAsc{sm.ID, sm.ExamDate, sm.CreatedAt})
 	})
 	sort.SliceStable(rows, func(i, j int) bool {
-		di, dj := rows[i].ExamDate, rows[j].ExamDate
+		di, dj := trendDateKey(rows[i]), trendDateKey(rows[j])
 		if di != dj {
 			return di < dj
 		}
@@ -178,6 +178,28 @@ func visibleExamOrderAsc(store *Store, u *auth.User, subject string) []trendOrde
 		return rows[i].ID < rows[j].ID
 	})
 	return rows
+}
+
+// trendDateKey 时间轴排序键:考试日期优先,未填回退创建日期 —— 与 examDateOf 的
+// 展示口径一致。空串按字典序会排到任何显式日期之前,响应却显示"创建晚的在前",
+// 排序与展示互相矛盾(评审 trends.go:171 / student trends 同款)。
+func trendDateKey(o trendOrderAsc) string {
+	if o.ExamDate != "" {
+		return o.ExamDate
+	}
+	return o.CreatedAt.Format("2006-01-02")
+}
+
+// classInRoster 报告班级是否出现在本场名册(区分「班级不在场」与「在册但全员缺考」)。
+func classInRoster(ex *Exam, class string) bool {
+	for _, st := range ex.Roster {
+		for _, c := range st.AllClasses() {
+			if c == class {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // handleStaffTrends 教师端纵向趋势:GET /api/v1/trends?class=&subject=
@@ -200,6 +222,10 @@ func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *
 		if !ok {
 			continue // 盘上缺失(外部破坏):跳过,与启动口径一致
 		}
+		// 逐生成绩按账号可见班级裁剪(连名册行):只教甲班的教师不得从混合班考试的
+		// 趋势响应里拿到乙班学生姓名与历次分数;学科组长命中考试学科时保持全量
+		//(评审 trends.go:199 / CWE-863)
+		ex = scopeExamStatsView(ex, u, store.School)
 		for _, c := range examClasses(ex) {
 			classSet[c] = true
 		}
@@ -237,12 +263,27 @@ func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *
 		if class == "" { // 未指定班级:班级序列=全体序列
 			mean, n = rep.Mean, rep.Count
 		} else if n == 0 {
-			continue // 该班不在本场考试中,不进入该班的时间轴
+			// 区分"班级不在场"与"在册但全员缺考":在册的班级保留 0 点进入时间轴,
+			// 否则曲线被静默跳过,与"该班缺考"不可区分(评审 trends.go:239)
+			if !classInRoster(ex, class) {
+				continue // 该班不在本场考试中,不进入该班的时间轴
+			}
 		}
 		tExams = append(tExams, TrendExam{
 			ID: ex.ID, Date: examDateOf(ex), Subject: ex.Subject,
 			Students: rep.Count, Total: rep.Total, Mean: rep.Mean, ClassMean: mean, ClassCount: n,
 		})
+		// 班级排名池每场只建一次:此前逐生重建 sameClass,千人考试一次请求 O(n²)
+		// 数亿次比较(评审 trends.go:259)。走班双口径:排名池与均分口径一致(教学班也算)
+		var sameClass []score.StudentLine
+		if class != "" {
+			sameClass = make([]score.StudentLine, 0, rep.Count)
+			for _, ol := range rep.Students {
+				if inClassOfReg(ex, ol.RegNumber, class) {
+					sameClass = append(sameClass, ol)
+				}
+			}
+		}
 		for _, l := range rep.Students {
 			reg := l.RegNumber
 			ts := students[reg]
@@ -250,18 +291,20 @@ func handleStaffTrends(w http.ResponseWriter, r *http.Request, store *Store, u *
 				ts = &TrendStudent{Reg: reg, Name: regName[reg], Class: regClass[reg]}
 				students[reg] = ts
 			}
+			// 姓名/班级跟随最近一场名册(升序遍历后写覆盖):首见冻结会停在旧班/旧名
+			//(评审 trends.go:250)
+			if regName[reg] != "" {
+				ts.Name = regName[reg]
+			}
+			if regClass[reg] != "" {
+				ts.Class = regClass[reg]
+			}
 			pt := TrendPoint{ExamID: ex.ID, Date: examDateOf(ex),
 				Subject: ex.Subject, Absent: l.Absent, Score: l.Score, Total: l.Total, Rank: l.Rank}
 			if l.Total > 0 {
 				pt.Rate = l.Score / l.Total
 			}
 			if class != "" && !l.Absent {
-				sameClass := make([]score.StudentLine, 0, rep.Count)
-				for _, ol := range rep.Students {
-					if inClassOfReg(ex, ol.RegNumber, class) { // 走班双口径:排名池与均分口径一致(教学班也算)
-						sameClass = append(sameClass, ol)
-					}
-				}
 				pt.ClassRank = rankWithin(sameClass, reg)
 			}
 			ts.Points = append(ts.Points, pt)
@@ -316,7 +359,7 @@ func handleStudentTrends(w http.ResponseWriter, r *http.Request, store *Store, u
 		order = append(order, trendOrderAsc{sm.ID, sm.ExamDate, sm.CreatedAt})
 	})
 	sort.SliceStable(order, func(i, j int) bool {
-		di, dj := order[i].ExamDate, order[j].ExamDate
+		di, dj := trendDateKey(order[i]), trendDateKey(order[j])
 		if di != dj {
 			return di < dj
 		}
@@ -329,6 +372,10 @@ func handleStudentTrends(w http.ResponseWriter, r *http.Request, store *Store, u
 	for _, o := range order {
 		ex, ok := store.Get(o.ID)
 		if !ok {
+			continue
+		}
+		// 摘要粗筛后考试可能已被撤发布:以载入快照为准,未发布不出分(评审 student.go:188 同款)
+		if !ex.Published {
 			continue
 		}
 		idx := findIndex(ex, reg)

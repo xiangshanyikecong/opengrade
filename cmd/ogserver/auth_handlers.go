@@ -61,6 +61,8 @@ const (
 	loginFailWindow = 15 * time.Minute
 	loginFailMax    = 5
 	loginLockSpan   = 15 * time.Minute
+	loginKeyMax     = 64    // 限速键长度上限:超长用户名不入表
+	loginKeyCap     = 10000 // 失败/锁定记录全局容量上限:匿名请求不可让内存无界增长
 )
 
 func loginLocked(username string) bool {
@@ -78,9 +80,13 @@ func loginLocked(username string) bool {
 }
 
 func loginFail(username string) {
+	if len(username) > loginKeyMax {
+		return // 超长键不入表:失败记录不可被"垃圾长用户名"撑爆内存(CWE-400)
+	}
 	loginLimiter.mu.Lock()
 	defer loginLimiter.mu.Unlock()
 	now := time.Now()
+	loginSweepLocked(now)
 	fs := loginLimiter.fails[username]
 	keep := fs[:0]
 	for _, t := range fs {
@@ -93,6 +99,39 @@ func loginFail(username string) {
 	if len(keep) >= loginFailMax {
 		loginLimiter.locked[username] = now.Add(loginLockSpan)
 		delete(loginLimiter.fails, username)
+	}
+}
+
+// loginSweepLocked 全局过期清扫 + 容量兜底(调用方已持锁):
+// 攻击者用海量不同用户名打失败计数时,窗口裁剪只作用于同名重试,记录不会自行释放 ——
+// 这里在接近容量上限时统一清理,超限仍拒收新键。
+func loginSweepLocked(now time.Time) {
+	if len(loginLimiter.fails) < loginKeyCap {
+		return
+	}
+	for k, ts := range loginLimiter.fails {
+		live := ts[:0]
+		for _, t := range ts {
+			if now.Sub(t) < loginFailWindow {
+				live = append(live, t)
+			}
+		}
+		if len(live) == 0 {
+			delete(loginLimiter.fails, k)
+		} else {
+			loginLimiter.fails[k] = live
+		}
+	}
+	for k, until := range loginLimiter.locked {
+		if now.After(until) {
+			delete(loginLimiter.locked, k)
+		}
+	}
+	for len(loginLimiter.fails) >= loginKeyCap { // 仍超限:任淘汰一条(限速键彼此等价)
+		for k := range loginLimiter.fails {
+			delete(loginLimiter.fails, k)
+			break
+		}
 	}
 }
 
@@ -259,6 +298,12 @@ func handleTaskSet(w http.ResponseWriter, r *http.Request, store *Store, u *auth
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		httpError(w, http.StatusBadRequest, err)
+		return
+	}
+	// 路由层 manage 只认角色:组长可到达,分配前必须校验考试访问范围 ——
+	// 否则组长可凭他年级考试 ID 改写阅卷教师(评审 auth_handlers.go:272 / CWE-863)。
+	if _, ok := store.openExamFor(r, u, false); !ok {
+		httpError(w, http.StatusNotFound, fmt.Errorf("考试不存在"))
 		return
 	}
 	if req.Class != "" {

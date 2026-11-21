@@ -16,6 +16,7 @@ import (
 
 	"github.com/opengrade/opengrade/auth"
 	"github.com/opengrade/opengrade/omr"
+	"github.com/opengrade/opengrade/roster"
 	"github.com/opengrade/opengrade/score"
 )
 
@@ -190,25 +191,78 @@ func scopeExamToClasses(ex *Exam, classes []string) *Exam {
 //     否则第二个班的任务在阅卷端永远无解;
 //   - 管理员恒为全量。
 func (s *Store) openExamFor(r *http.Request, u *auth.User, grading bool) (*Exam, bool) {
+	view, _, ok := s.openExamForSnap(r, u, grading)
+	return view, ok
+}
+
+// openExamForSnap 一次快照同时给出裁剪视图与全卷视图:排名/统计类接口需要全卷分母,
+// 行数据需要可见裁剪 —— 两视图必须出自同一次 store.Get,否则两次读取之间发生的
+// 改分/发布/撤回变更会让行列口径互相矛盾(评审快照口径类问题)。
+func (s *Store) openExamForSnap(r *http.Request, u *auth.User, grading bool) (*Exam, *Exam, bool) {
 	ex, ok := s.Get(r.PathValue("id"))
 	if !ok || !canOpenExam(u, ex, s.School) {
-		return nil, false
+		return nil, nil, false
 	}
+	return s.trimExamFor(ex, u, grading), ex, true
+}
+
+// trimExamFor 从全卷考试对象派生当前账号的可见视图(裁剪规则与 openExamFor 注释一致)。
+func (s *Store) trimExamFor(ex *Exam, u *auth.User, grading bool) *Exam {
 	if u.Role == auth.RoleTeacher {
 		if grading {
 			if cs := assignedClassesFor(ex, u); len(cs) > 0 {
-				return scopeExamToClasses(ex, cs), true
+				return scopeExamToClasses(ex, cs)
 			}
-			return ex, true
+			return ex
 		}
-		return scopeExamForTeacher(ex, u), true
+		return scopeExamForTeacher(ex, u)
 	}
 	if u.Role == auth.RoleLeader && !grading {
 		if classes := s.School.ClassesOfGrades(u.Grades); len(classes) > 0 {
-			return scopeExamToClasses(ex, classes), true
+			return scopeExamToClasses(ex, classes)
 		}
 	}
-	return ex, true
+	return ex
+}
+
+// scopeExamStatsView 统计/报表类接口(年级总表/趋势)的数据视图:在可见性之上按班级
+// 连名册一并裁剪 —— 此前只裁 Results/Grades,响应仍会携带不可见班级学生的
+// 姓名/考号/成绩行(评审越权/泄露类问题):
+//   - 管理员全量;
+//   - 年级组长按管辖年级班级裁剪(未配置年级/组织架构保持全量,同 openExamFor);
+//   - 教师:学科组长命中考试学科 → 全量(学科跨班统计需要全量样本,评审 scope.go:135);
+//     其余按任教班级+班主任班裁剪(未配置任教班级 = 仅本人创建的考试,保持全量)。
+func scopeExamStatsView(ex *Exam, u *auth.User, sch *School) *Exam {
+	if u == nil {
+		return ex
+	}
+	var classes []string
+	switch u.Role {
+	case auth.RoleAdmin:
+		return ex
+	case auth.RoleLeader:
+		if len(u.Grades) == 0 || sch == nil || len(sch.Snapshot()) == 0 {
+			return ex
+		}
+		classes = sch.ClassesOfGrades(u.Grades)
+	case auth.RoleTeacher:
+		if ex.Subject != "" && containsStr(u.SubjectLead, ex.Subject) {
+			return ex
+		}
+		classes = append(append([]string(nil), u.AllClasses()...), u.HeadClasses...)
+	}
+	if len(classes) == 0 {
+		return ex
+	}
+	cp := scopeExamToClasses(ex, classes)
+	rost := make([]roster.Student, 0, len(ex.Roster))
+	for _, st := range ex.Roster {
+		if overlaps(st.AllClasses(), classes) {
+			rost = append(rost, st)
+		}
+	}
+	cp.Roster = rost
+	return cp
 }
 
 // assignedClassesFor 返回按班分配模式下教师被分到的全部班级(走班可多班;

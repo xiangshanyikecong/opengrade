@@ -125,8 +125,10 @@ func (s *BankStore) Create(q BankQuestion, by string) (BankQuestion, error) {
 	q.ID = hex.EncodeToString(b[:])
 	q.CreatedBy = by
 	q.CreatedAt = time.Now()
+	q.StemImage = "" // 服务端管护字段:截图经 SetStemImage 上传,禁止客户端指定路径(CWE-22)
 	s.items = append(s.items, q)
 	if err := s.save(); err != nil {
+		s.items = s.items[:len(s.items)-1] // 落盘失败回滚:不能"内存可见、重启即失"
 		return BankQuestion{}, err
 	}
 	return q, nil
@@ -144,8 +146,15 @@ func (s *BankStore) Update(id string, patch BankQuestion) error {
 			return err
 		}
 		patch.ID, patch.CreatedBy, patch.CreatedAt = s.items[i].ID, s.items[i].CreatedBy, s.items[i].CreatedAt
+		// 管护字段不在编辑面内:整条替换会清空截图关联与建考使用史(评审 bank.go:146)
+		patch.StemImage, patch.UsedIn = s.items[i].StemImage, s.items[i].UsedIn
+		old := s.items[i]
 		s.items[i] = patch
-		return s.save()
+		if err := s.save(); err != nil {
+			s.items[i] = old // 落盘失败回滚内存
+			return err
+		}
+		return nil
 	}
 	return fmt.Errorf("题目 %s 不存在", id)
 }
@@ -167,8 +176,13 @@ func (s *BankStore) MarkUsed(id, examID string) error {
 				return nil
 			}
 		}
+		old := s.items[i].UsedIn
 		s.items[i].UsedIn = append(s.items[i].UsedIn, examID)
-		return s.save()
+		if err := s.save(); err != nil {
+			s.items[i].UsedIn = old // 回滚:否则失败后重试命中去重分支,假成功不落盘
+			return err
+		}
+		return nil
 	}
 	return nil
 }
@@ -178,11 +192,18 @@ func (s *BankStore) Delete(id string) error {
 	defer s.mu.Unlock()
 	for i := range s.items {
 		if s.items[i].ID == id {
-			if s.items[i].StemImage != "" {
-				_ = os.Remove(filepath.Join(s.dir, s.items[i].StemImage)) // 截图孤儿文件清理
-			}
+			old := s.items[i]
 			s.items = append(s.items[:i], s.items[i+1:]...)
-			return s.save()
+			if err := s.save(); err != nil {
+				// 回滚内存再报错:先删截图会造成"题目仍在盘上而截图永久缺失"
+				s.items = append(s.items[:i], append([]BankQuestion{old}, s.items[i:]...)...)
+				return err
+			}
+			// 持久化成功后再清理截图文件:失败留孤儿文件,好过记录在而文件丢
+			if old.StemImage != "" {
+				_ = os.Remove(filepath.Join(s.dir, old.StemImage))
+			}
+			return nil
 		}
 	}
 	return fmt.Errorf("题目 %s 不存在", id)
@@ -201,8 +222,13 @@ func (s *BankStore) SetStemImage(id string, jpg []byte) error {
 			if err := writeFileAtomic(filepath.Join(s.dir, name), jpg, 0o644); err != nil {
 				return err
 			}
+			prev := s.items[i].StemImage
 			s.items[i].StemImage = name
-			return s.save()
+			if err := s.save(); err != nil {
+				s.items[i].StemImage = prev // 回滚字段:新文件留作孤儿,待下次上传覆盖
+				return err
+			}
+			return nil
 		}
 	}
 	return fmt.Errorf("题目 %s 不存在", id)
@@ -217,7 +243,11 @@ func (s *BankStore) StemImagePath(id string) (string, bool) {
 			if s.items[i].StemImage == "" {
 				return "", false
 			}
-			// 文件名由服务端生成(<id>.jpg),不含用户输入,无目录穿越面
+			// 文件名必须由服务端生成(<id>.jpg):Create/Update 已拒绝客户端指定
+			// stemImage,此处再做精确匹配防御,任何历史/越权写入的路径一律拒读(CWE-22)
+			if s.items[i].StemImage != id+".jpg" {
+				return "", false
+			}
 			return filepath.Join(s.dir, s.items[i].StemImage), true
 		}
 	}
@@ -389,5 +419,5 @@ func handleBankStemGet(w http.ResponseWriter, r *http.Request, bank *BankStore, 
 		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
-	http.ServeFile(w, r, p)
+	serveFileNoStore(w, r, p)
 }

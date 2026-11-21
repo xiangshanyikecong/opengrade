@@ -8,6 +8,7 @@
 package main
 
 import (
+	"math"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -522,6 +523,10 @@ func formLayout(r *http.Request) (*card.Sheet, omr.Options, error) {
 	}
 	opt := omr.Options{Threshold: r.FormValue("threshold")}
 	if v, err := strconv.ParseFloat(r.FormValue("gamma"), 64); err == nil {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			// ParseFloat 接受 NaN/Inf:无图建考会跳过判读但照常入库,JSON 序列化时才 500(评审 main.go:524)
+			return nil, omr.Options{}, fmt.Errorf("gamma 须为有限数值")
+		}
 		opt.Gamma = v
 	}
 	if v, err := strconv.Atoi(r.FormValue("median")); err == nil {
@@ -695,6 +700,11 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 		}
 		sheet, layoutB, keyBCanon = sheetA, &lb, canon
 		shortID = store.NextShortID() // 建考入库前预发:复合码「考试短号核对」对本批扫描即生效
+		if shortID == "" {
+			// 短号耗尽返回空串:继续建考会让复合码的考试短号核对被静默跳过(评审 main.go:697)
+			httpError(w, http.StatusInternalServerError, fmt.Errorf("考试短号已耗尽,无法创建 AB 卷考试(复合码短号核对依赖短号;请清理旧考试后重试)"))
+			return
+		}
 		ab = &abSupport{hasB: true, orderB: orderB, shortID: shortID}
 	}
 
@@ -736,7 +746,8 @@ func handleCreateExam(w http.ResponseWriter, r *http.Request, store *Store, bank
 	// 按考号逐页归组入库:每页独立判读考号+页点页号+卷种,按考号分组合并。
 	// 不再要求总张数是页数的整数倍 —— 卡纸跳页只产生缺页告警,不再全局错位。
 	// impose=2(拼版)时每张 A3 先按角标聚类切回单卡再判读。
-	ing := ingestScanImages(imgs, book, opt, 0, ab, imposition)
+	// 建考批解码失败直接 400、不剔除:origIdx 传 nil,fail 映射回退批内序即原始序
+	ing := ingestScanImages(imgs, nil, book, opt, 0, ab, imposition)
 	if len(imgs) > 0 && len(ing.results) == 0 && len(ing.keyCards) == 0 {
 		// 整批没有任何学生卷:仅答案卡(考号全 9)的建考批也合法(参考答案由卡录入)
 		httpError(w, http.StatusUnprocessableEntity,
@@ -1090,7 +1101,7 @@ func handleExamDetail(w http.ResponseWriter, r *http.Request, store *Store, u *a
 		if len(res.Warnings) > 0 {
 			// 信息类告警(系统已自愈:码修复考号/多涂已判/浅涂)展示但不计入待裁决,不挡发布
 			d.Warnings = append(d.Warnings, sheetWarning{Student: si + 1, Reg: ex.AssignedReg(si + 1), Texts: res.Warnings,
-				Resolved: sheetResolved(ex, si+1) || !hasBlockingWarning(res.Warnings),
+				Resolved: sheetResolvedFor(ex, si+1, res.Warnings) || !hasBlockingWarning(res.Warnings),
 				Soft:     !hasBlockingWarning(res.Warnings), Variant: res.Variant})
 		}
 	}
@@ -1165,6 +1176,7 @@ func handleExamDetail(w http.ResponseWriter, r *http.Request, store *Store, u *a
 // partState 是切片列表中一道拆分小问的当前评分状态。
 type partState struct {
 	Part   int     `json:"part"`
+	Max    float64 `json:"max,omitempty"` // 小问满分(复核页逐问校验用)
 	Score  float64 `json:"score"`
 	Graded bool    `json:"graded"`
 	Ver    int     `json:"ver,omitempty"` // 乐观锁版本号
@@ -1300,7 +1312,7 @@ func handleSliceImage(w http.ResponseWriter, r *http.Request, store *Store, u *a
 	}
 	p := filepath.Join(store.SliceDir(id), fmt.Sprintf("s%02d_q%02d.png", student, q))
 	w.Header().Set("Content-Type", "image/png")
-	http.ServeFile(w, r, p)
+	serveFileNoStore(w, r, p)
 }
 
 // handleSetGrade 写入一条主观题评分(含手写批注笔迹);part>0 时为小问评分(版式 v3)。
@@ -1398,19 +1410,34 @@ func handleScore(w http.ResponseWriter, r *http.Request, u *auth.User) {
 }
 
 func decodeJSON(r *http.Request, v any) error {
-	b, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	// 多读一个字节检测超限:LimitReader(8MiB) 只验证前 8MiB,完整 JSON 后面的
+	// 非法内容会被静默丢弃(评审 main.go:1401)
+	b, err := io.ReadAll(io.LimitReader(r.Body, 8<<20+1))
 	if err != nil {
 		return err
+	}
+	if len(b) > 8<<20 {
+		return fmt.Errorf("请求体超过 8MiB 上限")
 	}
 	return json.Unmarshal(b, v)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
+	// API 响应携带成绩/名册/作答等敏感数据:统一禁存(评审 CWE-524/525)。
+	// 同一浏览器切换账号后,后退导航可能复用上一账号对同一 URL 的缓存响应。
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(v)
+}
+
+// serveFileNoStore 按账号返回的答卷/切片/成绩文件禁用缓存:http.ServeFile 自带的
+// Last-Modified 会让浏览器缓存跨账号复用同一 URL 的响应(评审 student.go:229 等)。
+func serveFileNoStore(w http.ResponseWriter, r *http.Request, path string) {
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeFile(w, r, path)
 }
 
 func httpError(w http.ResponseWriter, code int, err error) {
